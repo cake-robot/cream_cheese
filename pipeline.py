@@ -1,7 +1,7 @@
 import argparse
 import sys
 
-from src import db, espn
+from src import db, espn, scoring
 from src.config import DEFAULT_SEASON
 
 
@@ -149,6 +149,9 @@ def main():
     parser.add_argument("--game", type=str, help="Single game ID")
     parser.add_argument("--discover-only", action="store_true")
     parser.add_argument("--detail-only", action="store_true")
+    parser.add_argument("--score-only", action="store_true", help="Only run Phase 3 scoring")
+    parser.add_argument("--skip-scoring", action="store_true", help="Skip Phase 3 scoring")
+    parser.add_argument("--rescore", action="store_true", help="Re-score already-scored games")
     parser.add_argument("--find-team", type=str, metavar="NAME")
     parser.add_argument("--seed-teams", action="store_true", help="Populate teams table from ESPN teams list")
     args = parser.parse_args()
@@ -158,6 +161,10 @@ def main():
         sys.exit(0)
 
     conn = db.init_db()
+
+    if args.score_only:
+        scoring.score_games(conn, rescore=args.rescore)
+        sys.exit(0)
 
     if args.seed_teams:
         print("Seeding teams table from ESPN teams list...")
@@ -177,6 +184,8 @@ def main():
             # --game implies skip discovery; game row is bootstrapped above
             pass
         fetch_details(conn, game_ids)
+        if not args.skip_scoring:
+            scoring.score_games(conn, game_ids=game_ids, rescore=args.rescore)
         return
 
     if not args.detail_only:
@@ -184,6 +193,8 @@ def main():
 
     if not args.discover_only:
         fetch_details(conn, game_ids if game_ids else None)
+        if not args.skip_scoring:
+            scoring.score_games(conn, game_ids=game_ids if game_ids else None, rescore=args.rescore)
 
 
 if __name__ == "__main__":

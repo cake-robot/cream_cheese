@@ -183,6 +183,10 @@ def upsert_win_probability(conn, rows):
     """, rows)
 
 
+def update_watchability_score(conn, game_id, score):
+    conn.execute("UPDATE games SET watchability_score = ? WHERE game_id = ?", (score, game_id))
+
+
 def mark_detail_fetched(conn, game_id, home_score, away_score, attendance, initial_home_wp):
     conn.execute("""
         UPDATE games SET
