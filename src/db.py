@@ -2,6 +2,13 @@ import sqlite3
 from .config import DB_PATH
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS teams (
+    team_id      TEXT PRIMARY KEY,
+    abbreviation TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS games (
     game_id             TEXT PRIMARY KEY,
     season_year         INTEGER NOT NULL,
@@ -9,12 +16,12 @@ CREATE TABLE IF NOT EXISTS games (
     week                INTEGER,
     game_date           TEXT NOT NULL,
 
-    home_team_id        TEXT NOT NULL,
+    home_team_id        TEXT NOT NULL REFERENCES teams(team_id),
     home_team_abbr      TEXT NOT NULL,
     home_team_name      TEXT NOT NULL,
     home_rank           INTEGER,
 
-    away_team_id        TEXT NOT NULL,
+    away_team_id        TEXT NOT NULL REFERENCES teams(team_id),
     away_team_abbr      TEXT NOT NULL,
     away_team_name      TEXT NOT NULL,
     away_rank           INTEGER,
@@ -63,6 +70,9 @@ CREATE TABLE IF NOT EXISTS win_probability (
     period_number           INTEGER,
     clock_display           TEXT,
 
+    home_team_id            TEXT NOT NULL REFERENCES teams(team_id),
+    away_team_id            TEXT NOT NULL REFERENCES teams(team_id),
+
     home_score              INTEGER,
     away_score              INTEGER,
 
@@ -89,7 +99,20 @@ def init_db(path=None):
     return conn
 
 
+def upsert_team(conn, team_id, abbreviation, name):
+    conn.execute("""
+        INSERT INTO teams (team_id, abbreviation, name)
+        VALUES (?, ?, ?)
+        ON CONFLICT(team_id) DO UPDATE SET
+            abbreviation = excluded.abbreviation,
+            name         = excluded.name,
+            updated_at   = datetime('now')
+    """, (team_id, abbreviation, name))
+
+
 def upsert_game(conn, game):
+    upsert_team(conn, game["home_team_id"], game["home_team_abbr"], game["home_team_name"])
+    upsert_team(conn, game["away_team_id"], game["away_team_abbr"], game["away_team_name"])
     conn.execute("""
         INSERT INTO games (
             game_id, season_year, season_type, week, game_date,
@@ -146,11 +169,13 @@ def upsert_win_probability(conn, rows):
             game_id, play_id, sequence_number,
             home_win_pct, tie_pct,
             clock_seconds_elapsed, period_number, clock_display,
+            home_team_id, away_team_id,
             home_score, away_score
         ) VALUES (
             :game_id, :play_id, :sequence_number,
             :home_win_pct, :tie_pct,
             :clock_seconds_elapsed, :period_number, :clock_display,
+            :home_team_id, :away_team_id,
             :home_score, :away_score
         )
     """, rows)

@@ -232,6 +232,8 @@ def parse_summary_detail(summary):
     attendance = _safe_int(summary.get("gameInfo", {}).get("attendance"))
 
     game_id = str(header.get("id", ""))
+    home_team_id = str(home_comp.get("team", {}).get("id", ""))
+    away_team_id = str(away_comp.get("team", {}).get("id", ""))
 
     # Build WP rows
     wp_entries = summary.get("winprobability", [])
@@ -283,6 +285,8 @@ def parse_summary_detail(summary):
             "clock_seconds_elapsed": elapsed,
             "period_number": period,
             "clock_display": clock_display,
+            "home_team_id": home_team_id,
+            "away_team_id": away_team_id,
             "home_score": p_home_score,
             "away_score": p_away_score,
         })
