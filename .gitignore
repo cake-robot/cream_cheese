@@ -80,4 +80,4 @@ celerybeat-schedule
 .idea/
 *.swp
 *.swo
-.DS_Store
+.DS_Storecfb.db
