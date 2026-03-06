@@ -82,3 +82,5 @@ celerybeat-schedule
 *.swo
 .DS_Store
 data/cfb.db
+data/cfb.db-shm
+data/cfb.db-wal
