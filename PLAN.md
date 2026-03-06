@@ -130,7 +130,7 @@ CREATE TABLE IF NOT EXISTS win_probability (
 
 | Endpoint | URL | Use |
 |----------|-----|-----|
-| Scoreboard | `{BASE}/scoreboard?limit=100&week={week}&dates={year}&seasontype={type}` | Game discovery by week |
+| Scoreboard | `{BASE}/scoreboard?limit=100&dates={year}&seasontype={type}&groups=80&week={week}` | Game discovery by week (groups=80 = all FBS) |
 | Team schedule | `{BASE}/teams/{team_id}/schedule?season={year}` | Regular season by team |
 | Teams list | `{BASE}/teams?limit=100&page={n}` | Paginated; ~8 pages, ~754 teams |
 | Summary | `{BASE}/summary?event={game_id}` | Full game detail + WP |

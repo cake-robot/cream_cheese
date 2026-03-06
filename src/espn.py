@@ -17,7 +17,7 @@ def fetch_json(url):
 
 
 def fetch_scoreboard(season, week=None, season_type=2):
-    url = f"{ESPN_BASE}/scoreboard?limit=100&dates={season}&seasontype={season_type}"
+    url = f"{ESPN_BASE}/scoreboard?limit=100&dates={season}&seasontype={season_type}&groups=80"
     if week is not None:
         url += f"&week={week}"
     data = fetch_json(url)
