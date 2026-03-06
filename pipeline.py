@@ -150,6 +150,7 @@ def main():
     parser.add_argument("--discover-only", action="store_true")
     parser.add_argument("--detail-only", action="store_true")
     parser.add_argument("--find-team", type=str, metavar="NAME")
+    parser.add_argument("--seed-teams", action="store_true", help="Populate teams table from ESPN teams list")
     args = parser.parse_args()
 
     if args.find_team:
@@ -157,6 +158,16 @@ def main():
         sys.exit(0)
 
     conn = db.init_db()
+
+    if args.seed_teams:
+        print("Seeding teams table from ESPN teams list...")
+        teams = espn.fetch_teams_list()
+        for t in teams:
+            db.upsert_team(conn, t["id"], t["abbreviation"], t["name"], t["location"])
+        conn.commit()
+        print(f"  {len(teams)} teams upserted.")
+        if not any([args.team, args.week, args.game, args.discover_only, args.detail_only]):
+            sys.exit(0)
 
     game_ids = None  # None means "all eligible"
 
