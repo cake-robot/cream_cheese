@@ -1,0 +1,950 @@
+"winprobability": [
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.313,
+      "secondsLeft": 0,
+      "playId": "401628483101849904"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.3928,
+      "secondsLeft": 0,
+      "playId": "401628483101849908"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.3022,
+      "secondsLeft": 0,
+      "playId": "401628483101849910"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.2958,
+      "secondsLeft": 0,
+      "playId": "401628483101854001"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.2896,
+      "secondsLeft": 0,
+      "playId": "401628483101854301"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.3455,
+      "secondsLeft": 0,
+      "playId": "401628483101854801"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.34,
+      "secondsLeft": 0,
+      "playId": "401628483101858101"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.3728,
+      "secondsLeft": 0,
+      "playId": "401628483101865301"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.3522,
+      "secondsLeft": 0,
+      "playId": "401628483101869501"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.3912,
+      "secondsLeft": 0,
+      "playId": "401628483101874001"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.3801,
+      "secondsLeft": 0,
+      "playId": "401628483101878101"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.3925,
+      "secondsLeft": 0,
+      "playId": "401628483101885901"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.353,
+      "secondsLeft": 0,
+      "playId": "401628483101889701"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.3465,
+      "secondsLeft": 0,
+      "playId": "401628483101897201"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.3119,
+      "secondsLeft": 0,
+      "playId": "401628483101899501"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.2984,
+      "secondsLeft": 0,
+      "playId": "401628483101905601"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.2851,
+      "secondsLeft": 0,
+      "playId": "401628483101909101"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.2651,
+      "secondsLeft": 0,
+      "playId": "401628483101915501"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.238,
+      "secondsLeft": 0,
+      "playId": "401628483101918401"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.2277,
+      "secondsLeft": 0,
+      "playId": "401628483101925101"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.2355,
+      "secondsLeft": 0,
+      "playId": "401628483101928201"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.2025,
+      "secondsLeft": 0,
+      "playId": "401628483101936001"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.2605,
+      "secondsLeft": 0,
+      "playId": "401628483101936003"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.2283,
+      "secondsLeft": 0,
+      "playId": "401628483101936005"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.2258,
+      "secondsLeft": 0,
+      "playId": "401628483101938101"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.2239,
+      "secondsLeft": 0,
+      "playId": "401628483101945501"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.2435,
+      "secondsLeft": 0,
+      "playId": "401628483101949801"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.2251,
+      "secondsLeft": 0,
+      "playId": "401628483101956101"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.2142,
+      "secondsLeft": 0,
+      "playId": "401628483101956801"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.2621,
+      "secondsLeft": 0,
+      "playId": "401628483101964501"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.2532,
+      "secondsLeft": 0,
+      "playId": "401628483101967101"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.2812,
+      "secondsLeft": 0,
+      "playId": "401628483101975601"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.2708,
+      "secondsLeft": 0,
+      "playId": "401628483101984101"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.3032,
+      "secondsLeft": 0,
+      "playId": "401628483101988101"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.3112,
+      "secondsLeft": 0,
+      "playId": "401628483101995401"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.3407,
+      "secondsLeft": 0,
+      "playId": "401628483101999801"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.2758,
+      "secondsLeft": 0,
+      "playId": "401628483101999803"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.3405,
+      "secondsLeft": 0,
+      "playId": "401628483101999805"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.3405,
+      "secondsLeft": 0,
+      "playId": "401628483101999806"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.3092,
+      "secondsLeft": 0,
+      "playId": "401628483102854001"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.3455,
+      "secondsLeft": 0,
+      "playId": "401628483102856901"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.1969,
+      "secondsLeft": 0,
+      "playId": "401628483102866301"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.2496,
+      "secondsLeft": 0,
+      "playId": "401628483102866303"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.2014,
+      "secondsLeft": 0,
+      "playId": "401628483102866305"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.2058,
+      "secondsLeft": 0,
+      "playId": "401628483102868701"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.1771,
+      "secondsLeft": 0,
+      "playId": "401628483102875801"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.1821,
+      "secondsLeft": 0,
+      "playId": "401628483102879201"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.1737,
+      "secondsLeft": 0,
+      "playId": "401628483102886801"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.1806,
+      "secondsLeft": 0,
+      "playId": "401628483102895201"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.1883,
+      "secondsLeft": 0,
+      "playId": "401628483102896501"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.1909,
+      "secondsLeft": 0,
+      "playId": "401628483102899801"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.1724,
+      "secondsLeft": 0,
+      "playId": "401628483102907501"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.1814,
+      "secondsLeft": 0,
+      "playId": "401628483102914201"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.182,
+      "secondsLeft": 0,
+      "playId": "401628483102916801"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.1746,
+      "secondsLeft": 0,
+      "playId": "401628483102916802"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.1574,
+      "secondsLeft": 0,
+      "playId": "401628483102919701"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.144,
+      "secondsLeft": 0,
+      "playId": "401628483102925902"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.1229,
+      "secondsLeft": 0,
+      "playId": "401628483102929501"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.0921,
+      "secondsLeft": 0,
+      "playId": "401628483102935601"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.0807,
+      "secondsLeft": 0,
+      "playId": "401628483102935603"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.0804,
+      "secondsLeft": 0,
+      "playId": "401628483102936202"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.0831,
+      "secondsLeft": 0,
+      "playId": "401628483102939901"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.0827,
+      "secondsLeft": 0,
+      "playId": "401628483102947901"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.0888,
+      "secondsLeft": 0,
+      "playId": "401628483102947902"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.0776,
+      "secondsLeft": 0,
+      "playId": "401628483102955501"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.095,
+      "secondsLeft": 0,
+      "playId": "401628483102959501"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.0736,
+      "secondsLeft": 0,
+      "playId": "401628483102966701"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.0912,
+      "secondsLeft": 0,
+      "playId": "401628483102974801"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.1017,
+      "secondsLeft": 0,
+      "playId": "401628483102979101"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.0963,
+      "secondsLeft": 0,
+      "playId": "401628483102979901"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.1002,
+      "secondsLeft": 0,
+      "playId": "401628483102984001"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.1131,
+      "secondsLeft": 0,
+      "playId": "401628483102986801"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.1087,
+      "secondsLeft": 0,
+      "playId": "401628483102989101"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.1073,
+      "secondsLeft": 0,
+      "playId": "401628483102996701"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.1199,
+      "secondsLeft": 0,
+      "playId": "401628483102997301"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.1775,
+      "secondsLeft": 0,
+      "playId": "401628483102998401"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.1825,
+      "secondsLeft": 0,
+      "playId": "401628483102998403"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.1785,
+      "secondsLeft": 0,
+      "playId": "401628483102999102"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.1751,
+      "secondsLeft": 0,
+      "playId": "401628483102999902"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.1184,
+      "secondsLeft": 0,
+      "playId": "401628483103849902"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.1466,
+      "secondsLeft": 0,
+      "playId": "401628483103849905"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.1446,
+      "secondsLeft": 0,
+      "playId": "401628483103857501"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.1345,
+      "secondsLeft": 0,
+      "playId": "401628483103864501"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.1267,
+      "secondsLeft": 0,
+      "playId": "401628483103867601"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.1358,
+      "secondsLeft": 0,
+      "playId": "401628483103874301"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.097,
+      "secondsLeft": 0,
+      "playId": "401628483103877801"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.1118,
+      "secondsLeft": 0,
+      "playId": "401628483103885101"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.1058,
+      "secondsLeft": 0,
+      "playId": "401628483103888401"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.1267,
+      "secondsLeft": 0,
+      "playId": "401628483103896601"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.1257,
+      "secondsLeft": 0,
+      "playId": "401628483103897401"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.1142,
+      "secondsLeft": 0,
+      "playId": "401628483103897402"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.1085,
+      "secondsLeft": 0,
+      "playId": "401628483103898102"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.0999,
+      "secondsLeft": 0,
+      "playId": "401628483103905301"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.088,
+      "secondsLeft": 0,
+      "playId": "401628483103909001"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.095,
+      "secondsLeft": 0,
+      "playId": "401628483103917101"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.1008,
+      "secondsLeft": 0,
+      "playId": "401628483103918502"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.0846,
+      "secondsLeft": 0,
+      "playId": "401628483103925501"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.0901,
+      "secondsLeft": 0,
+      "playId": "401628483103928601"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.0704,
+      "secondsLeft": 0,
+      "playId": "401628483103934801"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.0715,
+      "secondsLeft": 0,
+      "playId": "401628483103938201"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.0778,
+      "secondsLeft": 0,
+      "playId": "401628483103946001"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.0403,
+      "secondsLeft": 0,
+      "playId": "401628483103946501"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.0359,
+      "secondsLeft": 0,
+      "playId": "401628483103948501"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.0262,
+      "secondsLeft": 0,
+      "playId": "401628483103956301"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.0253,
+      "secondsLeft": 0,
+      "playId": "401628483103956303"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.0247,
+      "secondsLeft": 0,
+      "playId": "401628483103957002"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.0227,
+      "secondsLeft": 0,
+      "playId": "401628483103964101"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.0146,
+      "secondsLeft": 0,
+      "playId": "401628483103967701"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.0165,
+      "secondsLeft": 0,
+      "playId": "401628483103968301"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.02,
+      "secondsLeft": 0,
+      "playId": "401628483103969501"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.0131,
+      "secondsLeft": 0,
+      "playId": "401628483103976101"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.0106,
+      "secondsLeft": 0,
+      "playId": "401628483103979701"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.0074,
+      "secondsLeft": 0,
+      "playId": "401628483103987701"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.0064,
+      "secondsLeft": 0,
+      "playId": "401628483103996201"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.0058,
+      "secondsLeft": 0,
+      "playId": "401628483103996202"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.0011,
+      "secondsLeft": 0,
+      "playId": "401628483104854701"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.0037,
+      "secondsLeft": 0,
+      "playId": "401628483104854703"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.0019,
+      "secondsLeft": 0,
+      "playId": "401628483104854705"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.0014,
+      "secondsLeft": 0,
+      "playId": "401628483104857701"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.0012,
+      "secondsLeft": 0,
+      "playId": "401628483104865001"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.001,
+      "secondsLeft": 0,
+      "playId": "401628483104868901"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.001,
+      "secondsLeft": 0,
+      "playId": "401628483104876501"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.001,
+      "secondsLeft": 0,
+      "playId": "401628483104876901"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.001,
+      "secondsLeft": 0,
+      "playId": "401628483104877701"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.001,
+      "secondsLeft": 0,
+      "playId": "401628483104884103"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.001,
+      "secondsLeft": 0,
+      "playId": "401628483104889501"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.001,
+      "secondsLeft": 0,
+      "playId": "401628483104889502"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.001,
+      "secondsLeft": 0,
+      "playId": "401628483104889503"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.001,
+      "secondsLeft": 0,
+      "playId": "401628483104895601"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.0011,
+      "secondsLeft": 0,
+      "playId": "401628483104895603"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.001,
+      "secondsLeft": 0,
+      "playId": "401628483104895605"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.001,
+      "secondsLeft": 0,
+      "playId": "401628483104895606"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.001,
+      "secondsLeft": 0,
+      "playId": "401628483104895607"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.001,
+      "secondsLeft": 0,
+      "playId": "401628483104895608"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.001,
+      "secondsLeft": 0,
+      "playId": "401628483104895609"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.001,
+      "secondsLeft": 0,
+      "playId": "401628483104895610"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.001,
+      "secondsLeft": 0,
+      "playId": "401628483104917901"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.001,
+      "secondsLeft": 0,
+      "playId": "401628483104917903"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.001,
+      "secondsLeft": 0,
+      "playId": "401628483104917904"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.001,
+      "secondsLeft": 0,
+      "playId": "401628483104917905"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.001,
+      "secondsLeft": 0,
+      "playId": "401628483104917907"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.001,
+      "secondsLeft": 0,
+      "playId": "401628483104935801"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.001,
+      "secondsLeft": 0,
+      "playId": "401628483104935802"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.001,
+      "secondsLeft": 0,
+      "playId": "401628483104935803"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.001,
+      "secondsLeft": 0,
+      "playId": "401628483104956501"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.001,
+      "secondsLeft": 0,
+      "playId": "401628483104956502"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.001,
+      "secondsLeft": 0,
+      "playId": "401628483104956504"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.001,
+      "secondsLeft": 0,
+      "playId": "401628483104956506"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.001,
+      "secondsLeft": 0,
+      "playId": "401628483104956507"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.001,
+      "secondsLeft": 0,
+      "playId": "401628483104956508"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.001,
+      "secondsLeft": 0,
+      "playId": "401628483104956509"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.001,
+      "secondsLeft": 0,
+      "playId": "401628483104979901"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.001,
+      "secondsLeft": 0,
+      "playId": "401628483104979902"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.001,
+      "secondsLeft": 0,
+      "playId": "401628483104979903"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.001,
+      "secondsLeft": 0,
+      "playId": "401628483104988301"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0.001,
+      "secondsLeft": 0,
+      "playId": "401628483104988303"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0,
+      "secondsLeft": 0,
+      "playId": "401628483104999901"
+    },
+    {
+      "tiePercentage": 0,
+      "homeWinPercentage": 0,
+      "secondsLeft": 0,
+      "playId": "401628483104999903"
+    }
+  ]
