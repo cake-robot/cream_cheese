@@ -13,7 +13,7 @@ def find_team(name_query):
         t for t in teams
         if query in t["name"].lower()
         or query in t["abbreviation"].lower()
-        or query in t["location"].lower()
+        or query in t["school"].lower()
     ]
     if not matches:
         print("No teams found.")
@@ -163,7 +163,7 @@ def main():
         print("Seeding teams table from ESPN teams list...")
         teams = espn.fetch_teams_list()
         for t in teams:
-            db.upsert_team(conn, t["id"], t["abbreviation"], t["name"], t["location"])
+            db.upsert_team(conn, t["id"], t["abbreviation"], t["name"], t["school"])
         conn.commit()
         print(f"  {len(teams)} teams upserted.")
         if not any([args.team, args.week, args.game, args.discover_only, args.detail_only]):

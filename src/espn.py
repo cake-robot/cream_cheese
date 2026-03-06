@@ -47,7 +47,7 @@ def fetch_teams_list():
                 "id": t.get("id"),
                 "name": t.get("displayName", ""),
                 "abbreviation": t.get("abbreviation", ""),
-                "location": t.get("location", ""),
+                "school": t.get("location", ""),
             })
         page += 1
     return teams

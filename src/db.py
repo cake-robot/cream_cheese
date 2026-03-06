@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS teams (
     team_id      TEXT PRIMARY KEY,
     abbreviation TEXT NOT NULL,
     name         TEXT NOT NULL,
-    location     TEXT,
+    school     TEXT,
     updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -100,16 +100,16 @@ def init_db(path=None):
     return conn
 
 
-def upsert_team(conn, team_id, abbreviation, name, location=None):
+def upsert_team(conn, team_id, abbreviation, name, school=None):
     conn.execute("""
-        INSERT INTO teams (team_id, abbreviation, name, location)
+        INSERT INTO teams (team_id, abbreviation, name, school)
         VALUES (?, ?, ?, ?)
         ON CONFLICT(team_id) DO UPDATE SET
             abbreviation = excluded.abbreviation,
             name         = excluded.name,
-            location     = COALESCE(excluded.location, teams.location),
+            school     = COALESCE(excluded.school, teams.school),
             updated_at   = datetime('now')
-    """, (team_id, abbreviation, name, location))
+    """, (team_id, abbreviation, name, school))
 
 
 def upsert_game(conn, game):
