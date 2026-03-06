@@ -1,6 +1,6 @@
 import time
 import requests
-from config import ESPN_BASE, RATE_LIMIT_SECONDS
+from .config import ESPN_BASE, RATE_LIMIT_SECONDS
 
 _last_request_time = 0.0
 

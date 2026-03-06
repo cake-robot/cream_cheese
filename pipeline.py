@@ -1,9 +1,8 @@
 import argparse
 import sys
 
-import db
-import espn
-from config import DEFAULT_SEASON
+from src import db, espn
+from src.config import DEFAULT_SEASON
 
 
 def find_team(name_query):
