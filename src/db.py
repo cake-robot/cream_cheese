@@ -77,11 +77,21 @@ CREATE TABLE IF NOT EXISTS win_probability (
     home_score              INTEGER,
     away_score              INTEGER,
 
+    play_sequence           INTEGER,
+
     FOREIGN KEY (game_id) REFERENCES games(game_id),
     UNIQUE (game_id, play_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_wp_game_seq ON win_probability(game_id, sequence_number);
+
+CREATE TABLE IF NOT EXISTS game_metrics (
+    game_id     TEXT NOT NULL REFERENCES games(game_id),
+    metric_name TEXT NOT NULL,
+    raw_value   REAL NOT NULL,
+    norm_value  REAL NOT NULL,
+    PRIMARY KEY (game_id, metric_name)
+);
 """
 
 
@@ -96,8 +106,39 @@ def get_connection(path=None):
 def init_db(path=None):
     conn = get_connection(path)
     conn.executescript(SCHEMA)
+    # Add play_sequence column if it doesn't exist yet (migration for existing DBs)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(win_probability)")}
+    if "play_sequence" not in cols:
+        conn.execute("ALTER TABLE win_probability ADD COLUMN play_sequence INTEGER")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_wp_game_play_seq ON win_probability(game_id, play_sequence)")
     conn.commit()
     return conn
+
+
+def compute_play_sequences(conn, game_id=None):
+    """
+    Assign play_sequence (1-based chronological rank) to win_probability rows,
+    ordered by (clock_seconds_elapsed, id) per game.
+    """
+    if game_id:
+        game_ids = [game_id]
+    else:
+        game_ids = [r[0] for r in conn.execute(
+            "SELECT DISTINCT game_id FROM win_probability"
+        )]
+
+    for gid in game_ids:
+        rows = conn.execute(
+            "SELECT id FROM win_probability WHERE game_id = ? ORDER BY clock_seconds_elapsed, id",
+            (gid,),
+        ).fetchall()
+        conn.executemany(
+            "UPDATE win_probability SET play_sequence = ? WHERE id = ?",
+            [(rank, row[0]) for rank, row in enumerate(rows, 1)],
+        )
+
+    conn.commit()
+    return len(game_ids)
 
 
 def upsert_team(conn, team_id, abbreviation, name, school=None):
@@ -185,6 +226,20 @@ def upsert_win_probability(conn, rows):
 
 def update_watchability_score(conn, game_id, score):
     conn.execute("UPDATE games SET watchability_score = ? WHERE game_id = ?", (score, game_id))
+
+
+def upsert_game_metrics(conn, game_id, breakdown):
+    """Write per-metric breakdown rows. breakdown: {metric_name: {raw, normalized, weighted}}."""
+    conn.executemany("""
+        INSERT INTO game_metrics (game_id, metric_name, raw_value, norm_value)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(game_id, metric_name) DO UPDATE SET
+            raw_value  = excluded.raw_value,
+            norm_value = excluded.norm_value
+    """, [
+        (game_id, name, vals["raw"], vals["normalized"])
+        for name, vals in breakdown.items()
+    ])
 
 
 def mark_detail_fetched(conn, game_id, home_score, away_score, attendance, initial_home_wp):

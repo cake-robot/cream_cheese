@@ -152,6 +152,7 @@ def main():
     parser.add_argument("--score-only", action="store_true", help="Only run Phase 3 scoring")
     parser.add_argument("--skip-scoring", action="store_true", help="Skip Phase 3 scoring")
     parser.add_argument("--rescore", action="store_true", help="Re-score already-scored games")
+    parser.add_argument("--compute-sequences", action="store_true", help="Compute play_sequence for all WP rows")
     parser.add_argument("--find-team", type=str, metavar="NAME")
     parser.add_argument("--seed-teams", action="store_true", help="Populate teams table from ESPN teams list")
     args = parser.parse_args()
@@ -161,6 +162,12 @@ def main():
         sys.exit(0)
 
     conn = db.init_db()
+
+    if args.compute_sequences:
+        game_id = args.game if args.game else None
+        n = db.compute_play_sequences(conn, game_id=game_id)
+        print(f"play_sequence computed for {n} game(s).")
+        sys.exit(0)
 
     if args.score_only:
         scoring.score_games(conn, rescore=args.rescore)

@@ -20,12 +20,22 @@ def wp_volatility(wp_rows):
 
 
 def lead_changes(wp_rows):
-    """Count of times home_win_pct strictly crosses 0.50."""
-    wps = [r["home_win_pct"] for r in wp_rows]
+    """Count of times the leading team changes based on actual score."""
     count = 0
-    for i in range(len(wps) - 1):
-        if (wps[i] < 0.50 and wps[i + 1] > 0.50) or (wps[i] > 0.50 and wps[i + 1] < 0.50):
+    last_leader = None  # +1 = home leading, -1 = away leading
+    for r in wp_rows:
+        home, away = r["home_score"], r["away_score"]
+        if home is None or away is None:
+            continue
+        if home > away:
+            current = 1
+        elif away > home:
+            current = -1
+        else:
+            continue  # tied — don't update last_leader
+        if last_leader is not None and current != last_leader:
             count += 1
+        last_leader = current
     return count
 
 
@@ -112,7 +122,7 @@ def score_games(conn, game_ids=None, rescore=False):
         label = f"{row['away_team_abbr']} @ {row['home_team_abbr']}"
 
         wp_rows = conn.execute(
-            "SELECT home_win_pct FROM win_probability WHERE game_id = ? ORDER BY id",
+            "SELECT home_win_pct, home_score, away_score FROM win_probability WHERE game_id = ? ORDER BY play_sequence, id",
             (game_id,),
         ).fetchall()
 
@@ -122,6 +132,7 @@ def score_games(conn, game_ids=None, rescore=False):
 
         composite, breakdown = score_game(wp_rows)
         db.update_watchability_score(conn, game_id, composite)
+        db.upsert_game_metrics(conn, game_id, breakdown)
 
         parts = "  ".join(
             f"{name}: {v['raw']:.3f}→{v['normalized']:.3f}"
