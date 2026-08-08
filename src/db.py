@@ -118,7 +118,14 @@ def init_db(path=None):
 def compute_play_sequences(conn, game_id=None):
     """
     Assign play_sequence (1-based chronological rank) to win_probability rows,
-    ordered by (clock_seconds_elapsed, id) per game.
+    ordered by (period_number, sequence_number, id) per game.
+
+    period_number is coarse and reliably parsed per play, so it's trusted to
+    separate OT from regulation (the native WP-array order occasionally
+    misplaces OT plays far too early). Within a period, native array order
+    (sequence_number) is trusted over a re-derived clock_seconds_elapsed,
+    which was found to scramble otherwise-correctly-ordered drives whose
+    computed elapsed time ranges spuriously overlap.
     """
     if game_id:
         game_ids = [game_id]
@@ -129,7 +136,7 @@ def compute_play_sequences(conn, game_id=None):
 
     for gid in game_ids:
         rows = conn.execute(
-            "SELECT id FROM win_probability WHERE game_id = ? ORDER BY clock_seconds_elapsed, id",
+            "SELECT id FROM win_probability WHERE game_id = ? ORDER BY period_number, sequence_number, id",
             (gid,),
         ).fetchall()
         conn.executemany(
