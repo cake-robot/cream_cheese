@@ -3,7 +3,7 @@ import sqlite3
 from . import db
 
 # --- Normalization caps (tunable) ---
-MAX_VOLATILITY = 8.0
+MAX_VOLATILITY = 10.0
 MAX_LEAD_CHANGES = 14
 MAX_TEAM_PROFILE = 1.5
 
@@ -15,6 +15,9 @@ CLOSE_UPPER = 0.70
 RANK_TIER_TOP5 = 1.0
 RANK_TIER_TOP10 = 0.7
 RANK_TIER_TOP25 = 0.4
+
+# --- upset_risk power curve exponent ---
+UPSET_RISK_POWER = 2.5
 
 
 # --- Metric functions ---
@@ -89,14 +92,39 @@ def team_profile(home_rank, away_rank):
     return _rank_tier(home_rank) + _rank_tier(away_rank)
 
 
+def upset_risk(initial_home_wp, home_rank, away_rank):
+    """
+    How lopsided the pregame win probability was (0 = even matchup, 1 =
+    near-certain outcome), scaled down when neither team was actually ranked.
+
+    A skewed line between two unranked teams isn't a real "upset risk" in the
+    way a ranked favorite nearly losing is — it just means one unranked team
+    was somewhat better than another. Scaled by the better-ranked team's tier
+    (same tiers as team_profile): 0 if neither team is ranked, up to 1.0 if a
+    top-5 team is involved, regardless of which side was favored.
+
+    Raised to UPSET_RISK_POWER so credit ramps up slowly for modest favorites
+    (a 68/32 split reads as only mildly skewed) and accelerates only as the
+    game approaches a near-lock — linear (power 1) over-credited ordinary
+    ranked-vs-ranked favorites.
+    """
+    if initial_home_wp is None:
+        return 0.0
+    skew = abs(initial_home_wp - 0.5) * 2
+    quality = max(_rank_tier(home_rank), _rank_tier(away_rank))
+    return (skew ** UPSET_RISK_POWER) * quality
+
+
 # --- Metric registry ---
-# Each fn takes a context dict: {"wp_rows": [...], "home_rank": int|None, "away_rank": int|None}
+# Each fn takes a context dict: {"wp_rows": [...], "home_rank": int|None,
+# "away_rank": int|None, "initial_home_wp": float|None}
 
 METRICS = [
     {"name": "wp_volatility",    "fn": lambda ctx: wp_volatility(ctx["wp_rows"]),                    "weight": 1.0, "cap": MAX_VOLATILITY},
     {"name": "lead_changes",     "fn": lambda ctx: lead_changes(ctx["wp_rows"]),                      "weight": 1.0, "cap": MAX_LEAD_CHANGES},
     {"name": "time_spent_close", "fn": lambda ctx: time_spent_close(ctx["wp_rows"]),                  "weight": 1.0, "cap": None},
     {"name": "team_profile",     "fn": lambda ctx: team_profile(ctx["home_rank"], ctx["away_rank"]),  "weight": 1.0, "cap": MAX_TEAM_PROFILE},
+    {"name": "upset_risk",       "fn": lambda ctx: upset_risk(ctx["initial_home_wp"], ctx["home_rank"], ctx["away_rank"]), "weight": 1.0, "cap": None},
 ]
 
 
@@ -106,7 +134,8 @@ def score_game(context):
     """
     Compute composite watchability score for a single game.
 
-    context: {"wp_rows": [...], "home_rank": int|None, "away_rank": int|None}
+    context: {"wp_rows": [...], "home_rank": int|None, "away_rank": int|None,
+              "initial_home_wp": float|None}
     Returns (composite: float, breakdown: dict).
     breakdown keys: metric name → {raw, normalized, weighted}.
     """
@@ -138,7 +167,7 @@ def score_games(conn, game_ids=None, rescore=False):
     if game_ids:
         placeholders = ",".join("?" * len(game_ids))
         base = (
-            f"SELECT g.game_id, g.away_team_abbr, g.home_team_abbr, g.home_rank, g.away_rank "
+            f"SELECT g.game_id, g.away_team_abbr, g.home_team_abbr, g.home_rank, g.away_rank, g.initial_home_wp "
             f"FROM games g "
             f"WHERE g.completed = 1 AND g.detail_fetched = 1 "
             f"AND g.game_id IN ({placeholders})"
@@ -146,7 +175,7 @@ def score_games(conn, game_ids=None, rescore=False):
         params = list(game_ids)
     else:
         base = (
-            "SELECT g.game_id, g.away_team_abbr, g.home_team_abbr, g.home_rank, g.away_rank "
+            "SELECT g.game_id, g.away_team_abbr, g.home_team_abbr, g.home_rank, g.away_rank, g.initial_home_wp "
             "FROM games g "
             "WHERE g.completed = 1 AND g.detail_fetched = 1"
         )
@@ -175,7 +204,12 @@ def score_games(conn, game_ids=None, rescore=False):
             print(f"[{i}/{n}] {label} — no WP data, skipping.")
             continue
 
-        context = {"wp_rows": wp_rows, "home_rank": row["home_rank"], "away_rank": row["away_rank"]}
+        context = {
+            "wp_rows": wp_rows,
+            "home_rank": row["home_rank"],
+            "away_rank": row["away_rank"],
+            "initial_home_wp": row["initial_home_wp"],
+        }
         composite, breakdown = score_game(context)
         db.update_watchability_score(conn, game_id, composite)
         db.upsert_game_metrics(conn, game_id, breakdown)

@@ -200,6 +200,96 @@ CIN@KU, DUKE@CLEM, CONN@DEL) remain in the top 20 with `team_profile=0.000`, con
 the new metric adds credit without dominating the ranking for games that earn it purely
 on in-game drama.
 
+## 7. Added `upset_risk` metric — pregame favorite-skew credit (new feature)
+
+Requested: credit games where pregame win probability was most lopsided (one team
+heavily favored), independent of how the game actually went — the presence of live
+upset potential is itself part of watchability. `games.initial_home_wp` was already
+fully populated (931/931 games) and unused for scoring.
+
+**Design**: `upset_risk(initial_home_wp) = abs(initial_home_wp - 0.5) * 2`. Naturally
+bounded 0 (even matchup) to 1 (near-certain outcome) — no cap needed, same pattern as
+`time_spent_close`. Added to `METRICS` at weight 1.0, sourced via the same `context`
+dict plumbing as `team_profile` (`score_games()` now also selects `initial_home_wp`).
+
+**Verified both ends of the distribution before considering it done**:
+- High `upset_risk` + high overall watchability: `CAL@LOU` (unranked road team beats
+  #15 in OT), `LOU@MIA` (unranked road team beats #2), `GT@BC` (ranked GT barely
+  survives unranked BC by 2) — exactly the "heavy favorite, game stayed live" scenario
+  this is meant to catch.
+- High `upset_risk` alone (max-skew games in the dataset) are FCS-cupcake blowouts
+  (`GRAM@OSU` 0-70, `EIU@ALA` 0-56) that got full `upset_risk` credit but no actual
+  upset — confirmed these do NOT rank highly overall (rank 281/931 and 691/931
+  respectively), since `wp_volatility`/`lead_changes`/`time_spent_close` correctly stay
+  near-zero for a game that was never competitive. Additive, not dominant — same
+  behavior already established for `team_profile`.
+
+## 8. `wp_volatility` cap raised again — was concentrating at the top (fixed)
+
+After adding `team_profile` and `upset_risk`, the previous `MAX_VOLATILITY = 8.0`
+(set in fix #1) started showing a different problem: overall dataset saturation was
+still low (2.6%, 24/931 — looked fine in aggregate) but **saturation concentrates at
+the top of the ranking**, since high volatility correlates with high overall
+watchability. Checked directly: 32% of the top 25 games (8/25) were capped at
+`norm=1.0`, versus 2.6% dataset-wide — exactly where losing differentiation hurts
+most, the same shape of problem as fix #1 but revealed only once ranking-adjacent
+metrics existed to shift what surfaces at the top.
+
+**Fix**: raised `MAX_VOLATILITY` 8.0 → 10.0 (actual dataset max is 10.94, so this
+clips only the single most extreme game). Top-25 saturation drops from 8/25 to 1/25;
+dataset-wide from 24/931 to 4/931.
+
+**Takeaway for future cap tuning**: check saturation *within the top-N*, not just
+dataset-wide — a cap that looks fine in aggregate can still be actively suppressing
+differentiation exactly where the ranking is read.
+
+## 9. `upset_risk` reshaped to a power curve — was over-crediting modest favorites (fixed)
+
+After shipping `upset_risk` (fix #7) as a linear function of pregame skew, `IU@ORE`
+(#7 away vs #3 home, a 67.75/32.25 split — an ordinary ranked-vs-ranked favorite, not
+a real mismatch) landed at #1 overall, ahead of `ORE@PSU` — the actual top-10 OT
+showdown that started this whole investigation. Traced the specific number: a 68/32
+split is already worth 0.355 of the metric's max under a linear scale, which felt too
+generous for what's a fairly ordinary favorite between two ranked teams.
+
+**Explored the shape with the user** (percentile table + a published interactive
+chart plotting `skew^p` for p ∈ {1, 1.5, 2, 2.5, 3, 4} against real reference games)
+before picking `p = 2.5`: gives IU@ORE only 0.075 (down from 0.355) while a genuine
+90/10 mismatch still keeps solid credit (0.572) — a linear curve over-credits modest
+favorites, `p=3` compresses even real 80/20-90/10 mismatches too much.
+
+**Fix**: `upset_risk()` in `src/scoring.py` now raises the linear skew to
+`UPSET_RISK_POWER = 2.5` before returning. Verified in simulation before shipping:
+`ORE@PSU` reclaims #1, `IU@ORE` drops to #2/#3 depending on other concurrent changes,
+while games with real lopsided-but-live outcomes (`CAL@LOU`, unranked road team beats
+#15 in OT; `GT@BC`, ranked team barely survives unranked opponent) keep strong upset
+credit (0.635, 0.482) — the curve pulls back on ordinary favorites without flattening
+credit for genuine mismatches.
+
+## 10. `upset_risk` scaled by favorite quality — was crediting unranked-vs-unranked skew (fixed)
+
+Even after the power-curve fix (#9), `AFA@UNLV` (both teams unranked, final 48-51)
+sat at #10 overall with `upset_risk=0.414` — a real pregame skew, but between two
+unranked teams. Flagged as wrong in kind: a lopsided line only carries "upset risk"
+prestige when a genuinely good team is involved; two unranked teams with one favored
+over the other isn't the same thing as a ranked contender nearly losing.
+
+**Fix**: `upset_risk()` now multiplies the power-curved skew by a quality factor —
+`max(_rank_tier(home_rank), _rank_tier(away_rank))`, the same tier scale as
+`team_profile`. Neither team ranked → multiplier 0, upset credit disappears entirely
+regardless of how lopsided the pregame line was. A top-5 team involved → multiplier
+1.0, full credit preserved regardless of which side was favored (deliberately uses
+the *better-ranked* team of the two, not specifically "the favorite," so a ranked
+team nearly upset by an unranked opponent — `LOU@MIA`, #2 MIA — still gets full
+credit even though MIA was the favorite, not the underdog).
+
+**Verified before shipping**: `AFA@UNLV` → 0.000 (dropped out of the top 25
+entirely). `LOU@MIA` (#2 MIA nearly upset) and `UGA@FLA` (#5 UGA involved) stay
+unchanged at full credit, since a top-5 team's quality multiplier is 1.0.
+`CAL@LOU` (#15, top-25 tier) and `GT@BC` (#16, top-25 tier) get scaled down to 0.4×
+their prior value — still real credit, since #15/#16 are genuinely ranked, just not
+elite.
+
 ## Possible future refinement (not implemented)
 
 `header.competitions[0].competitors[].linescores` gives independent per-quarter
