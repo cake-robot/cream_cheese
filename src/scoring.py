@@ -6,6 +6,7 @@ from . import db
 MAX_VOLATILITY = 10.0
 MAX_LEAD_CHANGES = 14
 MAX_TEAM_PROFILE = 1.5
+MAX_LATE_VOLATILITY = 4.5
 
 # --- "Close game" WP band ---
 CLOSE_LOWER = 0.30
@@ -19,6 +20,16 @@ RANK_TIER_TOP25 = 0.4
 # --- upset_risk power curve exponent ---
 UPSET_RISK_POWER = 2.5
 
+# --- late_volatility: period_number >= LATE_PERIOD_THRESHOLD counts as "late game" (4 = Q4 and any OT) ---
+LATE_PERIOD_THRESHOLD = 4
+
+# --- clutch_finish: decisive score within the final minute of regulation ---
+REGULATION_SECONDS = 3600
+CLUTCH_FINISH_WINDOW_SECONDS = 60
+MAX_CLUTCH_FINISH = 1.5
+CLUTCH_FINISH_FIELD_GOAL_VALUE = 1.0
+CLUTCH_FINISH_NON_FIELD_GOAL_VALUE = 1.5
+
 
 # --- Metric functions ---
 
@@ -26,6 +37,67 @@ def wp_volatility(wp_rows):
     """Sum of absolute WP deltas across the game."""
     wps = [r["home_win_pct"] for r in wp_rows]
     return sum(abs(wps[i + 1] - wps[i]) for i in range(len(wps) - 1))
+
+
+def late_volatility(wp_rows):
+    """
+    Sum of absolute WP deltas restricted to the 4th quarter and any overtime
+    (period_number >= LATE_PERIOD_THRESHOLD). Same shape as wp_volatility,
+    windowed to reward drama that shows up specifically late in the game
+    rather than spread evenly (or front-loaded) across the whole thing.
+    """
+    wps = [r["home_win_pct"] for r in wp_rows]
+    periods = [r["period_number"] for r in wp_rows]
+    total = 0.0
+    for i in range(len(wps) - 1):
+        p = periods[i + 1]
+        if p is not None and p >= LATE_PERIOD_THRESHOLD:
+            total += abs(wps[i + 1] - wps[i])
+    return total
+
+
+def clutch_finish(wp_rows):
+    """
+    Credit for the game's decisive final score landing in the last minute of
+    regulation, worth more if it isn't a field goal.
+
+    Returns None (not applicable) for games that went to overtime -- a game
+    tied at the end of regulation had no decisive final-minute score by
+    definition, and this should exclude such games from this metric entirely
+    (see score_game()) rather than scoring them 0, which would structurally
+    penalize every OT game regardless of how it was decided.
+
+    Field-goal detection uses the score delta alone (a made FG is exactly 3
+    points; nothing else scores exactly 3) rather than fetching play-type
+    data -- reuses the same non-decreasing score sanitization as
+    lead_changes() to ignore ESPN score-field glitches.
+    """
+    periods = [r["period_number"] for r in wp_rows]
+    if any(p is not None and p > 4 for p in periods):
+        return None
+
+    home_score, away_score = 0, 0
+    last_change_elapsed = None
+    last_delta = None
+    for r in wp_rows:
+        h, a = r["home_score"], r["away_score"]
+        if h is not None and h > home_score:
+            last_delta = h - home_score
+            last_change_elapsed = r["clock_seconds_elapsed"]
+        if h is not None and h >= home_score:
+            home_score = h
+        if a is not None and a > away_score:
+            last_delta = a - away_score
+            last_change_elapsed = r["clock_seconds_elapsed"]
+        if a is not None and a >= away_score:
+            away_score = a
+
+    if last_change_elapsed is None:
+        return 0.0
+    if last_change_elapsed < REGULATION_SECONDS - CLUTCH_FINISH_WINDOW_SECONDS:
+        return 0.0
+
+    return CLUTCH_FINISH_FIELD_GOAL_VALUE if last_delta == 3 else CLUTCH_FINISH_NON_FIELD_GOAL_VALUE
 
 
 def lead_changes(wp_rows):
@@ -122,10 +194,22 @@ def upset_risk(initial_home_wp, home_rank, away_rank):
 METRICS = [
     {"name": "wp_volatility",    "fn": lambda ctx: wp_volatility(ctx["wp_rows"]),                    "weight": 1.0, "cap": MAX_VOLATILITY},
     {"name": "lead_changes",     "fn": lambda ctx: lead_changes(ctx["wp_rows"]),                      "weight": 1.0, "cap": MAX_LEAD_CHANGES},
-    {"name": "time_spent_close", "fn": lambda ctx: time_spent_close(ctx["wp_rows"]),                  "weight": 1.0, "cap": None},
+    {"name": "time_spent_close", "fn": lambda ctx: time_spent_close(ctx["wp_rows"]),                  "weight": 0.5, "cap": None},
     {"name": "team_profile",     "fn": lambda ctx: team_profile(ctx["home_rank"], ctx["away_rank"]),  "weight": 1.0, "cap": MAX_TEAM_PROFILE},
     {"name": "upset_risk",       "fn": lambda ctx: upset_risk(ctx["initial_home_wp"], ctx["home_rank"], ctx["away_rank"]), "weight": 1.0, "cap": None},
+    {"name": "late_volatility",  "fn": lambda ctx: late_volatility(ctx["wp_rows"]),                   "weight": 0.5, "cap": MAX_LATE_VOLATILITY},
+    {"name": "clutch_finish",    "fn": lambda ctx: clutch_finish(ctx["wp_rows"]),                      "weight": 1.0, "cap": MAX_CLUTCH_FINISH},
 ]
+
+METRICS_BY_NAME = {m["name"]: m for m in METRICS}
+
+
+def _normalize(metric_name, raw):
+    """Apply a metric's current cap to a raw value, same rule score_game() uses."""
+    cap = METRICS_BY_NAME[metric_name]["cap"]
+    if cap is None:
+        return min(raw, 1.0)
+    return min(raw / cap, 1.0)
 
 
 # --- Scoring ---
@@ -138,23 +222,123 @@ def score_game(context):
               "initial_home_wp": float|None}
     Returns (composite: float, breakdown: dict).
     breakdown keys: metric name → {raw, normalized, weighted}.
+
+    A metric fn may return None to signal "not applicable" for this game
+    (e.g. clutch_finish for a game that went to OT) -- such metrics are
+    excluded from both the numerator and the weight total, rather than
+    scored 0, so they don't structurally penalize games they don't apply to.
     """
     breakdown = {}
-    total_weight = sum(m["weight"] for m in METRICS)
+    total_weight = 0.0
     composite = 0.0
 
     for m in METRICS:
         raw = m["fn"](context)
+        if raw is None:
+            breakdown[m["name"]] = {"raw": None, "normalized": None, "weighted": None}
+            continue
         if m["cap"] is None:
             normalized = min(raw, 1.0)
         else:
             normalized = min(raw / m["cap"], 1.0)
         weighted = normalized * m["weight"]
         breakdown[m["name"]] = {"raw": raw, "normalized": normalized, "weighted": weighted}
+        total_weight += m["weight"]
         composite += weighted
 
     composite /= total_weight
     return composite, breakdown
+
+
+def recompute_composite(conn, game_id):
+    """
+    Recompute a game's composite watchability score purely from its already-
+    stored game_metrics rows (no wp_rows re-fetch), applying each metric's
+    current weight/cap. A metric with no stored row (went to OT, etc.) is
+    excluded from both the numerator and the weight total, matching
+    score_game()'s "not applicable" handling. Used after manual corrections,
+    where only one metric's value changed and the rest should be reused as-is.
+    """
+    total_weight = 0.0
+    composite = 0.0
+    for row in conn.execute(
+        "SELECT metric_name, norm_value FROM game_metrics WHERE game_id = ?", (game_id,)
+    ):
+        m = METRICS_BY_NAME.get(row["metric_name"])
+        if m is None:
+            continue
+        composite += row["norm_value"] * m["weight"]
+        total_weight += m["weight"]
+    return composite / total_weight if total_weight else 0.0
+
+
+def _apply_one_correction(conn, game_id, metric_name, raw):
+    """Shared by apply_corrections()'s two sources (hand-written
+    corrections.py entries and auto-trusted Fox reconciliation diffs).
+    Returns False (skip) if the game hasn't been scored yet."""
+    exists = conn.execute(
+        "SELECT 1 FROM games WHERE game_id = ? AND watchability_score IS NOT NULL", (game_id,)
+    ).fetchone()
+    if not exists:
+        return False
+    norm = _normalize(metric_name, raw)
+    conn.execute(
+        """
+        INSERT INTO game_metrics (game_id, metric_name, raw_value, norm_value)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(game_id, metric_name) DO UPDATE SET
+            raw_value  = excluded.raw_value,
+            norm_value = excluded.norm_value
+        """,
+        (game_id, metric_name, raw, norm),
+    )
+    new_composite = recompute_composite(conn, game_id)
+    conn.execute("UPDATE games SET watchability_score = ? WHERE game_id = ?", (new_composite, game_id))
+    return True
+
+
+def apply_corrections(conn):
+    """
+    Applies two sources of overrides to already-scored games, recomputing
+    norm_value from each metric's current cap and the game's overall
+    watchability_score:
+
+    1. corrections.CORRECTIONS -- hand-verified overrides from individually
+       investigated games (e.g. UTEP@NMSU, USF@FLA), kept as a historical/
+       always-on record.
+    2. fox_score_corrections, tier='diff' rows -- Fox-derived values, applied
+       automatically. Trusted by default: reconciliation only ever writes a
+       'diff' row for a game whose own Fox ladder already reconciles with
+       the official box score (see fox_reconcile.diff_game -- anything where
+       Fox's own data doesn't check out is tier='unusable' and gets no row
+       here at all, leaving ESPN's original value untouched). 'diff' rows
+       are the visible, queryable record of every ESPN<->Fox disagreement
+       being corrected -- SELECT * FROM fox_score_corrections to review any
+       of them by hand.
+
+    Silently skips a correction if its game hasn't been scored yet. Runs
+    automatically at the end of score_games() so corrections survive a full
+    rescore/re-pull rather than needing to be reapplied by hand.
+    """
+    from . import corrections as corrections_module
+
+    applied = 0
+    for c in corrections_module.CORRECTIONS:
+        if _apply_one_correction(conn, c["game_id"], c["metric_name"], c["raw_value"]):
+            applied += 1
+
+    fox_rows = conn.execute(
+        "SELECT game_id, metric_name, fox_value FROM fox_score_corrections WHERE tier = 'diff'"
+    ).fetchall()
+    for r in fox_rows:
+        if _apply_one_correction(conn, r["game_id"], r["metric_name"], r["fox_value"]):
+            applied += 1
+
+    conn.commit()
+    if applied:
+        print(f"Applied {applied} correction(s) ({len(corrections_module.CORRECTIONS)} manual, "
+              f"{len(fox_rows)} Fox-derived).")
+    return applied
 
 
 def score_games(conn, game_ids=None, rescore=False):
@@ -196,7 +380,7 @@ def score_games(conn, game_ids=None, rescore=False):
         label = f"{row['away_team_abbr']} @ {row['home_team_abbr']}"
 
         wp_rows = conn.execute(
-            "SELECT home_win_pct, home_score, away_score FROM win_probability WHERE game_id = ? ORDER BY play_sequence, id",
+            "SELECT home_win_pct, home_score, away_score, period_number, clock_seconds_elapsed FROM win_probability WHERE game_id = ? ORDER BY play_sequence, id",
             (game_id,),
         ).fetchall()
 
@@ -215,10 +399,12 @@ def score_games(conn, game_ids=None, rescore=False):
         db.upsert_game_metrics(conn, game_id, breakdown)
 
         parts = "  ".join(
-            f"{name}: {v['raw']:.3f}→{v['normalized']:.3f}"
+            f"{name}: {v['raw']:.3f}→{v['normalized']:.3f}" if v["raw"] is not None else f"{name}: n/a"
             for name, v in breakdown.items()
         )
         print(f"[{i}/{n}] {label}  score={composite:.4f}  [{parts}]")
 
     conn.commit()
     print(f"Scoring complete: {n} games scored.")
+
+    apply_corrections(conn)

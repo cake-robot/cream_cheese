@@ -290,6 +290,193 @@ unchanged at full credit, since a top-5 team's quality multiplier is 1.0.
 their prior value — still real credit, since #15/#16 are genuinely ranked, just not
 elite.
 
+## 11. `time_spent_close` weight halved — was crowding out spiky-but-exciting games (design change)
+
+Concern: a game that's exciting through big momentum swings or a near-upset, but
+doesn't linger in the 0.30–0.70 WP band, was getting buried relative to games with
+sustained closeness — `lead_changes` already captures drama shape to some degree, so
+equal weighting (1.0, same as the other 4 metrics) was arguably double-counting
+"closeness" as a concept.
+
+Concrete example surfaced while simulating candidate weights: `401752733`
+(WSU@MISS) — unranked Washington State nearly upsetting #4 Ole Miss on the road
+(21-24) — has `time_spent_close=0.097` (WP rarely sat in the close band) despite 4
+real lead changes and `upset_risk=0.920`. At equal weighting this game doesn't crack
+the top 30; the WP likely swung through the close band quickly during scoring plays
+rather than lingering there.
+
+**Simulated three weights (1.0 / 0.5 / 0.25) against the full 2025 top-15 before
+picking one** — the real tradeoff: `OU@ALA`, a genuine wire-to-wire nail-biter
+(`close%=0.903`), drops from #4 (weight 1.0) to #11 (weight 0.25) as the weight
+drops, since true sustained-closeness loses ranking power along with the spiky
+games this was meant to fix. `weight=0.5` was the middle ground chosen: `OU@ALA`
+holds at #8, while `WSU@MISS`-style games start surfacing (#14) without being
+pushed to the top.
+
+**Fix**: `time_spent_close`'s entry in `METRICS` (`src/scoring.py`) weight changed
+1.0 → 0.5. Composite is now a weighted average over 4.5 total weight instead of 5.0.
+Verified post-rescore against the simulation: top-15 matches exactly.
+
+## Data note: 2024 season pulled
+
+Ran the full pipeline for `season=2024` (previously only 2025 was loaded) to get a
+second season for cross-validation and qualitative comparison against expert "best
+games" lists. 919 games discovered, 918 completed/detail-fetched, 897 scored (21 games
+have no ESPN win-probability data, same known category as 2025's gap — not an error).
+One game (`LIB@APP`, 2024-09-28) is discovered but not marked `completed` despite
+`status_state='post'` — plausibly a Hurricane Helene-related cancellation given the
+date and Appalachian State's location, not a pipeline bug. Both seasons now coexist in
+`data/cfb.db`, distinguished by `games.season_year`.
+
+## 12. Qualitative validation against expert "best games" lists, and `late_volatility` (new metric)
+
+Compared the algorithm's top-ranked games against real "instant classic" lists (ESPN's
+Bill Connelly 100-best, Athlon, CFB Select, CFRA "greatest game of the year") for both
+seasons. Several strong hits (`IU@ORE` #6, `TENN@MSST` top-25, `CONN@DEL` #66/1828)
+confirmed the algorithm is generally sound. Two informative misses:
+
+- **`GT@UGA` (2024, the legendary 8-OT game — 2nd longest in CFB history) ranked only
+  #20/1828.** Investigated directly against ESPN's raw API: our stored data caps at
+  `period=6` when the real game reached `period=12`. ESPN's own `drives` data has
+  actual gaps (periods 7, 8, 10, 11 missing entirely) and the score field is frozen at
+  an impossible `50-42` (exceeds the real final of 44-42) for dozens of consecutive
+  plays during the alternating-2-point-conversion shootout phase (confirmed this
+  format directly from play text/team-alternation — matches current NCAA OT rules).
+  This is a genuine ESPN data-quality gap for this specific extreme-length game, not
+  a pipeline bug — no clean fix without a different ESPN data source.
+- **`MRSH@UL` (2025, Louisiana erases a 17-point 4th-quarter deficit, wins in 2OT) and
+  `USF@FLA` (2025, USF upsets #13 Florida on a last-second FG) ranked #297 and #437.**
+  Traced their actual `home_win_pct` series rather than assuming — both show real,
+  substantial late swings (not muted), and both score above the dataset median on
+  `wp_volatility`. The actual cause: `team_profile`/`upset_risk` are structurally zero
+  for unranked-vs-unranked games (2 of 5 metrics), capping the theoretical max
+  composite for such games at ~0.556 — below where ranked-team games already sit.
+  Not a missing metric, a structural ceiling.
+
+**Follow-up investigation** (charted `MRSH@UL`, `USF@FLA` against `WKU@LT` — the
+highest raw `wp_volatility` in the top 30 — and `BOIS@USF`, a smooth one-directional
+blowout) confirmed `wp_volatility` measures total path length (sum of `|Δwp|`), not
+net displacement — a steady one-directional swing (`BOIS@USF`, vol=2.11) scores far
+lower than an oscillating game covering similar net ground (`WKU@LT`, vol=10.94),
+purely because oscillation retraces the same distance repeatedly. Deep-dived
+`WKU@LT` specifically: none of its top-15 individual swings are turnovers or chunk
+plays — the two biggest are OT snaps at `2nd/3rd & Goal` where even a stuffed run
+carries huge leverage, and ~26% of the game's total volatility comes from a scoreless
+Q3 stretch driven by field-position churn (punts, third-down conversions/failures),
+not points. Confirmed `WKU@LT`'s visibly "bouncier" chart shape isn't a data quirk:
+across all 8 example games, WP swings are systematically larger when the score is
+near a true toss-up (mean delta when `0.3≤wp≤0.7` exceeds mean delta outside that
+band, in every single game checked) — and `WKU@LT` spent 75.4% of its plays in that
+high-sensitivity band, the highest of the set, so its overall bounciness is a genuine
+reflection of being persistently, unusually close, not a bug.
+
+**New metric — `late_volatility`**: from the above, decided to add a metric that
+specifically credits volatility concentrated late in the game. Same formula as
+`wp_volatility` (`sum(|Δwp|)`), windowed to `period_number >= LATE_PERIOD_THRESHOLD`
+(4 = Q4 through any OT). `MAX_LATE_VOLATILITY = 4.5` (3.1% dataset-wide saturation,
+consistent with other caps).
+
+Checked correlation with `wp_volatility` before weighting: **r = 0.886** — a real
+double-counting risk, since a game with high overall volatility is likely to have
+some in Q4/OT too just by association. Simulated weight 1.0 vs 0.5 before deciding;
+picked **0.5**, same treatment `time_spent_close` got for the same reason. Post-fix,
+`GT@UGA` climbs to #13 overall (from #20) despite its known-incomplete OT data, and
+`NIU@ND` (2024's famous Week 1 upset of #5 Notre Dame) enters the top 15 — validated
+against the simulation exactly after rescoring.
+
+## 13. New metric — `clutch_finish`, plus a "not applicable" mechanism in `score_game()`
+
+Requested: credit games decided by a score in the final minute of regulation, worth
+1.5x if that score isn't a field goal — but explicitly *without* penalizing OT games
+for not having one, since a game that reached OT by definition wasn't decided by a
+final-minute regulation score, and simply scoring it 0 would recreate the same
+structural-ceiling problem found in fix #12 (`team_profile`/`upset_risk` zeroing out
+40% of the composite for unranked-vs-unranked games).
+
+**Architecture change**: `score_game()` (`src/scoring.py`) now treats a metric
+function returning `None` as "not applicable" — excluded from *both* the numerator
+and the weight total for that game, rather than included as a 0. This is a general
+mechanism, not specific to `clutch_finish`; `db.upsert_game_metrics()` correspondingly
+skips writing a `game_metrics` row for `None` entries (no row = not applicable,
+distinct from a row scored 0). Verified directly: `ORE@PSU` (went to OT) has no
+`clutch_finish` row in `game_metrics` and stayed at #2 overall, unaffected.
+
+**Detection approach**: field-goal vs. not is inferred from the score delta alone (a
+made FG is exactly 3 points; nothing else scores exactly 3) rather than fetching
+play-type data — reuses the same non-decreasing-score sanitization as `lead_changes`.
+Verified against `IU@PSU`'s known finish (Indiana's go-ahead TD with 36 seconds left):
+delta=7 at `clock_seconds_elapsed=3564` (3600-3564=36s remaining) → correctly
+identified as a non-field-goal clutch finish, `raw=1.5`.
+
+**Values**: `CLUTCH_FINISH_WINDOW_SECONDS=60` (final minute of regulation),
+`CLUTCH_FINISH_FIELD_GOAL_VALUE=1.0`, `CLUTCH_FINISH_NON_FIELD_GOAL_VALUE=1.5`,
+`MAX_CLUTCH_FINISH=1.5` (so FG→norm 0.667, non-FG→norm 1.0, preserving the exact 1.5x
+ratio). Weight 1.0.
+
+**Distribution** (1750/1828 games applicable, 78 excluded for going to OT): 1426 no
+clutch finish, 89 field-goal finishes, 235 non-field-goal finishes. `MIA@MISS` (a
+non-FG walk-off) jumps to #1 overall; OT games (`ORE@PSU`, `UGA@TEX`, `GT@UGA`, etc.)
+remain high in the rankings unaffected, confirming the "don't penalize OT" requirement
+holds in practice, not just in the isolated `ORE@PSU` check.
+
+## 14. `clutch_finish` FG/non-FG bug found and fixed via a persistent corrections registry
+
+Spot-checking `USF@FLA`'s `clutch_finish` value against the known story (a walk-off
+field goal) found it stored as `raw=1.5` (non-field-goal) — wrong. Root cause: a
+phantom score row (`17`, between the real `15` after a safety and the real `18` after
+the FG) fooled the delta-based FG detector (`delta==3` => field goal) into reading
+`delta=1` instead of the true `delta=3`.
+
+**Scoped the blast radius** before fixing anything: scanned all 7 games whose
+clutch-window final delta fell outside the plausible single-play set `{2,3,6,7,8}`.
+Cross-checked each against ESPN's `scoringType` field (ground truth, same endpoint
+already fetched during Phase 2 — just a field we don't currently store). Only 2 of the
+7 were actually misclassified in outcome (`UTEP@NMSU`, `USF@FLA` — both true field
+goals stored as non-FG); the other 5 happened to land on the correct classification
+anyway, since the detector defaults to "non-FG" for any delta != 3, and all 5 of those
+were genuine touchdowns.
+
+**Broader scan, prompted by "can we see impossible diffs in general"**: across *all*
+score transitions (not just the clutch window), 255 of 16,610 transitions (1.5%) have
+a delta outside `{2,3,6,7,8}`, spanning 197 distinct games (10.8% of the dataset).
+Broke this down further: `delta=1` (90 instances) has no valid standalone explanation
+given TD+PAT are always bundled into a single row in this data — high-confidence
+corruption. Other deltas (4, 5, 9, 10, 14, 21, 28...) are mostly *ambiguous*, not
+necessarily corrupted — several are suspiciously clean multiples of 7 (14=2×7, 21=3×7,
+28=4×7), suggesting ESPN's feed sometimes just skips generating a win-probability
+snapshot between two real scoring plays, combining them in our diff rather than
+fabricating a wrong value. Of the 90 confident `delta=1` cases, only 10 land at a
+moment where the phantom point actually flips who's leading or creates a false tie
+(most land when the game state was already clearly decided, so the bad point doesn't
+change any conclusion). One of those 10 (`401628469`, BOIS@ORE) was individually
+ground-truthed: ESPN's own data explicitly flags the offending play `scoringPlay=False`
+(a touchback kickoff, nothing scored) while its `homeScore` field is still incorrectly
+incremented by 1 — a clean, fully-confirmed example of the failure mode. `lead_changes`
+corrections for the other 9 are scoped but not yet applied (pending individual
+verification, unlike the 2 clutch_finish fixes which are ground-truth confirmed).
+
+**Also found while investigating `BOIS@ORE`**: the entire 2024 season had `NULL`
+`play_sequence` for all 159,235 `win_probability` rows — `--compute-sequences` was
+never run after the `pipeline.py --season 2024` pull (it's a separate manual step, not
+part of the automatic discover→fetch→score flow). Every 2024 metric had silently been
+computed using raw insertion order instead of the `(period_number, sequence_number)`
+fix from earlier this session. Fixed by rerunning `--compute-sequences` (now covers
+both seasons) and rescoring. Process gap to remember for any future season pull:
+`--compute-sequences` must be run manually after `--season <year>`, it is not automatic.
+
+**Fix — persistent corrections registry**: rather than hand-patching the database
+(which a future `--rescore` or a from-scratch re-pull would silently wipe out), added
+`src/corrections.py` — a version-controlled `CORRECTIONS` list of `{game_id,
+metric_name, raw_value, reason}` entries, each requiring a ground-truth-verified
+`reason`. `scoring.apply_corrections()` applies the list automatically at the end of
+every `score_games()` run: recomputes `norm_value` from the metric's *current* cap
+(never hand-supplied, so a future cap change re-normalizes corrections consistently)
+and recomputes the game's overall `watchability_score` via the new
+`scoring.recompute_composite()` helper (reads only already-stored `game_metrics` rows
+— no wp_rows re-fetch needed, since only one metric changed). Verified: a full
+`--rescore` printed `"Applied 2 manual correction(s)"` and both `UTEP@NMSU`/`USF@FLA`
+landed on the corrected values automatically, with no manual step required.
+
 ## Possible future refinement (not implemented)
 
 `header.competitions[0].competitors[].linescores` gives independent per-quarter
