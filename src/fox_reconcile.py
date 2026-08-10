@@ -184,13 +184,21 @@ def diff_game(conn, game_id):
     fox_final = {"home": 0, "away": 0}
     for step in fox_ladder:
         fox_final[step["team"]] = step["new_value"]
-    if fox_final["home"] != game["home_score"] or fox_final["away"] != game["away_score"]:
+    # Checked against the box score in either orientation, not just ESPN's
+    # own home/away labeling: a neutral-site game has no true home team, and
+    # ESPN and Fox don't always agree on which side gets the label (see
+    # fox_match.match_game()). lead_changes/clutch_finish are computed from
+    # Fox's own ladder without ever referencing ESPN's labels, so a flipped
+    # orientation doesn't affect them -- this check just needs to allow it.
+    straight = fox_final["home"] == game["home_score"] and fox_final["away"] == game["away_score"]
+    flipped = fox_final["home"] == game["away_score"] and fox_final["away"] == game["home_score"]
+    if not (straight or flipped):
         return {
             "game_id": game_id, "fox_event_id": fox_event_id, "tier": "unusable",
             "diffs": {},
             "notes": (
                 f"Fox final {fox_final['away']}-{fox_final['home']} != box score "
-                f"{game['away_score']}-{game['home_score']}"
+                f"{game['away_score']}-{game['home_score']} (either orientation)"
             ),
         }
 
@@ -217,13 +225,13 @@ def diff_game(conn, game_id):
     }
 
 
-def _games_in_scope(conn, season, week):
+def _games_in_scope(conn, season, week, season_type=2):
     if season is not None and week is not None:
         return [r[0] for r in conn.execute("""
             SELECT game_id FROM games
-            WHERE season_year = ? AND week = ? AND season_type = 2
+            WHERE season_year = ? AND week = ? AND season_type = ?
               AND game_id IN (SELECT game_id FROM fox_games)
-        """, (season, week))]
+        """, (season, week, season_type))]
     return [r[0] for r in conn.execute("SELECT game_id FROM fox_games")]
 
 
@@ -255,11 +263,11 @@ def _persist(conn, r):
         ])
 
 
-def reconcile_all(conn, season=None, week=None):
+def reconcile_all(conn, season=None, week=None, season_type=2):
     """diff_game() over every matched game in scope, persisting each result
     to fox_score_corrections as it goes. Returns the list of records."""
     results = []
-    for game_id in _games_in_scope(conn, season, week):
+    for game_id in _games_in_scope(conn, season, week, season_type):
         r = diff_game(conn, game_id)
         if r:
             _persist(conn, r)
@@ -268,8 +276,8 @@ def reconcile_all(conn, season=None, week=None):
     return results
 
 
-def print_report(conn, season=None, week=None):
-    results = reconcile_all(conn, season=season, week=week)
+def print_report(conn, season=None, week=None, season_type=2):
+    results = reconcile_all(conn, season=season, week=week, season_type=season_type)
     counts = {}
     for r in results:
         counts[r["tier"]] = counts.get(r["tier"], 0) + 1

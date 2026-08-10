@@ -51,11 +51,11 @@ FOX_SCHOOL_ALIASES = {
 _ALIAS_NORM = {_normalize_school(k): _normalize_school(v) for k, v in FOX_SCHOOL_ALIASES.items()}
 
 
-def sync_team_crosswalk(conn, season=None, week=None):
+def sync_team_crosswalk(conn, season=None, week=None, season_type=2):
     """
     1. Seed the ESPN side of team_crosswalk for every distinct team_id
-       appearing in `games` (scoped to season/week if given, else all
-       teams) -- never clobbers an already-resolved fox_* match.
+       appearing in `games` (scoped to season/week/season_type if given,
+       else all teams) -- never clobbers an already-resolved fox_* match.
     2. Auto-match every crosswalk row with fox_team_id IS NULL against
        fox_teams (harvested as a byproduct of every Fox header parse) via
        _normalize_school() equality, direct or through FOX_SCHOOL_ALIASES.
@@ -66,8 +66,8 @@ def sync_team_crosswalk(conn, season=None, week=None):
             SELECT DISTINCT t.team_id, t.abbreviation, t.school, t.name
             FROM teams t
             JOIN games g ON t.team_id IN (g.home_team_id, g.away_team_id)
-            WHERE g.season_year = ? AND g.week = ? AND g.season_type = 2
-        """, (season, week)).fetchall()
+            WHERE g.season_year = ? AND g.week = ? AND g.season_type = ?
+        """, (season, week, season_type)).fetchall()
     else:
         rows = conn.execute("SELECT team_id, abbreviation, school, name FROM teams").fetchall()
 
@@ -151,6 +151,16 @@ def match_game(conn, game_id):
     Exact-match a games row to a fox_events row via team_crosswalk's
     fox_team_id on both sides + date within +-1 day. No string comparison
     at this layer at all. Returns the matched fox_event_id, or None.
+
+    Checks both home/away orderings, not just the one ESPN uses: a neutral-
+    site game has no true home team, and ESPN and Fox don't always agree on
+    which side gets the label -- confirmed on 3 separate 2024 bowls/showcase
+    games (USC@LSU at Allegiant Stadium, the Myrtle Beach Bowl, the Las
+    Vegas Bowl), all with the designation flipped between the two sources
+    despite being the same two teams on the same date. lead_changes/
+    clutch_finish are computed from Fox's own ladder and don't reference
+    ESPN's home/away labels at all, so a flipped match doesn't affect them --
+    only ties the game_id to the right fox_event_id.
     """
     game = conn.execute(
         "SELECT game_id, home_team_id, away_team_id, game_date FROM games WHERE game_id = ?",
@@ -170,11 +180,16 @@ def match_game(conn, game_id):
     game_date = game["game_date"][:10]
     candidate = conn.execute("""
         SELECT fox_event_id, pbp_fetched FROM fox_events
-        WHERE home_fox_team_id = ? AND away_fox_team_id = ?
+        WHERE ((home_fox_team_id = ? AND away_fox_team_id = ?)
+            OR (home_fox_team_id = ? AND away_fox_team_id = ?))
           AND event_date IS NOT NULL
           AND date(event_date) BETWEEN date(?, '-1 day') AND date(?, '+1 day')
         LIMIT 1
-    """, (ids["home_fox_id"], ids["away_fox_id"], game_date, game_date)).fetchone()
+    """, (
+        ids["home_fox_id"], ids["away_fox_id"],
+        ids["away_fox_id"], ids["home_fox_id"],
+        game_date, game_date,
+    )).fetchone()
     if not candidate:
         return None
 
@@ -195,12 +210,12 @@ def match_game(conn, game_id):
     return fox_event_id
 
 
-def match_all_games(conn, season=None, week=None):
+def match_all_games(conn, season=None, week=None, season_type=2):
     """match_game() over every games row in scope. Returns (attempted, matched)."""
     if season is not None and week is not None:
         rows = conn.execute(
-            "SELECT game_id FROM games WHERE season_year = ? AND week = ? AND season_type = 2",
-            (season, week),
+            "SELECT game_id FROM games WHERE season_year = ? AND week = ? AND season_type = ?",
+            (season, week, season_type),
         ).fetchall()
     else:
         rows = conn.execute("SELECT game_id FROM games").fetchall()

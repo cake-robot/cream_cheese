@@ -1,5 +1,6 @@
 import argparse
 import sys
+from datetime import date
 
 from src import db, espn, fox, fox_match, fox_reconcile, scoring
 from src.config import DEFAULT_SEASON, FOX_SEASON_ANCHORS, FOX_SCAN_OVERRUN
@@ -310,36 +311,70 @@ def _fox_window(conn, args):
     return row[0][:10], row[1][:10]
 
 
-def _fox_pick_anchor(conn, args, window_start, window_end):
+def _fox_pick_anchor(conn, args, window_start, window_end, fetch_threshold_days=10):
     """
-    Prefer the closest already-probed event to the target window over the
-    static per-season seed: FOX_SEASON_ANCHORS is only meant to bootstrap
-    the very first pull ever run for a season. Every pull after that should
-    start from the edge of what's already known, since consecutive weeks'
-    ID ranges sit close together -- restarting from a week-1 anchor for,
-    say, week 5 would need an overrun large enough to bridge the entire gap
-    in one run, which isn't a reasonable thing to size for.
+    Pick whichever candidate anchor is genuinely closest to the target
+    window -- the nearest already-probed events on either side, and the
+    season's static seed (FOX_SEASON_ANCHORS) -- rather than accepting the
+    first "close enough" already-known candidate under an arbitrary
+    threshold.
+
+    That looser approach was tried and failed twice on 2024: (1) with no
+    proximity check at all, a leftover 2025 event satisfied the raw SQL
+    date-string comparison (any 2025 date is textually >= any 2024 date)
+    and got picked as anchor for every regular-season week, storing zero
+    real games while still reporting success; (2) with a 45-day threshold,
+    an already-known *same-season* event 26 days outside the target week
+    passed the check and got picked over the static seed (which sat
+    squarely inside the actual window) -- 26 days is short enough to look
+    "close enough," but too far for FOX_SCAN_OVERRUN's K=25 to bridge and
+    still fully explore the target week, so the walk found only a sliver
+    of it. Comparing actual gap-in-days across every option, including the
+    static seed, and taking the minimum avoids both failure modes without
+    depending on a threshold tuned by hand for one season's ID spacing.
+
+    The static seed's own date isn't known without fetching it, so that
+    fetch only happens when no already-known candidate is already close
+    (<= fetch_threshold_days) -- once a season is well underway, adjacent
+    weeks' own data is already close enough and this costs nothing extra.
     """
     if args.fox_anchor:
         return args.fox_anchor
 
+    def _gap(iso_date, edge):
+        return abs((date.fromisoformat(iso_date) - date.fromisoformat(edge)).days)
+
+    candidates = []  # (gap_days, fox_event_id)
+
     row = conn.execute("""
-        SELECT fox_event_id FROM fox_events
+        SELECT fox_event_id, event_date FROM fox_events
         WHERE event_date IS NOT NULL AND event_date <= ?
         ORDER BY event_date DESC, fox_event_id DESC LIMIT 1
     """, (window_end,)).fetchone()
     if row:
-        return row["fox_event_id"]
+        candidates.append((_gap(row["event_date"], window_end), row["fox_event_id"]))
 
     row = conn.execute("""
-        SELECT fox_event_id FROM fox_events
+        SELECT fox_event_id, event_date FROM fox_events
         WHERE event_date IS NOT NULL AND event_date >= ?
         ORDER BY event_date ASC, fox_event_id ASC LIMIT 1
     """, (window_start,)).fetchone()
     if row:
-        return row["fox_event_id"]
+        candidates.append((_gap(row["event_date"], window_start), row["fox_event_id"]))
 
-    return FOX_SEASON_ANCHORS.get(args.season)
+    static_id = FOX_SEASON_ANCHORS.get(args.season)
+    if static_id is not None and (not candidates or min(c[0] for c in candidates) > fetch_threshold_days):
+        payload = fox.fetch_event(static_id)
+        if payload:
+            static_date = fox.parse_header(payload)["event_date"]
+            if static_date:
+                gap = min(_gap(static_date, window_start), _gap(static_date, window_end))
+                candidates.append((gap, static_id))
+
+    if not candidates:
+        return static_id
+    candidates.sort()
+    return candidates[0][1]
 
 
 def fox_pull(conn, args):
@@ -433,8 +468,8 @@ def fox_rebuild_sequences(conn, fox_event_id=None):
     print(f"Rebuilt score sequences for {len(ids)} event(s).")
 
 
-def fox_sync_teams(conn, season=None, week=None):
-    seeded, matched = fox_match.sync_team_crosswalk(conn, season=season, week=week)
+def fox_sync_teams(conn, season=None, week=None, season_type=2):
+    seeded, matched = fox_match.sync_team_crosswalk(conn, season=season, week=week, season_type=season_type)
     print(f"Crosswalk sync: {seeded} team(s) in scope, {matched} newly matched this run.")
 
 
@@ -456,13 +491,13 @@ def fox_match_team(conn, espn_team_id, fox_team_id):
     print(f"Recorded: ESPN team {espn_team_id} <-> Fox team {fox_team_id}")
 
 
-def fox_match_games(conn, season=None, week=None):
-    attempted, matched = fox_match.match_all_games(conn, season=season, week=week)
+def fox_match_games(conn, season=None, week=None, season_type=2):
+    attempted, matched = fox_match.match_all_games(conn, season=season, week=week, season_type=season_type)
     print(f"Game matching: {attempted} game(s) in scope, {matched} matched to a Fox event.")
 
 
-def fox_reconcile_run(conn, season=None, week=None):
-    results = fox_reconcile.reconcile_all(conn, season=season, week=week)
+def fox_reconcile_run(conn, season=None, week=None, season_type=2):
+    results = fox_reconcile.reconcile_all(conn, season=season, week=week, season_type=season_type)
     counts = {}
     for r in results:
         counts[r["tier"]] = counts.get(r["tier"], 0) + 1
@@ -474,6 +509,9 @@ def main():
     parser = argparse.ArgumentParser(description="CFB data pipeline")
     parser.add_argument("--season", type=int, default=DEFAULT_SEASON)
     parser.add_argument("--week", type=int, help="Specific week (regular season)")
+    parser.add_argument("--season-type", type=int, default=2,
+                         help="ESPN season_type for --fox-sync-teams/--fox-match-games/--fox-reconcile* "
+                              "(2=regular [default], 3=postseason)")
     parser.add_argument("--team", type=str, help="Team ID (uses team schedule endpoint)")
     parser.add_argument("--game", type=str, help="Single game ID")
     parser.add_argument("--discover-only", action="store_true")
@@ -529,7 +567,7 @@ def main():
         sys.exit(0)
 
     if args.fox_sync_teams:
-        fox_sync_teams(conn, season=args.season, week=args.week)
+        fox_sync_teams(conn, season=args.season, week=args.week, season_type=args.season_type)
         sys.exit(0)
 
     if args.fox_teams_worklist:
@@ -542,15 +580,15 @@ def main():
         sys.exit(0)
 
     if args.fox_match_games:
-        fox_match_games(conn, season=args.season, week=args.week)
+        fox_match_games(conn, season=args.season, week=args.week, season_type=args.season_type)
         sys.exit(0)
 
     if args.fox_reconcile:
-        fox_reconcile_run(conn, season=args.season, week=args.week)
+        fox_reconcile_run(conn, season=args.season, week=args.week, season_type=args.season_type)
         sys.exit(0)
 
     if args.fox_reconcile_report:
-        fox_reconcile.print_report(conn, season=args.season, week=args.week)
+        fox_reconcile.print_report(conn, season=args.season, week=args.week, season_type=args.season_type)
         sys.exit(0)
 
     if args.compute_sequences:
