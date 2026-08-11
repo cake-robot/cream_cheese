@@ -75,19 +75,22 @@
 <script>
 let REGISTRY = [];
 let LATEST_SCORED_SEASON = null;
+let SCORED_SEASONS = [];
 
 async function loadMeta() {
   const meta = await api("/meta");
   const seasonSel = document.getElementById("f-season");
   seasonSel.innerHTML = '<option value="">All</option>' + meta.seasons.slice().reverse().map((s) => `<option value="${s}">${s}</option>`).join("");
-  // Leave the leaderboard itself on "All" (the true global top games) -- but
-  // weekly-peaks needs one concrete season, and the most recent season in
-  // `meta.seasons` can be a schedule-only future one with zero scored games
-  // (e.g. 2026), so probe descending for the newest season that actually has one.
+  // `meta.seasons` can include a schedule-only future season with zero scored
+  // games (e.g. 2026), so probe each one and keep only those with real data.
   for (const s of meta.seasons.slice().reverse()) {
     const probe = await api("/games", { season: s, scored: 1, limit: 1 });
-    if (probe.total > 0) { LATEST_SCORED_SEASON = s; break; }
+    if (probe.total > 0) {
+      SCORED_SEASONS.push(s);
+      if (LATEST_SCORED_SEASON === null) LATEST_SCORED_SEASON = s;
+    }
   }
+  SCORED_SEASONS.sort();
 
   const bySel = document.getElementById("f-by");
   REGISTRY.forEach((m) => bySel.appendChild(el("option", { value: m.name, text: m.label })));
@@ -148,14 +151,21 @@ async function renderTeams() {
 
 async function renderPeaks() {
   const f = currentFilters();
-  const season = f.season || LATEST_SCORED_SEASON;
-  if (!season) return;
   const seasonType = f.season_type === "all" ? "2" : f.season_type;
-  const data = await api("/top/weekly-peaks", { season, season_type: seasonType });
-  document.getElementById("peaks-title").textContent = `Weekly peaks — ${season}`;
   const mount = document.getElementById("peaks-mount");
   mount.innerHTML = "";
-  const byWeek = { [season]: data.weeks.map((w) => ({ week: w.week, avg_score: w.watchability_score, n: 1 })) };
+
+  // With no season filter applied, overlay every scored season instead of
+  // silently collapsing to just the latest one.
+  const seasons = f.season ? [f.season] : SCORED_SEASONS;
+  if (!seasons.length) return;
+
+  const results = await Promise.all(seasons.map((s) => api("/top/weekly-peaks", { season: s, season_type: seasonType })));
+  document.getElementById("peaks-title").textContent = `Weekly peaks — ${f.season ? f.season : "all seasons"}`;
+  const byWeek = {};
+  seasons.forEach((s, i) => {
+    byWeek[s] = results[i].weeks.map((w) => ({ week: w.week, avg_score: w.watchability_score, n: 1 }));
+  });
   multiLine(mount, byWeek);
 }
 
