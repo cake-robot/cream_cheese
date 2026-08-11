@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Games — Watchability</title>
+<link rel="stylesheet" href="/style.css">
+<script>
+(function () {
+  var t = localStorage.getItem("theme");
+  if (t && t !== "system") document.documentElement.setAttribute("data-theme", t);
+})();
+</script>
+</head>
+<body data-page="games">
+
+<header class="chrome">
+  <span class="brand">🏈 Watchability</span>
+  <nav>
+    <a href="/index.html" aria-current="page">Games</a>
+    <a href="/top.html">Top games</a>
+    <a href="/analytics.html">Analytics</a>
+  </nav>
+  <div class="theme-toggle" id="theme-toggle">
+    <button data-mode="light" aria-pressed="false">Light</button>
+    <button data-mode="dark" aria-pressed="false">Dark</button>
+    <button data-mode="system" aria-pressed="true">System</button>
+  </div>
+</header>
+
+<main>
+  <div class="page-title">Games</div>
+
+  <div class="filters" id="filters">
+    <label>Season <select id="f-season"></select></label>
+    <label>Type <select id="f-season_type">
+      <option value="all">All</option>
+      <option value="2">Regular</option>
+      <option value="3">Postseason</option>
+    </select></label>
+    <label>Week <select id="f-week"><option value="">All</option></select></label>
+    <label>Team <select id="f-team"><option value="">All</option></select></label>
+    <label>Ranked <select id="f-ranked">
+      <option value="any">Any</option>
+      <option value="one">One+ ranked</option>
+      <option value="both">Both ranked</option>
+    </select></label>
+    <label><input type="checkbox" id="f-conference"> Conference</label>
+    <label><input type="checkbox" id="f-neutral"> Neutral site</label>
+    <label><input type="checkbox" id="f-ot"> Overtime</label>
+    <label><input type="checkbox" id="f-scored" checked> Scored only</label>
+    <label>Search <input type="text" id="f-q" placeholder="team or venue" style="width:140px"></label>
+    <label>Sort
+      <select id="f-sort">
+        <option value="score">Score</option>
+        <option value="date">Date</option>
+        <option value="week">Week</option>
+        <option value="margin">Margin</option>
+        <option value="metric:wp_volatility">WP volatility</option>
+        <option value="metric:lead_changes">Lead changes</option>
+        <option value="metric:time_spent_close">Time spent close</option>
+        <option value="metric:team_profile">Team profile</option>
+        <option value="metric:upset_risk">Upset risk</option>
+        <option value="metric:late_volatility">Late volatility</option>
+        <option value="metric:clutch_finish">Clutch finish</option>
+      </select>
+    </label>
+    <label><select id="f-dir"><option value="desc">↓ desc</option><option value="asc">↑ asc</option></select></label>
+    <div class="spacer"></div>
+    <button class="reset" id="f-reset">Reset</button>
+  </div>
+
+  <div class="summary-strip" id="summary-strip"></div>
+
+  <div id="table-frame">
+    <table class="games-table">
+      <thead>
+        <tr><th>#</th><th>Matchup</th><th>Date</th><th>Wk</th><th>Score</th><th></th></tr>
+      </thead>
+      <tbody id="games-tbody"></tbody>
+    </table>
+    <div class="pagination" id="pagination"></div>
+  </div>
+</main>
+
+<script src="/app.js"></script>
+<script src="/charts.js"></script>
+<script>
+let META = null;
+let CURRENT = null;
+
+async function loadMeta() {
+  META = await api("/meta");
+  const seasonSel = document.getElementById("f-season");
+  seasonSel.innerHTML = '<option value="">All</option>' + META.seasons.slice().reverse()
+    .map((s) => `<option value="${s}">${s}</option>`).join("");
+  const teamSel = document.getElementById("f-team");
+  teamSel.innerHTML = '<option value="">All</option>' + META.teams
+    .map((t) => `<option value="${t.abbr}">${t.name}</option>`).join("");
+}
+
+function refreshWeekOptions() {
+  const season = document.getElementById("f-season").value;
+  const seasonType = document.getElementById("f-season_type").value;
+  const weekSel = document.getElementById("f-week");
+  const current = weekSel.value;
+  let weeks = new Set();
+  if (season && seasonType !== "all") {
+    (META.weeks[`${season}:${seasonType}`] || []).forEach((w) => weeks.add(w));
+  } else if (season) {
+    ["2", "3"].forEach((st) => (META.weeks[`${season}:${st}`] || []).forEach((w) => weeks.add(w)));
+  } else {
+    Object.values(META.weeks).forEach((arr) => arr.forEach((w) => weeks.add(w)));
+  }
+  const sorted = Array.from(weeks).sort((a, b) => a - b);
+  weekSel.innerHTML = '<option value="">All</option>' + sorted.map((w) => `<option value="${w}">${w}</option>`).join("");
+  if (sorted.includes(Number(current))) weekSel.value = current;
+}
+
+function readFilters() {
+  return {
+    season: document.getElementById("f-season").value,
+    season_type: document.getElementById("f-season_type").value,
+    week: document.getElementById("f-week").value,
+    team: document.getElementById("f-team").value,
+    ranked: document.getElementById("f-ranked").value,
+    conference: document.getElementById("f-conference").checked ? "1" : "all",
+    neutral: document.getElementById("f-neutral").checked ? "1" : "all",
+    ot: document.getElementById("f-ot").checked ? "1" : "all",
+    scored: document.getElementById("f-scored").checked ? "1" : "all",
+    q: document.getElementById("f-q").value,
+    sort: document.getElementById("f-sort").value,
+    dir: document.getElementById("f-dir").value,
+  };
+}
+
+function applyFiltersToForm(params) {
+  document.getElementById("f-season").value = params.season || "";
+  document.getElementById("f-season_type").value = params.season_type || "all";
+  document.getElementById("f-week").value = params.week || "";
+  document.getElementById("f-team").value = params.team || "";
+  document.getElementById("f-ranked").value = params.ranked || "any";
+  document.getElementById("f-conference").checked = params.conference === "1";
+  document.getElementById("f-neutral").checked = params.neutral === "1";
+  document.getElementById("f-ot").checked = params.ot === "1";
+  document.getElementById("f-scored").checked = params.scored !== "0" && params.scored !== "all";
+  document.getElementById("f-q").value = params.q || "";
+  document.getElementById("f-sort").value = params.sort || "score";
+  document.getElementById("f-dir").value = params.dir || "desc";
+}
+
+function renderMiniHistogram(mount, stats) {
+  mount.innerHTML = "";
+  histogram(mount, stats.histogram, { width: 260, height: 40 });
+}
+
+function renderExpandedMetrics(container, game) {
+  const registry = REGISTRY;
+  contributionBars(container, game.metrics, registry, game.applicable_weight || 0.0001);
+}
+
+let REGISTRY = [];
+
+async function loadAndRender(page = 0, limit = 50) {
+  const frame = document.getElementById("table-frame");
+  frame.classList.add("loading-frame");
+  const filters = readFilters();
+  setParams({ ...filters, limit, offset: page * limit });
+  const data = await api("/games", { ...filters, limit, offset: page * limit });
+  CURRENT = { data, page, limit };
+  renderTable(data);
+  frame.classList.remove("loading-frame");
+}
+
+function renderTable(data) {
+  const tbody = document.getElementById("games-tbody");
+  tbody.innerHTML = "";
+  if (data.games.length === 0) {
+    tbody.appendChild(el("tr", {}, el("td", { colspan: "6" }, el("div", { class: "empty-state" }, [
+      "No games match these filters.", el("br"), el("button", { class: "reset", onclick: resetFilters, text: "Reset filters" }),
+    ]))));
+  }
+  data.games.forEach((g) => {
+    const scoreCell = g.watchability_score === null
+      ? el("span", { text: "—" })
+      : el("div", { class: "score-cell" }, [
+          el("span", { class: "score-val tabular-nums", text: fmtScore(g.watchability_score) }),
+          el("div", { class: "score-meter" }, el("i", { style: `width:${Math.min(100, (g.watchability_score / 0.70) * 100)}%` })),
+          el("span", { class: "pctile", text: g.percentile !== null ? fmtPct(g.percentile) : "" }),
+        ]);
+    const row = el("tr", {}, [
+      el("td", { class: "tabular-nums", text: g.rank ? String(g.rank) : "—" }),
+      el("td", {}, [el("span", { class: "matchup", text: fmtMatchup(g) }), ...renderChips(g)]),
+      el("td", { text: fmtDate(g.game_date) }),
+      el("td", { text: g.week !== null ? String(g.week) : "—" }),
+      el("td", {}, scoreCell),
+      el("td", { text: g.watchability_score !== null ? "⌄" : "" , style: "color:var(--ink-muted);cursor:pointer" }),
+    ]);
+    row.addEventListener("click", (ev) => {
+      if (ev.target.closest("button")) return;
+      sessionStorage.setItem("games-return-search", location.search);
+      location.href = `/game.html?id=${g.game_id}`;
+    });
+    tbody.appendChild(row);
+
+    if (g.watchability_score !== null) {
+      const expandRow = el("tr", { class: "expand-row", style: "display:none" });
+      const td = el("td", { colspan: "6" });
+      expandRow.appendChild(td);
+      tbody.appendChild(expandRow);
+      row.lastChild.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        const showing = expandRow.style.display !== "none";
+        expandRow.style.display = showing ? "none" : "table-row";
+        if (!showing && td.children.length === 0) renderExpandedMetrics(td, g);
+      });
+    }
+  });
+
+  const strip = document.getElementById("summary-strip");
+  strip.innerHTML = "";
+  strip.appendChild(el("span", { text: `${data.total} games` }));
+  if (data.filtered_score_stats.n) {
+    strip.appendChild(el("span", { text: `median ${fmtScore(data.filtered_score_stats.median)}` }));
+  }
+  const from = data.offset + 1, to = Math.min(data.offset + data.limit, data.total);
+  strip.appendChild(el("span", { text: data.total ? `showing ${from}–${to}` : "" }));
+  const histMount = el("div", { class: "hist-strip" });
+  strip.appendChild(histMount);
+  if (data.filtered_score_stats.n) renderMiniHistogram(histMount, data.filtered_score_stats);
+
+  const pag = document.getElementById("pagination");
+  pag.innerHTML = "";
+  const page = Math.floor(data.offset / data.limit);
+  const pageCount = Math.max(1, Math.ceil(data.total / data.limit));
+  pag.appendChild(el("button", { text: "‹ Prev", disabled: page === 0 ? "" : null, onclick: () => loadAndRender(page - 1, data.limit) }));
+  pag.appendChild(el("span", { text: `${from}–${to} of ${data.total}` }));
+  pag.appendChild(el("button", { text: "Next ›", disabled: (page + 1 >= pageCount) ? "" : null, onclick: () => loadAndRender(page + 1, data.limit) }));
+}
+
+function resetFilters() {
+  document.querySelectorAll(".filters select").forEach((s) => (s.selectedIndex = 0));
+  document.querySelectorAll(".filters input[type=checkbox]").forEach((c) => (c.checked = c.id === "f-scored"));
+  document.getElementById("f-q").value = "";
+  history.replaceState(null, "", location.pathname);
+  loadAndRender(0);
+}
+
+function wireFilters() {
+  document.querySelectorAll(".filters select, .filters input").forEach((elm) => {
+    elm.addEventListener("change", () => {
+      if (elm.id === "f-season" || elm.id === "f-season_type") refreshWeekOptions();
+      loadAndRender(0, CURRENT ? CURRENT.limit : 50);
+    });
+  });
+  let qTimer = null;
+  document.getElementById("f-q").addEventListener("input", () => {
+    clearTimeout(qTimer);
+    qTimer = setTimeout(() => loadAndRender(0, CURRENT ? CURRENT.limit : 50), 250);
+  });
+  document.getElementById("f-reset").addEventListener("click", resetFilters);
+}
+
+(async function init() {
+  await loadMeta();
+  const metricsResp = await api("/metrics");
+  REGISTRY = metricsResp.metrics;
+  const params = getParams();
+  applyFiltersToForm(params);
+  refreshWeekOptions();
+  if (params.week) document.getElementById("f-week").value = params.week;
+  wireFilters();
+  const limit = Number(params.limit) || 50;
+  const page = Math.floor((Number(params.offset) || 0) / limit);
+  loadAndRender(page, limit);
+})();
+</script>
+</body>
+</html>
