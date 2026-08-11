@@ -208,6 +208,56 @@ CREATE TABLE IF NOT EXISTS fox_score_corrections (
     reconciled_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_fox_corrections_game ON fox_score_corrections(game_id);
+
+-- Live/in-progress scoring. Deliberately separate from games.watchability_score
+-- and game_metrics (the retrospective corpus those feed -- leaderboards,
+-- analytics, the correlation matrix, and scoring.apply_corrections()'s manual
+-- overrides) so a live value can never pollute it. One row per currently-live
+-- game; deleted the moment the game completes (see live.handle_completions).
+CREATE TABLE IF NOT EXISTS live_scores (
+    game_id          TEXT PRIMARY KEY REFERENCES games(game_id),
+    live_score       REAL,
+    quality_so_far   REAL,               -- NULL = no applicable so-far weight yet
+    drama_from_here  REAL NOT NULL,
+    progress         REAL,               -- 0..1 fraction of regulation elapsed
+    wp_now           REAL,
+    n_wp_rows        INTEGER,
+    so_far_weight    REAL,               -- applicable weight, for explainability
+    from_here_weight REAL,
+    headline         TEXT,
+    cycle_seq        INTEGER,
+    computed_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Per-metric live breakdown, mirroring game_metrics but keyed by half
+-- ('so_far' | 'from_here') and with `applicable` stored explicitly (unlike
+-- game_metrics' row-absence convention) -- "not applicable yet" is a state
+-- the UI renders ("clutch finish -- window not open"), and a stable row set
+-- across polls keeps an expanded UI row from flickering every cycle.
+CREATE TABLE IF NOT EXISTS live_metrics (
+    game_id     TEXT NOT NULL REFERENCES games(game_id),
+    half        TEXT NOT NULL,           -- 'so_far' | 'from_here'
+    metric_name TEXT NOT NULL,
+    raw_value   REAL,
+    norm_value  REAL,
+    weight      REAL NOT NULL,
+    applicable  INTEGER NOT NULL,
+    PRIMARY KEY (game_id, half, metric_name)
+);
+
+-- Every computed live score, retained after the game completes (unlike
+-- live_scores). This is the UI sparkline source and the verification
+-- artifact for comparing a live run against the eventual retrospective score.
+CREATE TABLE IF NOT EXISTS live_score_history (
+    game_id         TEXT NOT NULL REFERENCES games(game_id),
+    computed_at     TEXT NOT NULL,
+    progress        REAL,
+    live_score      REAL,
+    quality_so_far  REAL,
+    drama_from_here REAL,
+    PRIMARY KEY (game_id, computed_at)
+);
+CREATE INDEX IF NOT EXISTS idx_live_hist_game ON live_score_history(game_id, computed_at);
 """
 
 
@@ -250,6 +300,35 @@ def init_db(path=None):
         # ordinary games. Captured going forward only -- existing rows are not
         # backfilled, so this is NULL for every game already in the DB.
         conn.execute("ALTER TABLE games ADD COLUMN event_note TEXT")
+
+    # Live status mirror -- ESPN's comp.status block (period/clock/detail),
+    # refreshed from the scoreboard every live-poll cycle. Always overwritten,
+    # never historical (that's what live_score_history is for); belongs on
+    # `games` because it's exactly one row per game and lets both the slate
+    # query and the game-detail page read it without a join.
+    if "status_period" not in game_cols:
+        conn.execute("ALTER TABLE games ADD COLUMN status_period INTEGER")
+    if "status_clock_display" not in game_cols:
+        conn.execute("ALTER TABLE games ADD COLUMN status_clock_display TEXT")
+    if "status_clock_seconds" not in game_cols:
+        conn.execute("ALTER TABLE games ADD COLUMN status_clock_seconds REAL")
+    if "status_detail" not in game_cols:
+        conn.execute("ALTER TABLE games ADD COLUMN status_detail TEXT")
+    if "live_updated_at" not in game_cols:
+        conn.execute("ALTER TABLE games ADD COLUMN live_updated_at TEXT")
+
+    # live_scores.decided removed -- the flag was found to force
+    # drama_from_here to 0 on games that were still genuinely live (a real
+    # final drive briefly crossing an extreme WP reading), while barely
+    # moving the needle on true blowouts (ESPN's own WP model keeps
+    # jittering rather than pinning near 1.0, so recent_volatility/
+    # tension_now already read those as low without an override). Dropped
+    # outright rather than deprecated -- live_scores is always-transient
+    # data, cleared on every game completion, so there's no historical
+    # value at stake.
+    live_scores_cols = {row[1] for row in conn.execute("PRAGMA table_info(live_scores)")}
+    if "decided" in live_scores_cols:
+        conn.execute("ALTER TABLE live_scores DROP COLUMN decided")
 
     conn.commit()
     return conn
@@ -310,6 +389,8 @@ def upsert_game(conn, game):
             away_team_id, away_team_abbr, away_team_name, away_rank,
             conference_game, neutral_site, venue_name, event_note,
             status_state, completed,
+            status_period, status_clock_display, status_clock_seconds, status_detail,
+            live_updated_at,
             home_score, away_score, attendance, initial_home_wp,
             detail_fetched, watchability_score
         ) VALUES (
@@ -318,6 +399,8 @@ def upsert_game(conn, game):
             :away_team_id, :away_team_abbr, :away_team_name, :away_rank,
             :conference_game, :neutral_site, :venue_name, :event_note,
             :status_state, :completed,
+            :status_period, :status_clock_display, :status_clock_seconds, :status_detail,
+            CASE WHEN :status_period IS NOT NULL THEN datetime('now') ELSE NULL END,
             :home_score, :away_score, :attendance, :initial_home_wp,
             :detail_fetched, :watchability_score
         )
@@ -340,6 +423,12 @@ def upsert_game(conn, game):
             event_note      = excluded.event_note,
             status_state    = excluded.status_state,
             completed       = excluded.completed,
+            status_period        = excluded.status_period,
+            status_clock_display = excluded.status_clock_display,
+            status_clock_seconds = excluded.status_clock_seconds,
+            status_detail        = excluded.status_detail,
+            live_updated_at = CASE WHEN excluded.status_period IS NOT NULL
+                                    THEN datetime('now') ELSE games.live_updated_at END,
             home_score      = COALESCE(excluded.home_score, games.home_score),
             away_score      = COALESCE(excluded.away_score, games.away_score),
             watchability_score = COALESCE(excluded.watchability_score, games.watchability_score)
@@ -352,6 +441,10 @@ def upsert_game(conn, game):
         "detail_fetched": game.get("detail_fetched", 0),
         "watchability_score": game.get("watchability_score"),
         "event_note": game.get("event_note"),
+        "status_period": game.get("status_period"),
+        "status_clock_display": game.get("status_clock_display"),
+        "status_clock_seconds": game.get("status_clock_seconds"),
+        "status_detail": game.get("status_detail"),
     })
 
 
@@ -545,6 +638,106 @@ def mark_fox_pbp_fetched(conn, fox_event_id):
         "WHERE fox_event_id = ?",
         (fox_event_id,),
     )
+
+
+def set_initial_home_wp(conn, game_id, value):
+    """Write initial_home_wp only if it isn't already set. A narrow,
+    side-effect-free alternative to mark_detail_fetched() for the live poller:
+    mark_detail_fetched also sets detail_fetched=1 and overwrites
+    home_score/away_score/attendance, none of which should happen while a
+    game is still live (detail_fetched must stay 0 so the normal pipeline
+    picks the game up cleanly at completion -- see live.handle_completions)."""
+    if value is None:
+        return
+    conn.execute(
+        "UPDATE games SET initial_home_wp = ? WHERE game_id = ? AND initial_home_wp IS NULL",
+        (value, game_id),
+    )
+
+
+def delete_win_probability(conn, game_id):
+    """Discard every win_probability row for a game. Used at the live->final
+    transition: upsert_win_probability is INSERT OR IGNORE keyed on
+    (game_id, play_id), so a play first seen while still part of the live
+    active drive keeps whatever period/clock/sequence it had at that moment
+    forever -- it can never be corrected in place by a later upsert. A clean
+    delete-then-refetch via the normal pipeline.fetch_details() path
+    guarantees a live-touched game's WP series ends up byte-identical to one
+    that was only ever fetched after the fact."""
+    conn.execute("DELETE FROM win_probability WHERE game_id = ?", (game_id,))
+
+
+def upsert_live_score(conn, game_id, result):
+    """result: {live_score, quality_so_far, drama_from_here, progress,
+    wp_now, n_wp_rows, so_far_weight, from_here_weight, headline, cycle_seq}."""
+    conn.execute("""
+        INSERT INTO live_scores (
+            game_id, live_score, quality_so_far, drama_from_here,
+            progress, wp_now, n_wp_rows, so_far_weight, from_here_weight,
+            headline, cycle_seq, computed_at
+        ) VALUES (
+            :game_id, :live_score, :quality_so_far, :drama_from_here,
+            :progress, :wp_now, :n_wp_rows, :so_far_weight, :from_here_weight,
+            :headline, :cycle_seq, datetime('now')
+        )
+        ON CONFLICT(game_id) DO UPDATE SET
+            live_score       = excluded.live_score,
+            quality_so_far   = excluded.quality_so_far,
+            drama_from_here  = excluded.drama_from_here,
+            progress         = excluded.progress,
+            wp_now           = excluded.wp_now,
+            n_wp_rows        = excluded.n_wp_rows,
+            so_far_weight    = excluded.so_far_weight,
+            from_here_weight = excluded.from_here_weight,
+            headline         = excluded.headline,
+            cycle_seq        = excluded.cycle_seq,
+            computed_at      = datetime('now')
+    """, {"game_id": game_id, **result})
+
+
+def replace_live_metrics(conn, game_id, halves):
+    """halves: {"so_far": {metric_name: {raw, normalized, weighted, weight,
+    applicable}}, "from_here": {...}}. Deletes and reinserts this game's
+    live_metrics wholesale each cycle -- unlike game_metrics, `applicable` is
+    stored explicitly (not row-absence), so this keeps the row set stable
+    across polls (no UI flicker) while still reflecting the current cycle."""
+    conn.execute("DELETE FROM live_metrics WHERE game_id = ?", (game_id,))
+    rows = []
+    for half, metrics in halves.items():
+        for name, v in metrics.items():
+            rows.append((
+                game_id, half, name, v.get("raw"), v.get("normalized"),
+                v.get("weight"), int(bool(v.get("applicable"))),
+            ))
+    if not rows:
+        return
+    conn.executemany("""
+        INSERT INTO live_metrics (game_id, half, metric_name, raw_value, norm_value, weight, applicable)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, rows)
+
+
+def append_live_history(conn, game_id, result):
+    conn.execute("""
+        INSERT OR REPLACE INTO live_score_history (
+            game_id, computed_at, progress, live_score, quality_so_far, drama_from_here
+        ) VALUES (?, datetime('now'), ?, ?, ?, ?)
+    """, (game_id, result.get("progress"), result.get("live_score"),
+          result.get("quality_so_far"), result.get("drama_from_here")))
+
+
+def clear_live_score(conn, game_id):
+    """Remove a game's live_scores/live_metrics rows once it has completed
+    and been picked up by the normal retrospective scorer. live_score_history
+    is deliberately NOT cleared -- it's the verification/sparkline record."""
+    conn.execute("DELETE FROM live_scores WHERE game_id = ?", (game_id,))
+    conn.execute("DELETE FROM live_metrics WHERE game_id = ?", (game_id,))
+
+
+def live_game_ids(conn):
+    """game_ids currently holding a live_scores row (i.e. tracked as live by
+    a prior cycle) -- used to detect the in->post transition."""
+    return [r[0] for r in conn.execute("SELECT game_id FROM live_scores")]
 
 
 def mark_detail_fetched(conn, game_id, home_score, away_score, attendance, initial_home_wp):

@@ -17,6 +17,7 @@
 <header class="chrome">
   <span class="brand">🏈 Watchability</span>
   <nav>
+    <a href="/slate.html">Slate</a>
     <a href="/index.html">Games</a>
     <a href="/top.html">Top games</a>
     <a href="/analytics.html">Analytics</a>
@@ -41,6 +42,9 @@ function gameId() {
 }
 
 function renderNotScored(mount, detail) {
+  // Only reached for status_state 'pre' (unstarted, unscored by design) or
+  // 'post' (completed but not yet fetched/scored) -- a live ('in') game is
+  // routed to renderLive() instead, see init() below.
   const g = detail.game;
   mount.appendChild(el("div", { class: "matchup-header" }, [
     el("div", {}, [
@@ -83,6 +87,78 @@ function renderProvenance(mount, detail) {
 }
 
 let REGISTRY_LABEL = {};
+let LIVE_REGISTRY = { so_far: [], from_here: [] };
+
+function renderLive(mount, detail) {
+  const g = detail.game;
+  const live = detail.live;
+
+  mount.appendChild(el("div", { class: "matchup-header" }, [
+    el("div", {}, [
+      el("h1", {}, [fmtMatchup(g) + " ", ...renderChips(g)]),
+      el("div", {
+        class: "sub",
+        text: `${live.status.detail || "In progress"} · ${fmtDate(g.game_date)}${venueLabel(g) ? " · " + venueLabel(g) : ""} · ${seasonWeekLabel(g)}`,
+      }),
+    ]),
+  ]));
+
+  const hero = el("div", { class: "hero-row" }, [
+    el("div", { class: "hero-score tabular-nums", text: fmtScore(live.live_score) }),
+    el("div", { class: "hero-context" }, [
+      el("div", { text: live.headline }),
+      el("div", { text: `Updated ${Math.max(0, Math.round(live.stale_seconds))}s ago` }),
+    ]),
+  ]);
+  mount.appendChild(hero);
+
+  const halvesCard = el("div", { class: "card" }, [
+    el("h2", { text: "Quality so far vs. drama from here" }),
+    el("div", {
+      class: "card-sub",
+      text: "The composite blends both (40% / 60%) so neither can silently cancel the other out.",
+    }),
+  ]);
+  [
+    ["Quality so far", live.quality_so_far],
+    ["Drama from here", live.drama_from_here],
+  ].forEach(([label, value]) => {
+    halvesCard.appendChild(el("div", { class: "halves-row" }, [
+      el("div", { class: "half-label" }, [label, " ", el("span", { class: "tabular-nums", text: fmtScore(value) })]),
+      el("div", { class: "score-meter" }, el("i", { style: `width:${value === null ? 0 : Math.min(100, value * 100)}%` })),
+    ]));
+  });
+  mount.appendChild(halvesCard);
+
+  if (detail.wp) {
+    const wpCard = el("div", { class: "card" }, [
+      el("h2", { text: `Win probability (live) — ${g.away.name} at ${g.home.name}` }),
+      el("div", { class: "card-sub", text: `Home win probability across ${detail.wp.n} plays so far.` }),
+    ]);
+    wpChart(wpCard, detail.wp, g);
+    mount.appendChild(wpCard);
+  }
+
+  const contribCard = el("div", { class: "card" }, [el("h2", { text: "What's driving this" })]);
+  contribCard.appendChild(el("div", { class: "card-sub", text: "Quality so far" }));
+  contributionBars(contribCard, adaptLiveMetrics(live.so_far.metrics), LIVE_REGISTRY.so_far, live.so_far.applicable_weight || 0.0001);
+  contribCard.appendChild(el("div", { class: "card-sub", style: "margin-top:16px", text: "Drama from here" }));
+  contributionBars(contribCard, adaptLiveMetrics(live.from_here.metrics), LIVE_REGISTRY.from_here, live.from_here.applicable_weight || 0.0001);
+  mount.appendChild(contribCard);
+
+  if (detail.live_history && detail.live_history.length > 1) {
+    const histCard = el("div", { class: "card" }, [
+      el("h2", { text: "Live score so far" }),
+      el("div", { class: "card-sub", text: "How the recommendation has moved through the game." }),
+    ]);
+    multiLine(histCard, {
+      "live score": detail.live_history.map((r, i) => ({ week: i + 1, avg_score: r.live_score, n: 1 })),
+    });
+    mount.appendChild(histCard);
+  }
+
+  renderProvenance(mount, detail);
+}
 
 function renderScored(mount, detail) {
   const g = detail.game;
@@ -178,10 +254,14 @@ function renderScored(mount, detail) {
     return;
   }
   mount.innerHTML = "";
-  if (detail.game.watchability_score === null) {
-    renderNotScored(mount, detail);
-  } else {
+  if (detail.game.watchability_score !== null) {
     renderScored(mount, detail);
+  } else if (detail.game.status_state === "in" && detail.live) {
+    const liveRegistry = await api("/slate/registry");
+    LIVE_REGISTRY = liveRegistry;
+    renderLive(mount, detail);
+  } else {
+    renderNotScored(mount, detail);
   }
 })();
 </script>

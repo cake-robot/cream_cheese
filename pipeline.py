@@ -1,8 +1,9 @@
 import argparse
+import logging
 import sys
 from datetime import date
 
-from src import db, espn, fox, fox_match, fox_reconcile, scoring
+from src import db, espn, fox, fox_match, fox_reconcile, live, live_replay, scoring
 from src.config import DEFAULT_SEASON, FOX_SEASON_ANCHORS, FOX_SCAN_OVERRUN
 
 
@@ -546,13 +547,77 @@ def main():
                          help="Reconcile ESPN vs Fox score sequences for matched games in --season/--week")
     parser.add_argument("--fox-reconcile-report", action="store_true",
                          help="Reconcile and print a full diff/unusable report")
+    parser.add_argument("--live", action="store_true",
+                         help="Run the live/in-progress poll loop (long-running)")
+    parser.add_argument("--live-once", action="store_true",
+                         help="Run exactly one live poll cycle, then exit")
+    parser.add_argument("--live-interval", type=int, metavar="N",
+                         help=f"Seconds between live poll cycles (default {live.LIVE_INTERVAL_SECONDS})")
+    parser.add_argument("--live-budget", type=int, metavar="N",
+                         help=f"Max per-game /summary fetches per live cycle (default {live.LIVE_SUMMARY_BUDGET})")
+    parser.add_argument("--live-date", type=str, metavar="YYYYMMDD",
+                         help="Point the live scoreboard fetch at a specific ET day instead of "
+                              "today/tomorrow -- only allowed together with --live-dry-run, so a "
+                              "stray past-date run can never mutate historical rows")
+    parser.add_argument("--live-dry-run", action="store_true",
+                         help="Fetch and score live games but write nothing to the DB; logs what "
+                              "would have been written")
+    parser.add_argument("--live-shadow", action="store_true",
+                         help="Run the live loop writing only live_scores/live_metrics/"
+                              "live_score_history -- never touches win_probability, "
+                              "games.watchability_score, or game_metrics")
+    parser.add_argument("--live-replay", action="store_true",
+                         help="Offline replay of a stored game's WP series through the live "
+                              "scorer at every prefix (requires --game); no network access")
+    parser.add_argument("--live-replay-plot", action="store_true",
+                         help="With --live-replay, print an ASCII curve instead of a row table")
     args = parser.parse_args()
 
     if args.find_team:
         find_team(args.find_team)
         sys.exit(0)
 
+    if args.live_date and not args.live_dry_run:
+        print("--live-date is only allowed together with --live-dry-run "
+              "(so a stray past-date run can never mutate historical rows).", file=sys.stderr)
+        sys.exit(1)
+
+    if args.live_dry_run and args.live_shadow:
+        print("--live-dry-run and --live-shadow are mutually exclusive.", file=sys.stderr)
+        sys.exit(1)
+
     conn = db.init_db()
+
+    if args.live_replay:
+        if not args.game:
+            print("--live-replay requires --game GAME_ID", file=sys.stderr)
+            sys.exit(1)
+        rows = live_replay.replay_game(conn, args.game, step=1)
+        if args.live_replay_plot:
+            print(live_replay.replay_curve_ascii(rows))
+        else:
+            print(f"{'i':>4} {'prog':>5} {'per':>3} {'live':>6} {'so_far':>7} {'from_here':>9}  headline")
+            for r in rows:
+                so_far = f"{r['quality_so_far']:.3f}" if r["quality_so_far"] is not None else "  n/a"
+                print(f"{r['i']:>4} {r['progress']:>5.2f} {str(r['period']):>3} "
+                      f"{r['live_score']:>6.3f} {so_far:>7} {r['drama_from_here']:>9.3f}  {r['headline']}")
+        sys.exit(0)
+
+    if args.live or args.live_once:
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+        interval = args.live_interval or live.LIVE_INTERVAL_SECONDS
+        budget = args.live_budget or live.LIVE_SUMMARY_BUDGET
+        if args.live_dry_run:
+            mode = "dry_run"
+        elif args.live_shadow:
+            mode = "shadow"
+        else:
+            mode = "normal"
+        live.run_forever(
+            conn, interval=interval, summary_budget=budget,
+            once=args.live_once, mode=mode, dates=args.live_date,
+        )
+        sys.exit(0)
 
     if args.fox_rebuild_sequences:
         fox_rebuild_sequences(conn, fox_event_id=args.fox_event)

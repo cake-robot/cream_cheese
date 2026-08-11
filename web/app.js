@@ -45,10 +45,17 @@ function fmtDate(iso) {
   const d = new Date(iso);
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
+function fmtKickoff(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return d.toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" });
+}
 function fmtMatchup(g) {
   const away = g.away.rank ? `#${g.away.rank} ${g.away.name}` : g.away.name;
   const home = g.home.rank ? `#${g.home.rank} ${g.home.name}` : g.home.name;
-  if (g.completed && g.away.score !== null && g.home.score !== null) {
+  // A live game has a real, meaningful running score just like a completed
+  // one -- only an unstarted ('pre') game has no score worth printing.
+  if ((g.completed || g.status_state === "in") && g.away.score !== null && g.home.score !== null) {
     return `${away} ${g.away.score} at ${home} ${g.home.score}`;
   }
   return `${away} at ${home}`;
@@ -138,6 +145,7 @@ function venueLabel(g) {
 
 function gameChips(g) {
   const chips = [];
+  if (g.status_state === "in") chips.push(["LIVE", "accent"]);
   if (g.ot) chips.push(["OT", "warn"]);
   if (postseasonInfo(g)?.isCFP) chips.push(["CFP", "accent"]);
   if (g.conference_game) chips.push(["CONF", "muted"]);
@@ -148,11 +156,30 @@ function gameChips(g) {
   // wrongly claims Fox involvement on games only ever fixed by hand.
   if (g.has_fox_correction) chips.push(["FOX", "muted"]);
   if (g.has_manual_correction) chips.push(["MANUAL", "muted"]);
-  if (g.watchability_score === null) chips.push(["NOT SCORED", "muted"]);
+  // "NOT SCORED" means "this game is done and we have nothing" -- a live or
+  // not-yet-started game is unscored by design, not by gap, so it gets the
+  // LIVE chip (above) or no chip at all instead of this one.
+  if (g.watchability_score === null && g.status_state === "post") chips.push(["NOT SCORED", "muted"]);
   return chips;
 }
 function renderChips(g) {
   return gameChips(g).map(([label, cls]) => el("span", { class: `chip ${cls}`, text: label }));
+}
+
+// live_metrics rows come back from the API as {raw, normalized, weight,
+// applicable} -- adapt to the {raw, norm, weighted, at_cap} shape
+// contributionBars() expects (the same shape /api/games' retrospective
+// metrics map produces), so one chart function renders both without
+// modification. Shared by game.html (a single live game's two halves) and
+// slate.html (every live game's expand row).
+function adaptLiveMetrics(metricsObj) {
+  const out = {};
+  for (const [name, v] of Object.entries(metricsObj || {})) {
+    out[name] = v.applicable
+      ? { raw: v.raw, norm: v.normalized, weighted: v.normalized * v.weight, at_cap: v.normalized >= 1.0 }
+      : null;
+  }
+  return out;
 }
 
 // ---- tooltip singleton --------------------------------------------------------

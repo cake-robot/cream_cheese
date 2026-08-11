@@ -1,0 +1,729 @@
+"""
+Live/in-progress game scoring.
+
+Blends two halves into a single live_score, both in [0,1] and both kept
+separately reportable so a ranking stays explainable (see plans/... the
+"noon Pacific Saturday" design doc for the full rationale):
+
+  live_score = LIVE_W_SO_FAR * quality_so_far + LIVE_W_FROM_HERE * drama_from_here
+
+`quality_so_far` is a partial-retrospective score -- as much of the existing
+watchability algorithm as validly applies to a prefix of the game, using
+scoring.composite_from() against LIVE_SO_FAR_METRICS. `drama_from_here` is
+purely prospective -- how worth turning on the rest of this game is, using
+the same algebra against LIVE_FROM_HERE_METRICS.
+
+Deliberately separate from src/scoring.py's METRICS/score_game(): these
+registries and their weights/caps are tuned for partial data and must never
+be merged into the retrospective corpus (games.watchability_score,
+game_metrics) that leaderboards, analytics, and manual corrections depend on.
+Scoring games that haven't kicked off is out of scope by design -- an
+unstarted game is just listed, not scored (see the "Kickoff soon" slate
+section) -- so there is no pregame tier here.
+"""
+
+import logging
+import os
+import signal
+import time
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+from . import db, espn, scoring
+
+logger = logging.getLogger(__name__)
+
+# --- Blend weights ---
+LIVE_W_SO_FAR = 0.40
+LIVE_W_FROM_HERE = 0.60
+
+# --- Partial-data guards ---
+# Below this much game-clock elapsed, a "rate" (count / progress) is one or
+# two plays extrapolated over sixty minutes -- meaningless, and liable to
+# read as a false 1.0. Only gates the two rate metrics; proportions/maxima
+# (comeback_magnitude, upset_in_progress) degrade gracefully on their own.
+LIVE_MIN_ELAPSED_SECONDS = 300
+# Floor on the rate denominator so a wild opening sequence can't alone
+# saturate a rate metric's cap.
+LIVE_MIN_PROGRESS = 0.15
+
+# --- New live-only metric caps ---
+MAX_COMEBACK = 0.80
+MAX_UPSET_IN_PROGRESS = 0.60
+MAX_RECENT_VOLATILITY = 1.5
+LIVE_RECENT_WINDOW = 20  # trailing WP rows considered by recent_volatility
+
+# --- drama_from_here shape ---
+LATENESS_FLOOR = 0.35
+LATENESS_POWER = 2.0
+
+# wp_now is the median of the last 3 WP rows, not the last row alone (ESPN's
+# WP series occasionally ends on an isolated garbage row -- verified on
+# 15/1828 completed games). Log when the raw last row deviates from that
+# median by more than this, so a live run surfaces the same class of glitch
+# for manual review.
+WP_NOW_DEVIATION_LOG_THRESHOLD = 0.30
+
+REGULATION_SECONDS = scoring.REGULATION_SECONDS  # 3600, shared with scoring.py
+
+# --- Refresh loop ---
+LIVE_INTERVAL_SECONDS = 60
+# Tier 2 (per-game /summary fetch) budget per cycle. ~40 simultaneous live
+# games x 1 request each would be 41s of a 60s cycle with zero headroom;
+# 25 leaves ~34s and relies on the priority ordering below to still cover
+# every live game within LIVE_MAX_STALENESS_SECONDS.
+LIVE_SUMMARY_BUDGET = 25
+LIVE_MAX_STALENESS_SECONDS = 300
+LIVE_ALWAYS_REFRESH_PROGRESS = 0.85
+
+LOCK_PATH = "data/live.lock"
+
+
+# --- context helpers ---
+
+def _closeness(wp):
+    """1.0 at a 50/50 game, 0.0 at a fully lopsided one."""
+    return 1.0 - abs(2.0 * wp - 1.0)
+
+
+def _lateness_factor(elapsed):
+    """
+    How much a given closeness should count toward drama_from_here, scaled
+    by how late in the game we are. Squared so Q4 dominates (Q1 ~= 0.37,
+    halftime ~= 0.51, Q4 start ~= 0.72, 2:00 left ~= 0.99, OT = 1.0): a
+    50/50 game with 2 minutes left is a materially better recommendation
+    than a 50/50 game at the 5:00 mark of Q1, which still has 55 minutes to
+    stop being close. LATENESS_FLOOR keeps an early coin-flip from reading
+    as zero -- it's still a decent watch, just not the best one available.
+    """
+    if elapsed is None:
+        lateness = 0.0
+    else:
+        lateness = max(0.0, min(1.0, elapsed / REGULATION_SECONDS))
+    return LATENESS_FLOOR + (1.0 - LATENESS_FLOOR) * (lateness ** LATENESS_POWER)
+
+
+def _late_window_open(wp_rows):
+    """True once any WP row has reached period >= LATE_PERIOD_THRESHOLD (Q4
+    or any OT). Shared gate for late_volatility_rate and clutch_finish_live:
+    both are only meaningfully defined once the late-game window has
+    actually opened -- before that, "no late swing yet" isn't a real 0, it's
+    unknown, so the metric should drop out of the composite rather than
+    silently score the game as if it had no chance of late drama."""
+    return any(
+        r["period_number"] is not None and r["period_number"] >= scoring.LATE_PERIOD_THRESHOLD
+        for r in wp_rows
+    )
+
+
+def _q4_progress(elapsed):
+    """Fraction of the 4th quarter (or later) that has elapsed, capped at
+    1.0 once past regulation -- the rate denominator for late_volatility_rate,
+    parallel to how progress_of() denominates the whole-game rate metrics."""
+    if elapsed is None or elapsed <= 2700:
+        return 0.0
+    return min(1.0, (elapsed - 2700) / 900.0)
+
+
+def progress_of(elapsed):
+    """Fraction of regulation elapsed, clamped to [0,1] -- 1.0 for the whole
+    of any overtime period, since "how late is it" saturates once the game
+    is already past regulation."""
+    if elapsed is None:
+        return 0.0
+    return max(0.0, min(1.0, elapsed / REGULATION_SECONDS))
+
+
+def wp_now_of(wp_rows):
+    """Median of the last 3 home_win_pct rows -- see WP_NOW_DEVIATION_LOG_THRESHOLD
+    docstring above for why this isn't just the last row."""
+    if not wp_rows:
+        return None
+    tail = [r["home_win_pct"] for r in wp_rows[-3:] if r["home_win_pct"] is not None]
+    if not tail:
+        return None
+    med = sorted(tail)[len(tail) // 2]
+    last = wp_rows[-1]["home_win_pct"]
+    if last is not None and abs(last - med) > WP_NOW_DEVIATION_LOG_THRESHOLD:
+        logger.warning(
+            "wp_now: last row (%.4f) deviates from 3-row median (%.4f) by more than %.2f -- "
+            "using the median.", last, med, WP_NOW_DEVIATION_LOG_THRESHOLD,
+        )
+    return med
+
+
+def _elapsed_from_status(period, clock_remaining):
+    """Derive elapsed regulation seconds from the scoreboard's status block
+    (period + seconds remaining in period) -- the same shape as
+    espn.parse_summary_detail's per-play derivation, but from comp.status
+    rather than a play's clock display string. The scoreboard is the
+    authoritative live clock (verified: the summary endpoint's status has
+    no period/clock at all), so this is what progress/lateness are computed
+    from, independent of how fresh the WP series itself is.
+    """
+    if period is None:
+        return None
+    remaining = clock_remaining if clock_remaining is not None else 0
+    if period <= 4:
+        return (period - 1) * 900 + (900 - remaining)
+    # OT: the scoreboard doesn't expose the per-play OT counter
+    # win_probability rows use (espn.py's ot_period_counter) -- approximate
+    # with the OT period boundary alone. progress_of() caps at 1.0 for any
+    # elapsed > REGULATION_SECONDS regardless, so this only affects display.
+    return 3600 + (period - 5) * 100
+
+
+def build_live_context(*, wp_rows, home_rank, away_rank, initial_home_wp,
+                        status_period, status_clock_seconds):
+    """
+    Assemble the context dict consumed by score_live() / composite_from().
+
+    status_period / status_clock_seconds come from the scoreboard (Tier 1,
+    refreshed every cycle) -- verified the authoritative live clock source,
+    since the summary endpoint's status carries no period/clock at all.
+    wp_rows is whatever win_probability holds for this game right now
+    (Tier 2, refreshed on a slower budget) -- it can lag the scoreboard's
+    clock by multiple cycles, which is fine: quality_so_far metrics operate
+    on whatever prefix of the series is available, and elapsed/progress are
+    derived from the fresher scoreboard clock rather than the WP series's
+    own (possibly stale) tail.
+    """
+    wp_now = wp_now_of(wp_rows)
+    elapsed = _elapsed_from_status(status_period, status_clock_seconds)
+    if elapsed is None and wp_rows:
+        # Fall back to the WP series's own last elapsed value only if the
+        # scoreboard didn't give us a clock (shouldn't normally happen once
+        # a game is genuinely 'in').
+        elapsed = wp_rows[-1]["clock_seconds_elapsed"]
+    progress = progress_of(elapsed)
+    return {
+        "wp_rows": wp_rows,
+        "home_rank": home_rank,
+        "away_rank": away_rank,
+        "initial_home_wp": initial_home_wp,
+        "wp_now": wp_now,
+        "elapsed": elapsed,
+        "progress": progress,
+        "period": status_period,
+    }
+
+
+# --- Half A: quality_so_far metric functions ---
+
+def wp_volatility_rate(ctx):
+    if ctx["elapsed"] is None or ctx["elapsed"] < LIVE_MIN_ELAPSED_SECONDS:
+        return None
+    raw = scoring.wp_volatility(ctx["wp_rows"])
+    return raw / max(ctx["progress"], LIVE_MIN_PROGRESS)
+
+
+def lead_change_rate(ctx):
+    if ctx["elapsed"] is None or ctx["elapsed"] < LIVE_MIN_ELAPSED_SECONDS:
+        return None
+    raw = scoring.lead_changes(ctx["wp_rows"])
+    return raw / max(ctx["progress"], LIVE_MIN_PROGRESS)
+
+
+def late_volatility_rate(ctx):
+    if not _late_window_open(ctx["wp_rows"]):
+        return None
+    raw = scoring.late_volatility(ctx["wp_rows"])
+    return raw / max(_q4_progress(ctx["elapsed"]), LIVE_MIN_PROGRESS)
+
+
+def clutch_finish_live(ctx):
+    if not _late_window_open(ctx["wp_rows"]):
+        return None
+    return scoring.clutch_finish(ctx["wp_rows"])
+
+
+def comeback_magnitude_ctx(ctx):
+    return scoring.comeback_magnitude(ctx["wp_rows"])
+
+
+def upset_in_progress_ctx(ctx):
+    return scoring.upset_in_progress(ctx["wp_now"], ctx["initial_home_wp"], ctx["home_rank"], ctx["away_rank"])
+
+
+def team_profile_ctx(ctx):
+    return scoring.team_profile(ctx["home_rank"], ctx["away_rank"])
+
+
+def upset_risk_ctx(ctx):
+    return scoring.upset_risk(ctx["initial_home_wp"], ctx["home_rank"], ctx["away_rank"])
+
+
+LIVE_SO_FAR_METRICS = [
+    {"name": "wp_volatility_rate",   "fn": wp_volatility_rate,     "weight": 1.0, "cap": scoring.MAX_VOLATILITY},
+    {"name": "lead_change_rate",     "fn": lead_change_rate,       "weight": 1.0, "cap": scoring.MAX_LEAD_CHANGES},
+    {"name": "comeback_magnitude",   "fn": comeback_magnitude_ctx, "weight": 1.0, "cap": MAX_COMEBACK},
+    {"name": "upset_in_progress",    "fn": upset_in_progress_ctx,  "weight": 1.0, "cap": MAX_UPSET_IN_PROGRESS},
+    {"name": "team_profile",         "fn": team_profile_ctx,       "weight": 1.0, "cap": scoring.MAX_TEAM_PROFILE},
+    {"name": "upset_risk",           "fn": upset_risk_ctx,         "weight": 0.5, "cap": None},
+    {"name": "late_volatility_rate", "fn": late_volatility_rate,   "weight": 0.5, "cap": scoring.MAX_LATE_VOLATILITY},
+    {"name": "clutch_finish",        "fn": clutch_finish_live,     "weight": 1.0, "cap": scoring.MAX_CLUTCH_FINISH},
+]
+
+
+# --- Half B: drama_from_here metric functions ---
+
+def tension_now(ctx):
+    if ctx["wp_now"] is None:
+        return None
+    return _closeness(ctx["wp_now"]) * _lateness_factor(ctx["elapsed"])
+
+
+def upset_finish_potential(ctx):
+    if ctx["initial_home_wp"] is None or ctx["wp_now"] is None:
+        return None
+    fav_home = ctx["initial_home_wp"] >= 0.5
+    fav_wp_now = ctx["wp_now"] if fav_home else 1.0 - ctx["wp_now"]
+    quality = max(scoring._rank_tier(ctx["home_rank"]), scoring._rank_tier(ctx["away_rank"]))
+    return quality * (1.0 - fav_wp_now) * _lateness_factor(ctx["elapsed"])
+
+
+def recent_volatility(ctx):
+    recent = ctx["wp_rows"][-LIVE_RECENT_WINDOW:]
+    if len(recent) < 2:
+        return None
+    return scoring.wp_volatility(recent)
+
+
+def ot_live(ctx):
+    period = ctx["period"]
+    if period is None or period <= 4:
+        return 0.0
+    return min(1.0, 0.6 + 0.2 * (period - 4))
+
+
+LIVE_FROM_HERE_METRICS = [
+    {"name": "tension_now",            "fn": tension_now,             "weight": 2.0,  "cap": None},
+    {"name": "upset_finish_potential", "fn": upset_finish_potential,  "weight": 1.0,  "cap": None},
+    {"name": "recent_volatility",      "fn": recent_volatility,       "weight": 0.75, "cap": MAX_RECENT_VOLATILITY},
+    {"name": "ot_live",                "fn": ot_live,                 "weight": 0.5,  "cap": None},
+]
+
+LIVE_METRIC_LABELS = {
+    "tension_now": "a tight game",
+    "upset_finish_potential": "upset potential",
+    "recent_volatility": "recent swings",
+    "ot_live": "overtime",
+    "wp_volatility_rate": "back-and-forth action",
+    "lead_change_rate": "frequent lead changes",
+    "comeback_magnitude": "a big comeback",
+    "upset_in_progress": "an upset in progress",
+    "team_profile": "a ranked matchup",
+    "upset_risk": "a live upset bid",
+    "late_volatility_rate": "late-game swings",
+    "clutch_finish": "a clutch finish",
+}
+
+_ALL_LIVE_METRIC_NAMES = {m["name"] for m in LIVE_SO_FAR_METRICS} | {m["name"] for m in LIVE_FROM_HERE_METRICS}
+_missing_labels = _ALL_LIVE_METRIC_NAMES - set(LIVE_METRIC_LABELS)
+assert not _missing_labels, f"LIVE_METRIC_LABELS missing entries for: {_missing_labels}"
+
+
+def _enrich_breakdown(metrics, breakdown):
+    """composite_from() returns {raw, normalized, weighted} per metric; add
+    `weight` and `applicable` so the breakdown is self-contained for storage
+    (db.replace_live_metrics) and API/UI rendering without needing the
+    registry alongside it."""
+    return {
+        m["name"]: {
+            "raw": breakdown[m["name"]]["raw"],
+            "normalized": breakdown[m["name"]]["normalized"],
+            "weighted": breakdown[m["name"]]["weighted"],
+            "weight": m["weight"],
+            "applicable": breakdown[m["name"]]["raw"] is not None,
+        }
+        for m in metrics
+    }
+
+
+def headline_for(ctx, fh_bd):
+    """One-line explanation generated from the top two contributing
+    from_here metrics, driven by the registry (LIVE_METRIC_LABELS) rather
+    than hardcoded to any one metric name -- retuning a weight or adding a
+    metric updates the generated prose automatically."""
+    top = sorted(
+        ((name, v) for name, v in fh_bd.items() if v["applicable"] and v["weighted"]),
+        key=lambda kv: kv[1]["weighted"],
+        reverse=True,
+    )[:2]
+    if not top:
+        return "Early — not much to go on yet"
+    labels = [LIVE_METRIC_LABELS.get(name, name) for name, _ in top]
+    if len(labels) == 1:
+        return labels[0][0].upper() + labels[0][1:]
+    return f"{labels[0][0].upper() + labels[0][1:]} + {labels[1]}"
+
+
+def score_live(ctx, cycle_seq=None):
+    """
+    Compute the blended live score for one in-progress game.
+
+    ctx: as returned by build_live_context().
+    Returns a dict matching db.upsert_live_score's expected shape, plus a
+    "halves" key ({"so_far": {...}, "from_here": {...}}) for
+    db.replace_live_metrics / the API's per-half breakdown.
+    """
+    so_far_raw, so_bd_raw = scoring.composite_from(LIVE_SO_FAR_METRICS, ctx)
+    from_here_raw, fh_bd_raw = scoring.composite_from(LIVE_FROM_HERE_METRICS, ctx)
+
+    so_bd = _enrich_breakdown(LIVE_SO_FAR_METRICS, so_bd_raw)
+    fh_bd = _enrich_breakdown(LIVE_FROM_HERE_METRICS, fh_bd_raw)
+
+    drama_from_here = from_here_raw if from_here_raw is not None else 0.0
+
+    if so_far_raw is None:
+        live_score = drama_from_here
+    else:
+        live_score = LIVE_W_SO_FAR * so_far_raw + LIVE_W_FROM_HERE * drama_from_here
+
+    so_far_weight = sum(v["weight"] for v in so_bd.values() if v["applicable"])
+    from_here_weight = sum(v["weight"] for v in fh_bd.values() if v["applicable"])
+
+    return {
+        "live_score": live_score,
+        "quality_so_far": so_far_raw,
+        "drama_from_here": drama_from_here,
+        "progress": ctx["progress"],
+        "wp_now": ctx["wp_now"],
+        "n_wp_rows": len(ctx["wp_rows"]),
+        "so_far_weight": so_far_weight,
+        "from_here_weight": from_here_weight,
+        "headline": headline_for(ctx, fh_bd),
+        "cycle_seq": cycle_seq,
+        "halves": {"so_far": so_bd, "from_here": fh_bd},
+    }
+
+
+# --- Refresh loop ---
+
+def _et_today_tomorrow():
+    """ESPN's scoreboard `dates` param is interpreted in US/Eastern (verified
+    live); span today through tomorrow ET so a 9pm PT Saturday kickoff
+    (00:xx ET Sunday) isn't dropped from a 'today' pull."""
+    et = ZoneInfo("America/New_York")
+    today = datetime.now(et).date()
+    tomorrow = today + timedelta(days=1)
+    return f"{today:%Y%m%d}-{tomorrow:%Y%m%d}"
+
+
+def _acquire_lock():
+    if os.path.exists(LOCK_PATH):
+        with open(LOCK_PATH) as f:
+            existing = f.read().strip()
+        raise RuntimeError(
+            f"{LOCK_PATH} already exists (pid {existing}) -- another `--live` process may "
+            f"already be running. Remove the file yourself if you're sure it isn't."
+        )
+    os.makedirs(os.path.dirname(LOCK_PATH) or ".", exist_ok=True)
+    with open(LOCK_PATH, "w") as f:
+        f.write(str(os.getpid()))
+    return LOCK_PATH
+
+
+def _release_lock(path):
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+
+
+def _tier2_priority(conn):
+    """Order this cycle's live games by how overdue a WP refresh is, most
+    overdue first. `urgency = staleness_seconds - LIVE_MAX_STALENESS_SECONDS`,
+    forced to +inf for a game deep enough into the 4th quarter that missing
+    a refresh would be the worst possible moment to be stale. A game with no
+    live_scores row yet (never fetched) always sorts first."""
+    rows = conn.execute("""
+        SELECT g.game_id,
+               (julianday('now') - julianday(ls.computed_at)) * 86400.0 AS staleness_seconds,
+               ls.progress
+        FROM games g LEFT JOIN live_scores ls ON ls.game_id = g.game_id
+        WHERE g.status_state = 'in'
+    """).fetchall()
+    scored = []
+    for r in rows:
+        if r["staleness_seconds"] is None:
+            urgency = float("inf")
+        else:
+            urgency = r["staleness_seconds"] - LIVE_MAX_STALENESS_SECONDS
+            if (r["progress"] or 0.0) >= LIVE_ALWAYS_REFRESH_PROGRESS:
+                urgency = float("inf")
+        scored.append((urgency, r["game_id"]))
+    scored.sort(key=lambda t: t[0], reverse=True)
+    return [gid for _, gid in scored]
+
+
+def _process_live_game(conn, game_id, cycle_seq, mode="normal"):
+    """
+    Fetch this game's summary, update its WP series, and (re)score it.
+
+    mode:
+      "normal" -- persist WP rows to win_probability (incremental
+                  INSERT OR IGNORE append), run compute_play_sequences, and
+                  write live_scores/live_metrics/live_score_history. The
+                  steady-state operating mode.
+      "dry_run" -- fetch and parse only, write nothing at all, log a summary.
+      "shadow" -- fetch and parse, score from the freshly-parsed rows held
+                  only in memory for this cycle, write live_scores/
+                  live_metrics/live_score_history -- but never
+                  win_probability. Persisting live-tracked WP rows without
+                  the completion-time DELETE (which shadow mode skips
+                  entirely, see handle_completions) would let
+                  upsert_win_probability's INSERT OR IGNORE permanently fix
+                  a play's period/clock/sequence at whatever it was mid-live,
+                  uncorrectable by a later real fetch -- exactly the
+                  provenance-split risk the hard delete at completion exists
+                  to prevent. Re-parsing the full summary from scratch every
+                  cycle is wasteful but shadow mode is a bounded validation
+                  exercise, not the steady state.
+    """
+    game_row = conn.execute(
+        "SELECT home_rank, away_rank, initial_home_wp, status_period, status_clock_seconds "
+        "FROM games WHERE game_id = ?",
+        (game_id,),
+    ).fetchone()
+    if game_row is None:
+        return
+
+    try:
+        summary = espn.fetch_game_summary(game_id)
+        wp_rows, home_score, away_score, attendance, initial_home_wp = espn.parse_summary_detail(summary)
+    except Exception:
+        logger.exception("live: failed to fetch/parse summary for %s", game_id)
+        return
+
+    if mode == "dry_run":
+        logger.info("dry-run: %s -- would process %d WP rows", game_id, len(wp_rows))
+        return
+
+    if mode == "normal":
+        with conn:
+            if wp_rows:
+                db.upsert_win_probability(conn, wp_rows)
+            db.compute_play_sequences(conn, game_id=game_id)
+            db.set_initial_home_wp(conn, game_id, initial_home_wp)
+
+        fresh_wp = conn.execute(
+            "SELECT home_win_pct, home_score, away_score, period_number, clock_seconds_elapsed "
+            "FROM win_probability WHERE game_id = ? ORDER BY play_sequence, id",
+            (game_id,),
+        ).fetchall()
+        counts = conn.execute(
+            "SELECT COUNT(*), MAX(play_sequence) FROM win_probability WHERE game_id = ?",
+            (game_id,),
+        ).fetchone()
+        if fresh_wp and counts[1] != counts[0]:
+            # compute_play_sequences just ran above -- this should be
+            # unreachable, but forgetting that step once already cost an
+            # entire season scored on raw insertion order. Refuse loudly
+            # rather than score against an unordered series.
+            logger.error(
+                "live: play_sequence out of sync for %s (%s rows, max seq %s) -- refusing to score",
+                game_id, counts[0], counts[1],
+            )
+            return
+        ctx_iwp = conn.execute(
+            "SELECT initial_home_wp FROM games WHERE game_id = ?", (game_id,)
+        ).fetchone()[0]
+    else:  # shadow
+        fresh_wp = wp_rows
+        ctx_iwp = game_row["initial_home_wp"] if game_row["initial_home_wp"] is not None else initial_home_wp
+
+    ctx = build_live_context(
+        wp_rows=fresh_wp,
+        home_rank=game_row["home_rank"], away_rank=game_row["away_rank"],
+        initial_home_wp=ctx_iwp,
+        status_period=game_row["status_period"], status_clock_seconds=game_row["status_clock_seconds"],
+    )
+    result = score_live(ctx, cycle_seq=cycle_seq)
+    with conn:
+        db.upsert_live_score(conn, game_id, result)
+        db.replace_live_metrics(conn, game_id, result["halves"])
+        db.append_live_history(conn, game_id, result)
+
+
+def handle_completions(conn, game_ids, mode="normal"):
+    """
+    The in -> post transition for a batch of games the scoreboard now
+    reports completed.
+
+    Normal mode: hard-discards everything live-appended to win_probability
+    for these games (upsert_win_probability's INSERT OR IGNORE means a play
+    first seen mid-live can never be corrected in place -- see
+    _process_live_game's docstring), re-fetches through the ordinary
+    pipeline path so the result is byte-identical to a game that was only
+    ever fetched after the fact, then scores the whole batch in one
+    scoring.score_games() call (it runs apply_corrections() internally,
+    which iterates the full corrections table on every invocation -- batch,
+    don't call per-game).
+
+    Shadow mode skips all of the above entirely -- no delete, no re-fetch,
+    no scoring -- so first real-world exposure of this code path cannot
+    touch the retrospective corpus (games.watchability_score, game_metrics).
+    The game is simply left exactly as the normal (non-live) pipeline would
+    have found it, with only its live_scores/live_metrics rows cleared.
+    """
+    if not game_ids:
+        return
+
+    if mode == "shadow":
+        logger.info("live (shadow): %d game(s) completed, retrospective pipeline left untouched: %s",
+                    len(game_ids), game_ids)
+        with conn:
+            for gid in game_ids:
+                db.clear_live_score(conn, gid)
+        return
+
+    from pipeline import fetch_details  # local import: pipeline.py imports
+                                         # src.live for CLI dispatch, so a
+                                         # module-level import here would be
+                                         # circular.
+
+    for gid in game_ids:
+        with conn:
+            db.delete_win_probability(conn, gid)
+        fetch_details(conn, [gid])
+        db.compute_play_sequences(conn, game_id=gid)
+
+    scoring.score_games(conn, game_ids=game_ids)
+
+    with conn:
+        for gid in game_ids:
+            db.clear_live_score(conn, gid)
+
+    logger.info("live: %d game(s) completed and scored: %s", len(game_ids), game_ids)
+
+
+def reconcile_on_start(conn):
+    """
+    Converge state after a crash or restart, so an unattended restart
+    doesn't need manual cleanup:
+
+    - Any live_scores row whose game the DB already shows as completed
+      (crashed mid-transition, or was completed while the poller was down)
+      gets the normal completion transition.
+    - Any completed game with detail_fetched=0 -- whether or not it was
+      ever tracked live -- gets picked up by the normal pipeline. Covers
+      both a crash mid-transition and a game that finished while the
+      poller wasn't running at all.
+    """
+    stale_live = [r[0] for r in conn.execute(
+        "SELECT ls.game_id FROM live_scores ls JOIN games g ON g.game_id = ls.game_id "
+        "WHERE g.completed = 1"
+    )]
+    if stale_live:
+        logger.info("live: reconcile -- %d already-completed game(s) still tracked live", len(stale_live))
+        handle_completions(conn, stale_live)
+
+    from pipeline import fetch_details
+    unfetched = [r[0] for r in conn.execute(
+        "SELECT game_id FROM games WHERE completed = 1 AND detail_fetched = 0"
+    )]
+    if unfetched:
+        logger.info("live: reconcile -- %d completed game(s) never fetched", len(unfetched))
+        fetch_details(conn, unfetched)
+        for gid in unfetched:
+            db.compute_play_sequences(conn, game_id=gid)
+        scoring.score_games(conn, game_ids=unfetched)
+
+
+def run_cycle(conn, cycle_seq, summary_budget=LIVE_SUMMARY_BUDGET, mode="normal", dates=None):
+    """
+    One poll cycle: Tier 1 (one scoreboard call covering the whole slate),
+    completion detection, Tier 2 (budgeted per-game WP refresh). Returns
+    wall-clock seconds elapsed, so run_forever can sleep the remainder of
+    the interval rather than stacking a fixed sleep on top of it.
+    """
+    t0 = time.monotonic()
+    if dates is None:
+        dates = _et_today_tomorrow()
+
+    games = espn.fetch_scoreboard_dates(dates)
+    n_requests = 1
+
+    if mode != "dry_run":
+        with conn:
+            for g in games:
+                db.upsert_game(conn, g)
+
+    if mode != "dry_run":
+        previously_live = set(db.live_game_ids(conn))
+        now_completed = {g["game_id"] for g in games if g["completed"]}
+        newly_completed = [gid for gid in previously_live if gid in now_completed]
+        if newly_completed:
+            handle_completions(conn, newly_completed, mode=mode)
+
+    if mode == "dry_run":
+        targets = [g["game_id"] for g in games if g["status_state"] == "in"][:summary_budget]
+    else:
+        targets = _tier2_priority(conn)[:summary_budget]
+
+    for gid in targets:
+        _process_live_game(conn, gid, cycle_seq, mode=mode)
+        n_requests += 1
+
+    elapsed = time.monotonic() - t0
+    counts = {}
+    for g in games:
+        counts[g["status_state"]] = counts.get(g["status_state"], 0) + 1
+    logger.info(
+        "live: cycle %d | slate %d (%d in, %d post, %d pre) | %d req | %.1fs wall",
+        cycle_seq, len(games), counts.get("in", 0), counts.get("post", 0), counts.get("pre", 0),
+        n_requests, elapsed,
+    )
+    return elapsed
+
+
+def run_forever(conn, interval=LIVE_INTERVAL_SECONDS, summary_budget=LIVE_SUMMARY_BUDGET,
+                 once=False, mode="normal", dates=None):
+    """
+    The `--live` daemon entry point. Handles its own SIGINT/SIGTERM
+    (finishes the current cycle, commits, releases the lock, exits cleanly)
+    and single-writer discipline via a PID lock file -- both skipped in
+    dry_run mode, which takes no lock and mutates nothing.
+    """
+    stop = {"flag": False}
+
+    def _handle_signal(signum, _frame):
+        logger.info("live: received signal %d, finishing current cycle then exiting", signum)
+        stop["flag"] = True
+
+    signal.signal(signal.SIGINT, _handle_signal)
+    signal.signal(signal.SIGTERM, _handle_signal)
+
+    lock_path = None
+    if mode != "dry_run":
+        lock_path = _acquire_lock()
+        conn.execute("PRAGMA busy_timeout = 5000")
+        try:
+            reconcile_on_start(conn)
+        except Exception:
+            logger.exception("live: reconcile_on_start failed -- continuing anyway")
+
+    cycle_seq = 0
+    try:
+        while True:
+            cycle_seq += 1
+            try:
+                elapsed = run_cycle(conn, cycle_seq, summary_budget=summary_budget, mode=mode, dates=dates)
+            except Exception:
+                logger.exception("live: cycle %d failed -- continuing", cycle_seq)
+                elapsed = 0.0
+
+            if once or stop["flag"]:
+                break
+
+            sleep_for = max(0.0, interval - elapsed)
+            if elapsed > interval:
+                logger.warning("live: cycle %d ran long (%.1fs of a %ds budget)", cycle_seq, elapsed, interval)
+            slept = 0
+            while slept < sleep_for and not stop["flag"]:
+                time.sleep(min(1.0, sleep_for - slept))
+                slept += 1
+    finally:
+        if lock_path is not None:
+            _release_lock(lock_path)

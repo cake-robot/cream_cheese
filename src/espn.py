@@ -25,6 +25,28 @@ def fetch_scoreboard(season, week=None, season_type=2):
     return [parse_scoreboard_game(e) for e in events if e.get("competitions")]
 
 
+def fetch_scoreboard_dates(dates, limit=200):
+    """
+    Scoreboard fetch scoped by explicit date(s) rather than a season/week --
+    used by the live poller to pull an entire day or multi-day window in one
+    request, live and final and future games alike (no seasontype filter, no
+    week resolution needed).
+
+    dates: 'YYYYMMDD' for a single day, or 'YYYYMMDD-YYYYMMDD' for a range.
+    Verified against the live API: ESPN interprets `dates` in US/Eastern and
+    a 3-day range returns every event with no truncation at limit=200 (a
+    Saturday tops out around 60-70 FBS games). Returned event.date fields are
+    UTC, so a late West-Coast kickoff on the requested Eastern day can appear
+    dated the next UTC day -- callers wanting a specific viewer-local day
+    should request a padded range and filter the results themselves rather
+    than relying on this call alone to draw the boundary.
+    """
+    url = f"{ESPN_BASE}/scoreboard?limit={limit}&dates={dates}&groups=80"
+    data = fetch_json(url)
+    events = data.get("events", [])
+    return [parse_scoreboard_game(e) for e in events if e.get("competitions")]
+
+
 def fetch_team_schedule(team_id, season):
     url = f"{ESPN_BASE}/teams/{team_id}/schedule?season={season}"
     data = fetch_json(url)
@@ -130,6 +152,36 @@ def _parse_competition(event, comp):
         or _is_conference_championship_note(season_type, event_note)
     )
 
+    status_state = status.get("state", "pre")
+
+    # Scoreboard competitors carry a live "score" field even before kickoff --
+    # verified live: a pregame competitor returns score="0" (a string), not
+    # null. upsert_game's COALESCE(excluded.home_score, games.home_score)
+    # treats 0 as a real value, so parsing it unconditionally would write
+    # 0-0 into every not-yet-started game on every discovery/live-poll pass.
+    # Only trust the scoreboard's score once the game has actually started.
+    home_score = away_score = None
+    if status_state != "pre":
+        try:
+            home_score = int(home.get("score"))
+        except (TypeError, ValueError):
+            home_score = None
+        try:
+            away_score = int(away.get("score"))
+        except (TypeError, ValueError):
+            away_score = None
+
+    # Live status detail, read from the same comp.status block as status_state/
+    # completed above. `period`/`clock`/`displayClock` sit alongside `type` on
+    # comp.status (not inside comp.status.type) -- verified live: the summary
+    # endpoint's header status carries `type` only, no clock, so the
+    # scoreboard is the sole source for these. All pregame-zero / absent.
+    raw_status = comp.get("status", {})
+    status_period = raw_status.get("period")
+    status_clock_seconds = raw_status.get("clock")
+    status_clock_display = raw_status.get("displayClock")
+    status_detail = status.get("shortDetail")
+
     return {
         "game_id": str(event.get("id", comp.get("id", ""))),
         "season_year": season.get("year"),
@@ -148,10 +200,14 @@ def _parse_competition(event, comp):
         "neutral_site": int(bool(comp.get("neutralSite", False))),
         "venue_name": venue_name,
         "event_note": event_note,
-        "status_state": status.get("state", "pre"),
+        "status_state": status_state,
         "completed": int(bool(status.get("completed", False))),
-        "home_score": None,
-        "away_score": None,
+        "status_period": status_period,
+        "status_clock_display": status_clock_display,
+        "status_clock_seconds": status_clock_seconds,
+        "status_detail": status_detail,
+        "home_score": home_score,
+        "away_score": away_score,
         "attendance": None,
         "initial_home_wp": None,
         "detail_fetched": 0,
@@ -215,6 +271,15 @@ def parse_summary_game_meta(summary):
         "event_note": event_note,
         "status_state": status.get("state", "post"),
         "completed": int(bool(status.get("completed", True))),
+        # This bootstrap path (--game bootstrap of a game absent from the DB)
+        # doesn't carry the scoreboard's live status.{period,clock,displayClock}
+        # block -- the summary's header status has only `type`. Left None;
+        # the live poller's scoreboard-based upserts populate these once the
+        # game is actually tracked.
+        "status_period": None,
+        "status_clock_display": None,
+        "status_clock_seconds": None,
+        "status_detail": None,
         "home_score": None,
         "away_score": None,
         "attendance": None,
@@ -245,7 +310,8 @@ def parse_summary_detail(summary):
     # Build play map: play_id -> {period, clock_display, home_score, away_score, sequence_number}
     play_map = {}
     drives = summary.get("drives", {})
-    for drive in drives.get("previous", []):
+
+    def _index_drive(drive):
         for play in drive.get("plays", []):
             pid = str(play.get("id", ""))
             if pid:
@@ -256,6 +322,26 @@ def parse_summary_detail(summary):
                     "away_score": play.get("awayScore"),
                     "sequence_number": play.get("sequenceNumber"),
                 }
+
+    for drive in drives.get("previous", []):
+        _index_drive(drive)
+
+    # A live (in-progress) game's active drive lives in drives.current, which
+    # is completely separate from drives.previous -- a finished game omits
+    # it, and a not-yet-started game omits the whole `drives` key (both
+    # verified live). Reading only `previous` meant every play in a live
+    # game's active drive -- typically its newest, most decisive plays --
+    # landed with period=None/clock=None/elapsed=None, which silently broke
+    # late_volatility/clutch_finish right at the live edge. `current` is
+    # documented (and observed on other ESPN sports) as a single dict, not a
+    # list like `previous`; handle both shapes defensively in case a future
+    # payload nests it as a list.
+    current = drives.get("current")
+    if isinstance(current, dict):
+        _index_drive(current)
+    elif isinstance(current, list):
+        for drive in current:
+            _index_drive(drive)
 
     # Extract scores and attendance from header
     header = summary.get("header", {})

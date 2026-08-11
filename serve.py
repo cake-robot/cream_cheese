@@ -12,13 +12,15 @@ Run from anywhere:
 import pathlib
 import sqlite3
 import sys
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from flask import Flask, abort, g, jsonify, request, send_from_directory
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from src import config, corrections as corrections_module, scoring  # noqa: E402
+from src import config, corrections as corrections_module, live, scoring  # noqa: E402
 
 DB_FILE = (REPO_ROOT / config.DB_PATH).resolve()
 WEB_DIR = REPO_ROOT / "web"
@@ -96,6 +98,55 @@ METRIC_COPY = {
 assert set(METRIC_COPY) == set(scoring.METRICS_BY_NAME), (
     "METRIC_COPY is out of sync with scoring.METRICS -- add/remove an entry "
     "to match every registered metric"
+)
+
+# ---------------------------------------------------------------------------
+# Live metric prose -- same pattern as METRIC_COPY above, kept as a wholly
+# separate table from it on purpose: the live registries (src/live.py) are
+# tuned for partial data and must never be confused with, or merged into,
+# the retrospective METRIC_COPY/METRICS that the scored corpus depends on.
+# ---------------------------------------------------------------------------
+
+LIVE_METRIC_COPY = {
+    "wp_volatility_rate": {"label": "WP volatility (rate)", "description":
+        "Sum of absolute win-probability swings so far, divided by how much of the game has "
+        "elapsed -- lets an early-game hot streak be compared fairly against a full 60 minutes."},
+    "lead_change_rate": {"label": "Lead changes (rate)", "description":
+        "Lead/tie changes so far, divided by elapsed progress."},
+    "comeback_magnitude": {"label": "Comeback magnitude", "description":
+        "The largest win-probability recovery either team has made from its own low point so "
+        "far -- doesn't require the comeback to have been completed."},
+    "upset_in_progress": {"label": "Upset in progress", "description":
+        "How far the pregame favorite's win probability has already fallen from its opening "
+        "line, scaled by the better-ranked team's tier."},
+    "team_profile": {"label": "Team profile", "description":
+        "Credit for ranked teams playing -- identical to the retrospective metric of the same name."},
+    "upset_risk": {"label": "Upset risk", "description":
+        "How lopsided the pregame line was, scaled by rank quality -- identical to the "
+        "retrospective metric of the same name."},
+    "late_volatility_rate": {"label": "Late volatility (rate)", "description":
+        "WP swings in the 4th quarter or overtime so far, divided by how much of the late-game "
+        "window has elapsed. Not applicable until that window opens."},
+    "clutch_finish": {"label": "Clutch finish", "description":
+        "Credit for a decisive score in the final minute of regulation, or reaching overtime. "
+        "Not applicable until the 4th quarter starts."},
+    "tension_now": {"label": "Tension right now", "description":
+        "How close the win probability is at this exact moment, weighted up sharply the later "
+        "in the game it is -- the core 'is this worth turning on right now' signal."},
+    "upset_finish_potential": {"label": "Upset finish potential", "description":
+        "How much upset the pregame favorite could still lose by from here, weighted by rank "
+        "quality and lateness."},
+    "recent_volatility": {"label": "Recent swings", "description":
+        "Win-probability volatility over just the last 20 plays -- momentum, not the whole game."},
+    "ot_live": {"label": "Overtime", "description":
+        "A game already in overtime is guaranteed more drama from here; grows with each "
+        "additional OT period."},
+}
+
+_ALL_LIVE_NAMES = {m["name"] for m in live.LIVE_SO_FAR_METRICS} | {m["name"] for m in live.LIVE_FROM_HERE_METRICS}
+assert set(LIVE_METRIC_COPY) == _ALL_LIVE_NAMES, (
+    "LIVE_METRIC_COPY is out of sync with live.LIVE_SO_FAR_METRICS/LIVE_FROM_HERE_METRICS -- "
+    "add/remove an entry to match every registered live metric"
 )
 
 NOT_IMPLEMENTED = [
@@ -181,6 +232,13 @@ def get_db():
         except sqlite3.OperationalError:
             abort(503, description="the pipeline appears to be mid-write; retry in a moment")
         conn.row_factory = sqlite3.Row
+        # Read-only-safe (doesn't touch _startup_selfcheck's writability
+        # probe) and covers SQLITE_BUSY *mid-query* -- previously only the
+        # connect-time OperationalError above was caught, but the live
+        # poller (src/live.py) now checkpoints WAL far more often than the
+        # old batch pipeline did, since --live writes every ~60s instead of
+        # once per manual run.
+        conn.execute("PRAGMA busy_timeout = 5000")
         g.db = conn
     return g.db
 
@@ -355,6 +413,58 @@ def shape_game(row, metrics_map, rank=None, n_scored=None, has_fox_correction=Fa
     }
 
 
+def fetch_live_metrics_maps(conn, game_ids):
+    """Batch-fetch live_metrics for many games, {game_id: {"so_far": {...},
+    "from_here": {...}}}. Mirrors fetch_metrics_maps' batching but keyed by
+    half as well as metric name, and applicability is read from the stored
+    `applicable` column rather than row-absence (see live_metrics' schema
+    comment in src/db.py -- a live "not applicable yet" is a state the UI
+    renders, not an implicit null)."""
+    if not game_ids:
+        return {}
+    placeholders = ",".join("?" * len(game_ids))
+    rows = conn.execute(
+        f"SELECT game_id, half, metric_name, raw_value, norm_value, weight, applicable "
+        f"FROM live_metrics WHERE game_id IN ({placeholders})",
+        game_ids,
+    ).fetchall()
+    out = {gid: {"so_far": {}, "from_here": {}} for gid in game_ids}
+    for r in rows:
+        out[r["game_id"]][r["half"]][r["metric_name"]] = {
+            "raw": r["raw_value"],
+            "normalized": r["norm_value"],
+            "weight": r["weight"],
+            "applicable": bool(r["applicable"]),
+        }
+    return out
+
+
+def build_live_payload(row, metrics_for_game):
+    """The additive "live" key attached to a game's shape_game() output for
+    any game currently tracked in live_scores. `row` must carry the
+    live_scores columns plus status_period/status_clock_display/status_detail
+    from `games` and a `stale_seconds` column computed by the caller's SQL
+    (julianday-based, so it doesn't need Python-side datetime parsing of
+    computed_at)."""
+    return {
+        "live_score": row["live_score"],
+        "quality_so_far": row["quality_so_far"],
+        "drama_from_here": row["drama_from_here"],
+        "progress": row["progress"],
+        "wp_now": row["wp_now"],
+        "status": {
+            "period": row["status_period"],
+            "clock_display": row["status_clock_display"],
+            "detail": row["status_detail"],
+        },
+        "so_far": {"applicable_weight": row["so_far_weight"], "metrics": metrics_for_game["so_far"]},
+        "from_here": {"applicable_weight": row["from_here_weight"], "metrics": metrics_for_game["from_here"]},
+        "headline": row["headline"],
+        "computed_at": row["computed_at"],
+        "stale_seconds": row["stale_seconds"],
+    }
+
+
 def build_misalignment_callout(rows):
     """One or two generated sentences naming whichever metric most
     over-delivers vs. its designed weight, and whichever most under-delivers.
@@ -503,6 +613,11 @@ def api_healthz():
         "SELECT COUNT(*) AS n FROM games WHERE watchability_score IS NOT NULL"
     ).fetchone()["n"]
     sqlite_version = conn.execute("SELECT sqlite_version() AS v").fetchone()["v"]
+    live_feed = conn.execute(
+        "SELECT COUNT(*) AS n, MAX(computed_at) AS last, "
+        "(julianday('now') - julianday(MAX(computed_at))) * 86400.0 AS staleness_seconds "
+        "FROM live_scores"
+    ).fetchone()
     return jsonify({
         "status": "ok",
         "read_only_verified": ro_ok,
@@ -511,6 +626,11 @@ def api_healthz():
         "metrics_registered": len(scoring.METRICS),
         "total_weight": TOTAL_WEIGHT,
         "db_path": str(DB_FILE),
+        "live_feed": {
+            "tracked_games": live_feed["n"],
+            "last_cycle_at": live_feed["last"],
+            "staleness_seconds": live_feed["staleness_seconds"],
+        },
     })
 
 
@@ -582,6 +702,183 @@ def api_metrics():
     return jsonify({"metrics": out, "total_weight": TOTAL_WEIGHT, "not_implemented": NOT_IMPLEMENTED})
 
 
+# ---- slate ---------------------------------------------------------------
+
+@app.route("/api/slate/registry")
+def api_slate_registry():
+    so_far = [{
+        "name": m["name"], "half": "so_far", "label": LIVE_METRIC_COPY[m["name"]]["label"],
+        "description": LIVE_METRIC_COPY[m["name"]]["description"], "weight": m["weight"], "cap": m["cap"],
+    } for m in live.LIVE_SO_FAR_METRICS]
+    from_here = [{
+        "name": m["name"], "half": "from_here", "label": LIVE_METRIC_COPY[m["name"]]["label"],
+        "description": LIVE_METRIC_COPY[m["name"]]["description"], "weight": m["weight"], "cap": m["cap"],
+    } for m in live.LIVE_FROM_HERE_METRICS]
+    return jsonify({
+        "weights": {"so_far": live.LIVE_W_SO_FAR, "from_here": live.LIVE_W_FROM_HERE},
+        "so_far_total_weight": sum(m["weight"] for m in live.LIVE_SO_FAR_METRICS),
+        "from_here_total_weight": sum(m["weight"] for m in live.LIVE_FROM_HERE_METRICS),
+        "so_far": so_far,
+        "from_here": from_here,
+    })
+
+
+def _slate_window(conn, scope, date_str, tz_name):
+    """Resolve the requested scope into a (where_sql, params, resolved) tuple.
+    `where_sql`/`params` select against `g.game_date` (a fixed-format UTC ISO
+    string, e.g. "2026-08-29T16:00Z") -- bounds are computed here in Python
+    with zoneinfo and formatted the same way, rather than doing timezone math
+    in SQL (a fixed-offset SQL date() adjustment would be wrong half the year
+    across DST, and would defeat the season/week index besides).
+
+    scope="week" resolves the (season_year, season_type, week) tuple(s)
+    present in the day window and matches on that instead -- consistent with
+    how the rest of the app defines "a week" (see game.html's postseason
+    handling) rather than a raw 7-day span. Falls back to a Mon-Sun window
+    around the date if the day itself has no games with a week number.
+    """
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        abort(400, description=f"unknown tz: {tz_name}")
+
+    if date_str:
+        try:
+            local_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            abort(400, description="date must be YYYY-MM-DD")
+    else:
+        local_date = datetime.now(tz).date()
+
+    def _iso_utc(dt):
+        return dt.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%MZ")
+
+    day_start = datetime(local_date.year, local_date.month, local_date.day, tzinfo=tz)
+    day_end = day_start + timedelta(days=1)
+    window_start, window_end = day_start, day_end
+
+    if scope == "day":
+        return (
+            "g.game_date >= ? AND g.game_date < ?",
+            [_iso_utc(day_start), _iso_utc(day_end)],
+            {"date": str(local_date), "window_utc": [_iso_utc(window_start), _iso_utc(window_end)]},
+        )
+
+    # scope == "week"
+    tuples = conn.execute(
+        "SELECT DISTINCT season_year, season_type, week FROM games "
+        "WHERE game_date >= ? AND game_date < ? AND week IS NOT NULL",
+        (_iso_utc(day_start), _iso_utc(day_end)),
+    ).fetchall()
+    if not tuples:
+        monday = local_date - timedelta(days=local_date.weekday())
+        window_start = datetime(monday.year, monday.month, monday.day, tzinfo=tz)
+        window_end = window_start + timedelta(days=7)
+        tuples = conn.execute(
+            "SELECT DISTINCT season_year, season_type, week FROM games "
+            "WHERE game_date >= ? AND game_date < ? AND week IS NOT NULL",
+            (_iso_utc(window_start), _iso_utc(window_end)),
+        ).fetchall()
+
+    if not tuples:
+        return "0", [], {"date": str(local_date), "window_utc": [_iso_utc(window_start), _iso_utc(window_end)]}
+
+    clause = " OR ".join(["(g.season_year = ? AND g.season_type = ? AND g.week = ?)"] * len(tuples))
+    params = []
+    for t in tuples:
+        params.extend([t["season_year"], t["season_type"], t["week"]])
+    return clause, params, {"date": str(local_date), "window_utc": [_iso_utc(window_start), _iso_utc(window_end)]}
+
+
+@app.route("/api/slate")
+def api_slate():
+    conn = get_db()
+    scope = request.args.get("scope", "day")
+    if scope not in ("day", "week"):
+        abort(400, description="scope must be day or week")
+    tz_name = request.args.get("tz", "America/Los_Angeles")
+
+    where_scope, scope_params, resolved = _slate_window(conn, scope, request.args.get("date"), tz_name)
+
+    # -- live section: additive "live" key, sorted by live_score desc -------
+    live_where = f"g.status_state = 'in' AND ({where_scope})"
+    live_params = list(scope_params)
+    live_rows = conn.execute(f"""
+        SELECT g.*, {OT_EXISTS_SQL} AS is_ot,
+               ls.live_score, ls.quality_so_far, ls.drama_from_here, ls.progress,
+               ls.wp_now, ls.n_wp_rows, ls.so_far_weight, ls.from_here_weight, ls.headline,
+               ls.computed_at,
+               (julianday('now') - julianday(ls.computed_at)) * 86400.0 AS stale_seconds
+        FROM games g JOIN live_scores ls ON ls.game_id = g.game_id
+        WHERE {live_where}
+        ORDER BY ls.live_score DESC
+    """, live_params).fetchall()
+    live_game_ids = [r["game_id"] for r in live_rows]
+    live_metrics_by_game = fetch_live_metrics_maps(conn, live_game_ids)
+    live_out = []
+    for row in live_rows:
+        g_out = shape_game(row, {}, has_manual_correction=(row["game_id"] in MANUAL_CORRECTION_GAME_IDS))
+        g_out["live"] = build_live_payload(row, live_metrics_by_game.get(row["game_id"], {"so_far": {}, "from_here": {}}))
+        live_out.append(g_out)
+
+    # -- completed section: existing retrospective shape, sorted by score ---
+    completed_where = f"g.completed = 1 AND ({where_scope})"
+    completed_rows = conn.execute(f"""
+        WITH {RANKED_CTE_SQL},
+        {FOX_FLAG_CTE_SQL}
+        SELECT g.*, {OT_EXISTS_SQL} AS is_ot, r.rnk, r.n_scored,
+               (fc.game_id IS NOT NULL) AS has_fox_correction
+        FROM games g
+        LEFT JOIN ranked r ON r.game_id = g.game_id
+        LEFT JOIN fox_flag fc ON fc.game_id = g.game_id
+        WHERE {completed_where}
+        ORDER BY g.watchability_score IS NULL, g.watchability_score DESC
+    """, scope_params).fetchall()
+    completed_ids = [r["game_id"] for r in completed_rows if r["watchability_score"] is not None]
+    metrics_by_game = fetch_metrics_maps(conn, completed_ids)
+    completed_out = [
+        shape_game(
+            row, metrics_by_game.get(row["game_id"], {}), rank=row["rnk"], n_scored=row["n_scored"],
+            has_fox_correction=bool(row["has_fox_correction"]),
+            has_manual_correction=(row["game_id"] in MANUAL_CORRECTION_GAME_IDS),
+        )
+        for row in completed_rows
+    ]
+
+    # -- upcoming section: plain listing, no score of any kind, by design ---
+    # (see plans/... "noon Pacific Saturday" design doc: judging a game that
+    # hasn't kicked off is left to the viewer, not this algorithm)
+    upcoming_where = f"g.status_state = 'pre' AND ({where_scope})"
+    upcoming_rows = conn.execute(f"""
+        SELECT g.*, {OT_EXISTS_SQL} AS is_ot FROM games g
+        WHERE {upcoming_where}
+        ORDER BY g.game_date ASC
+    """, scope_params).fetchall()
+    upcoming_out = [shape_game(row, {}) for row in upcoming_rows]
+
+    live_feed = conn.execute(
+        "SELECT COUNT(*) AS n, MAX(computed_at) AS last, "
+        "(julianday('now') - julianday(MAX(computed_at))) * 86400.0 AS staleness_seconds "
+        "FROM live_scores"
+    ).fetchone()
+
+    return jsonify({
+        "as_of": datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "scope": scope,
+        "date": resolved["date"],
+        "tz": tz_name,
+        "window_utc": resolved["window_utc"],
+        "live_feed": {
+            "tracked_games": live_feed["n"],
+            "last_cycle_at": live_feed["last"],
+            "staleness_seconds": live_feed["staleness_seconds"],
+        },
+        "weights": {"so_far": live.LIVE_W_SO_FAR, "from_here": live.LIVE_W_FROM_HERE},
+        "counts": {"live": len(live_out), "completed": len(completed_out), "upcoming": len(upcoming_out)},
+        "sections": {"live": live_out, "completed": completed_out, "upcoming": upcoming_out},
+    })
+
+
 # ---- games list / detail ---------------------------------------------------
 
 SORT_WHITELIST = {
@@ -640,6 +937,13 @@ def api_games():
         )
         params.extend(teams)
         params.extend(teams)
+
+    state = args.get("state", "all")
+    if state not in ("pre", "in", "post", "all"):
+        abort(400, description="state must be pre, in, post, or all")
+    if state != "all":
+        where.append("g.status_state = ?")
+        params.append(state)
 
     ranked = args.get("ranked", "any")
     if ranked not in ("any", "one", "both"):
@@ -889,6 +1193,19 @@ def api_game_detail(game_id):
             (game_id,),
         ).fetchall()
         wp_payload = build_wp_payload(wp_rows, row)
+    elif row["status_state"] == "in":
+        # A live-tracked game has real (partial) win_probability rows too --
+        # written incrementally by src/live.py's poller -- so the chart can
+        # render before the game is scored. build_wp_payload's "final" meta
+        # key just reflects whatever score the game currently carries here.
+        wp_rows = conn.execute(
+            "SELECT play_id, sequence_number, home_win_pct, clock_seconds_elapsed, period_number, "
+            "clock_display, home_score, away_score, play_sequence FROM win_probability "
+            "WHERE game_id=? ORDER BY play_sequence, id",
+            (game_id,),
+        ).fetchall()
+        if wp_rows:
+            wp_payload = build_wp_payload(wp_rows, row)
 
     manual = [c for c in corrections_module.CORRECTIONS if c["game_id"] == game_id]
     fox_rows = conn.execute(
@@ -927,6 +1244,28 @@ def api_game_detail(game_id):
         "weight": m["weight"], "cap": m["cap"],
     } for m in scoring.METRICS]
 
+    # Additive only -- present only for a game currently tracked live
+    # (row["status_state"] == 'in' and a live_scores row exists). A
+    # completed or not-yet-started game gets no "live"/"live_history" key
+    # at all, rather than nulls -- upcoming games are deliberately unscored
+    # (see /api/slate), so there's nothing live to report for them either.
+    live_payload, live_history = None, None
+    live_row = conn.execute("""
+        SELECT ls.*, g.status_period, g.status_clock_display, g.status_detail,
+               (julianday('now') - julianday(ls.computed_at)) * 86400.0 AS stale_seconds
+        FROM live_scores ls JOIN games g ON g.game_id = ls.game_id
+        WHERE ls.game_id = ?
+    """, (game_id,)).fetchone()
+    if live_row is not None:
+        live_metrics = fetch_live_metrics_maps(conn, [game_id]).get(game_id, {"so_far": {}, "from_here": {}})
+        live_payload = build_live_payload(live_row, live_metrics)
+        history_rows = conn.execute(
+            "SELECT computed_at, progress, live_score, quality_so_far, drama_from_here "
+            "FROM live_score_history WHERE game_id = ? ORDER BY computed_at",
+            (game_id,),
+        ).fetchall()
+        live_history = [dict(r) for r in history_rows]
+
     return jsonify({
         "game": game_shaped,
         "rank_context": rank_context,
@@ -936,6 +1275,8 @@ def api_game_detail(game_id):
         "corrections": corrections_payload,
         "wp": wp_payload,
         "neighbors": neighbors,
+        "live": live_payload,
+        "live_history": live_history,
     })
 
 

@@ -195,6 +195,72 @@ def team_profile(home_rank, away_rank):
     return _rank_tier(home_rank) + _rank_tier(away_rank)
 
 
+def _smooth_wp(wps, window=3):
+    """3-play median smoothing of a home-WP series. Defends against isolated
+    garbage rows the same way lead_changes()/clutch_finish() sanitize scores --
+    ESPN's WP series occasionally has a single spike/drop-to-zero row (verified
+    on 15/1828 completed games, e.g. a final row of 0.000 in a game that wasn't
+    remotely decided). A raw max-drawdown/drawup pass would read that spike as
+    a full-magnitude comeback; the median filter absorbs a lone bad row while
+    leaving genuine multi-play swings intact."""
+    if len(wps) < window:
+        return list(wps)
+    half = window // 2
+    out = []
+    for i in range(len(wps)):
+        lo, hi = max(0, i - half), min(len(wps), i + half + 1)
+        out.append(sorted(wps[lo:hi])[(hi - lo) // 2])
+    return out
+
+
+def comeback_magnitude(wp_rows):
+    """Largest win-probability recovery by either side: the biggest run-up in
+    home WP from a prior trough, or the biggest run-up in away WP (a run-down
+    in home WP), whichever is larger. Classic max-drawup/max-drawdown over the
+    (smoothed) series, one O(n) pass.
+
+    Deliberately outcome-blind -- it measures how far a team climbed back from
+    its own low point, not whether that team went on to win. Doesn't need
+    consummation: identical whether the recovering team completed the comeback
+    or fell just short, which is the property requested for this metric.
+    """
+    wps = _smooth_wp([r["home_win_pct"] for r in wp_rows])
+    if len(wps) < 2:
+        return 0.0
+    best = 0.0
+    lo = hi = wps[0]
+    for w in wps:
+        best = max(best, w - lo, hi - w)
+        lo = min(lo, w)
+        hi = max(hi, w)
+    return best
+
+
+def upset_in_progress(current_home_wp, initial_home_wp, home_rank, away_rank):
+    """How far the pregame favorite's win probability has already fallen from
+    its opening line, scaled by the better-ranked team's tier (reuses
+    _rank_tier so it agrees with team_profile/upset_risk on what "ranked" is
+    worth).
+
+    Distinct from upset_risk (pregame skew only, blind to what's actually
+    happened) -- this tracks the favorite's in-game slide, and like
+    comeback_magnitude it doesn't require the upset to actually land: a
+    favorite that slid from 85% to 40% and then recovered still gets credit
+    for how real the threat was.
+
+    Returns None (not 0.0) when the pregame line or current WP is unknown, so
+    it drops out of the composite's denominator rather than penalizing the
+    game -- same "not applicable" convention as clutch_finish/late_volatility.
+    """
+    if initial_home_wp is None or current_home_wp is None:
+        return None
+    fav_home = initial_home_wp >= 0.5
+    pre = initial_home_wp if fav_home else 1.0 - initial_home_wp
+    now = current_home_wp if fav_home else 1.0 - current_home_wp
+    quality = max(_rank_tier(home_rank), _rank_tier(away_rank))
+    return max(0.0, pre - now) * quality
+
+
 def upset_risk(initial_home_wp, home_rank, away_rank):
     """
     How lopsided the pregame win probability was (0 = even matchup, 1 =
@@ -245,25 +311,32 @@ def _normalize(metric_name, raw):
 
 # --- Scoring ---
 
-def score_game(context):
+def composite_from(metrics, context):
     """
-    Compute composite watchability score for a single game.
+    Shared composite algebra: composite = sum(min(raw/cap, 1) * weight) / sum(weight),
+    over the metrics whose fn returned a non-None raw value. Used by score_game()
+    against the retrospective METRICS registry, and by src/live.py against the
+    live LIVE_SO_FAR_METRICS / LIVE_FROM_HERE_METRICS registries -- same rules,
+    different metric lists.
 
-    context: {"wp_rows": [...], "home_rank": int|None, "away_rank": int|None,
-              "initial_home_wp": float|None}
-    Returns (composite: float, breakdown: dict).
-    breakdown keys: metric name → {raw, normalized, weighted}.
+    metrics: list of {"name", "fn", "weight", "cap"} dicts (fn takes `context`
+    and returns a raw value or None).
+    Returns (composite: float | None, breakdown: dict). breakdown keys: metric
+    name -> {raw, normalized, weighted}. composite is None when every metric
+    returned None (zero applicable weight) -- callers decide how to handle
+    that rather than dividing by zero.
 
-    A metric fn may return None to signal "not applicable" for this game
-    (e.g. clutch_finish for a game that went to OT) -- such metrics are
-    excluded from both the numerator and the weight total, rather than
-    scored 0, so they don't structurally penalize games they don't apply to.
+    A metric fn may return None to signal "not applicable" for this context
+    (e.g. clutch_finish for a game that went to OT, or any live "so far"
+    metric before its definition window has opened) -- such metrics are
+    excluded from both the numerator and the weight total, rather than scored
+    0, so they don't structurally penalize contexts they don't apply to.
     """
     breakdown = {}
     total_weight = 0.0
     composite = 0.0
 
-    for m in METRICS:
+    for m in metrics:
         raw = m["fn"](context)
         if raw is None:
             breakdown[m["name"]] = {"raw": None, "normalized": None, "weighted": None}
@@ -277,8 +350,30 @@ def score_game(context):
         total_weight += m["weight"]
         composite += weighted
 
-    composite /= total_weight
-    return composite, breakdown
+    if total_weight == 0.0:
+        return None, breakdown
+    return composite / total_weight, breakdown
+
+
+def score_game(context):
+    """
+    Compute composite watchability score for a single game, against the
+    retrospective METRICS registry.
+
+    context: {"wp_rows": [...], "home_rank": int|None, "away_rank": int|None,
+              "initial_home_wp": float|None}
+    Returns (composite: float, breakdown: dict). breakdown keys: metric name
+    -> {raw, normalized, weighted}.
+
+    In practice every retrospective game has at least team_profile/upset_risk
+    applicable (they need no WP data), so total_weight is never 0 here -- the
+    0.0 fallback below exists for defensiveness (composite_from() itself no
+    longer divides by zero) and preserves this function's prior behavior of
+    always returning a float rather than pushing None-handling onto callers
+    that don't expect it (score_games(), apply_corrections()).
+    """
+    composite, breakdown = composite_from(METRICS, context)
+    return (composite if composite is not None else 0.0), breakdown
 
 
 def recompute_composite(conn, game_id):

@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Slate — Watchability</title>
+<link rel="stylesheet" href="/style.css">
+<script>
+(function () {
+  var t = localStorage.getItem("theme");
+  if (t && t !== "system") document.documentElement.setAttribute("data-theme", t);
+})();
+</script>
+</head>
+<body data-page="slate">
+
+<header class="chrome">
+  <span class="brand">🏈 Watchability</span>
+  <nav>
+    <a href="/slate.html" aria-current="page">Slate</a>
+    <a href="/index.html">Games</a>
+    <a href="/top.html">Top games</a>
+    <a href="/analytics.html">Analytics</a>
+  </nav>
+  <div class="theme-toggle" id="theme-toggle">
+    <button data-mode="light" aria-pressed="false">Light</button>
+    <button data-mode="dark" aria-pressed="false">Dark</button>
+    <button data-mode="system" aria-pressed="true">System</button>
+  </div>
+</header>
+
+<main>
+  <div class="page-title">Slate — what to watch right now</div>
+
+  <div class="filters" id="filters">
+    <label>Scope <select id="f-scope">
+      <option value="day">Day</option>
+      <option value="week">Week</option>
+    </select></label>
+    <label>Date <input type="date" id="f-date"></label>
+    <div class="spacer"></div>
+    <span class="feed-pill" id="feed-pill"></span>
+  </div>
+
+  <div id="slate-error" class="diverge-note"></div>
+
+  <div class="section-title">Live now</div>
+  <div id="live-section"></div>
+
+  <div class="section-title">Final today</div>
+  <div id="completed-section"></div>
+
+  <div class="section-title">Kickoff soon</div>
+  <div id="upcoming-section"></div>
+</main>
+
+<script src="/app.js"></script>
+<script src="/charts.js"></script>
+<script>
+let SLATE_REGISTRY = { so_far: [], from_here: [] };
+let RETRO_REGISTRY = [];
+let CURRENT_SLATE = null;
+const EXPANDED = new Set();
+const PREV_LIVE_SCORES = {};
+let IN_FLIGHT = false;
+let POLL_TIMER = null;
+
+const POLL_MS = 30000; // half the live writer's ~60s cadence
+
+function currentFilters() {
+  return {
+    scope: document.getElementById("f-scope").value,
+    date: document.getElementById("f-date").value,
+  };
+}
+
+function applyFiltersToForm(params) {
+  document.getElementById("f-scope").value = params.scope || "day";
+  document.getElementById("f-date").value = params.date || todayLocalISO();
+}
+
+function todayLocalISO() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+// ---- feed pill --------------------------------------------------------------
+
+function renderFeedPill(data) {
+  const pill = document.getElementById("feed-pill");
+  const s = data.live_feed.staleness_seconds;
+  pill.innerHTML = "";
+  pill.appendChild(el("span", { class: "dot" }));
+  if (!data.live_feed.tracked_games) {
+    pill.className = "feed-pill";
+    pill.appendChild(el("span", { text: "No live games tracked right now" }));
+    return;
+  }
+  const stale = s === null || s > 150;
+  pill.className = "feed-pill" + (stale ? " stale" : "");
+  pill.appendChild(el("span", { text: s === null ? "feed not running" : `updated ${Math.round(s)}s ago` }));
+}
+
+// ---- live section -------------------------------------------------------------
+
+function halvesBars(quality, drama) {
+  const wrap = el("div", {});
+  [["Quality so far", quality], ["Drama from here", drama]].forEach(([label, value]) => {
+    wrap.appendChild(el("div", { class: "halves-row" }, [
+      el("div", { class: "half-label" }, [label, " ", el("span", { class: "tabular-nums", text: fmtScore(value) })]),
+      el("div", { class: "score-meter" }, el("i", { style: `width:${value === null || value === undefined ? 0 : Math.min(100, value * 100)}%` })),
+    ]));
+  });
+  return wrap;
+}
+
+function divergeNote(live) {
+  if (live.quality_so_far === null || live.quality_so_far === undefined) return null;
+  if (Math.abs(live.quality_so_far - live.drama_from_here) <= 0.3) return null;
+  return live.quality_so_far > live.drama_from_here
+    ? "Was better earlier than it looks right now"
+    : "Quiet so far, but heating up";
+}
+
+function renderLiveExpand(container, g) {
+  container.appendChild(el("div", { class: "card-sub", text: "Quality so far" }));
+  contributionBars(container, adaptLiveMetrics(g.live.so_far.metrics), SLATE_REGISTRY.so_far, g.live.so_far.applicable_weight || 0.0001);
+  container.appendChild(el("div", { class: "card-sub", style: "margin-top:10px", text: "Drama from here" }));
+  contributionBars(container, adaptLiveMetrics(g.live.from_here.metrics), SLATE_REGISTRY.from_here, g.live.from_here.applicable_weight || 0.0001);
+}
+
+function renderLiveSection(games) {
+  const wrap = document.getElementById("live-section");
+  wrap.innerHTML = "";
+  if (!games.length) {
+    wrap.appendChild(el("div", { class: "empty-state", text: "No games in progress right now." }));
+    return;
+  }
+
+  const [top, ...rest] = games;
+  const hero = el("div", { class: "card" });
+  hero.appendChild(el("div", { class: "matchup-header" }, [
+    el("div", {}, [
+      el("h2", {}, [fmtMatchup(top) + " ", ...renderChips(top)]),
+      el("div", { class: "sub", text: top.live.status.detail || "" }),
+    ]),
+  ]));
+  hero.appendChild(el("div", { class: "hero-row" }, [
+    el("div", { class: "hero-score tabular-nums", text: fmtScore(top.live.live_score) }),
+    el("div", { class: "hero-context" }, [el("div", { text: top.live.headline })]),
+  ]));
+  hero.appendChild(halvesBars(top.live.quality_so_far, top.live.drama_from_here));
+  const note = divergeNote(top.live);
+  if (note) hero.appendChild(el("div", { class: "diverge-note", text: note }));
+  hero.style.cursor = "pointer";
+  hero.addEventListener("click", () => (location.href = `/game.html?id=${top.game_id}`));
+  wrap.appendChild(hero);
+  PREV_LIVE_SCORES[top.game_id] = top.live.live_score;
+
+  if (!rest.length) return;
+
+  const list = el("div", { class: "card" });
+  rest.forEach((g) => {
+    const flash = PREV_LIVE_SCORES[g.game_id] !== undefined
+      && Math.abs(PREV_LIVE_SCORES[g.game_id] - g.live.live_score) > 0.05;
+    PREV_LIVE_SCORES[g.game_id] = g.live.live_score;
+
+    const toggle = el("span", { text: "⌄", style: "color:var(--ink-muted);cursor:pointer;padding:0 6px" });
+    const row = el("div", { class: "top-list-item" + (flash ? " updated-flash" : "") }, [
+      el("div", { class: "val tabular-nums", text: fmtScore(g.live.live_score) }),
+      el("div", { class: "info" }, [
+        el("div", {}, [fmtMatchup(g), ...renderChips(g)]),
+        el("div", { class: "why", text: `${g.live.status.detail || ""}${g.live.headline ? " · " + g.live.headline : ""}` }),
+      ]),
+      toggle,
+    ]);
+    row.style.cursor = "pointer";
+    row.addEventListener("click", (ev) => {
+      if (ev.target === toggle) return;
+      location.href = `/game.html?id=${g.game_id}`;
+    });
+
+    const expandWrap = el("div", { style: "display:none;padding:6px 0 14px 4px" });
+    toggle.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      const showing = expandWrap.style.display !== "none";
+      expandWrap.style.display = showing ? "none" : "block";
+      if (showing) { EXPANDED.delete(g.game_id); return; }
+      EXPANDED.add(g.game_id);
+      if (expandWrap.children.length === 0) renderLiveExpand(expandWrap, g);
+    });
+    if (EXPANDED.has(g.game_id)) {
+      expandWrap.style.display = "block";
+      renderLiveExpand(expandWrap, g);
+    }
+
+    list.appendChild(row);
+    list.appendChild(expandWrap);
+  });
+  wrap.appendChild(list);
+}
+
+// ---- completed section --------------------------------------------------------
+
+function renderCompletedSection(games) {
+  const wrap = document.getElementById("completed-section");
+  wrap.innerHTML = "";
+  if (!games.length) {
+    wrap.appendChild(el("div", { class: "empty-state", text: "No games finished in this window yet." }));
+    return;
+  }
+  const card = el("div", { class: "card" });
+  games.forEach((g) => {
+    const scoreCell = g.watchability_score === null
+      ? el("span", { text: "—" })
+      : el("div", { class: "score-cell" }, [
+          el("span", { class: "score-val tabular-nums", text: fmtScore(g.watchability_score) }),
+          el("div", { class: "score-meter" }, el("i", { style: `width:${Math.min(100, (g.watchability_score / 0.70) * 100)}%` })),
+          el("span", { class: "pctile", text: g.percentile !== null ? fmtPct(g.percentile) : "" }),
+        ]);
+    const row = el("div", { class: "top-list-item" }, [
+      el("div", { class: "val tabular-nums", style: "min-width:80px" }, scoreCell),
+      el("div", { class: "info" }, [
+        el("div", {}, [fmtMatchup(g), ...renderChips(g)]),
+        el("div", { class: "why", text: seasonWeekLabel(g) }),
+      ]),
+    ]);
+    row.style.cursor = "pointer";
+    row.addEventListener("click", () => (location.href = `/game.html?id=${g.game_id}`));
+    card.appendChild(row);
+  });
+  wrap.appendChild(card);
+}
+
+// ---- upcoming section ----------------------------------------------------------
+
+function renderUpcomingSection(games) {
+  const wrap = document.getElementById("upcoming-section");
+  wrap.innerHTML = "";
+  if (!games.length) {
+    wrap.appendChild(el("div", { class: "empty-state", text: "Nothing left to kick off in this window." }));
+    return;
+  }
+  const card = el("div", { class: "card" }, [
+    el("div", { class: "card-sub", text: "Not scored -- these haven't kicked off yet, so judge them yourself." }),
+  ]);
+  games.forEach((g) => {
+    const row = el("div", { class: "kickoff-row" }, [
+      el("span", { class: "kickoff-time", text: fmtKickoff(g.game_date) }),
+      el("div", { class: "info", style: "flex:1" }, [fmtMatchup(g), ...renderChips(g)]),
+    ]);
+    row.style.cursor = "pointer";
+    row.addEventListener("click", () => (location.href = `/game.html?id=${g.game_id}`));
+    card.appendChild(row);
+  });
+  wrap.appendChild(card);
+}
+
+// ---- load / poll ----------------------------------------------------------------
+
+async function loadSlate({ push = false } = {}) {
+  if (IN_FLIGHT) return;
+  IN_FLIGHT = true;
+  const errBox = document.getElementById("slate-error");
+  try {
+    const f = currentFilters();
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    setParams(f, { push });
+    const data = await api("/slate", { ...f, tz });
+    CURRENT_SLATE = data;
+    errBox.textContent = "";
+    renderFeedPill(data);
+    renderLiveSection(data.sections.live);
+    renderCompletedSection(data.sections.completed);
+    renderUpcomingSection(data.sections.upcoming);
+  } catch (e) {
+    errBox.textContent = `Could not load slate: ${e.message}`;
+  } finally {
+    IN_FLIGHT = false;
+  }
+}
+
+function schedulePoll() {
+  if (POLL_TIMER) clearInterval(POLL_TIMER);
+  POLL_TIMER = setInterval(() => {
+    if (document.visibilityState === "visible") loadSlate();
+  }, POLL_MS);
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") loadSlate();
+});
+
+function wireFilters() {
+  document.querySelectorAll(".filters select, .filters input").forEach((elm) => {
+    elm.addEventListener("change", () => loadSlate({ push: true }));
+  });
+}
+
+(async function init() {
+  const [registry, metricsResp] = await Promise.all([api("/slate/registry"), api("/metrics")]);
+  SLATE_REGISTRY = registry;
+  RETRO_REGISTRY = metricsResp.metrics;
+  const params = getParams();
+  applyFiltersToForm(params);
+  wireFilters();
+  await loadSlate();
+  schedulePoll();
+})();
+</script>
+</body>
+</html>
