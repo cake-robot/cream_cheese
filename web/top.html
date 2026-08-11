@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Top games — Watchability</title>
+<link rel="stylesheet" href="/style.css">
+<script>
+(function () {
+  var t = localStorage.getItem("theme");
+  if (t && t !== "system") document.documentElement.setAttribute("data-theme", t);
+})();
+</script>
+</head>
+<body data-page="top">
+
+<header class="chrome">
+  <span class="brand">🏈 Watchability</span>
+  <nav>
+    <a href="/index.html">Games</a>
+    <a href="/top.html" aria-current="page">Top games</a>
+    <a href="/analytics.html">Analytics</a>
+  </nav>
+  <div class="theme-toggle" id="theme-toggle">
+    <button data-mode="light" aria-pressed="false">Light</button>
+    <button data-mode="dark" aria-pressed="false">Dark</button>
+    <button data-mode="system" aria-pressed="true">System</button>
+  </div>
+</header>
+
+<main>
+  <div class="page-title">Top games</div>
+
+  <div class="filters">
+    <label>Rank by <select id="f-by">
+      <option value="composite">Composite score</option>
+    </select></label>
+    <label>Season <select id="f-season"><option value="">All</option></select></label>
+    <label>Type <select id="f-season_type">
+      <option value="all">All</option>
+      <option value="2">Regular</option>
+      <option value="3">Postseason</option>
+    </select></label>
+    <label>Top N <select id="f-limit">
+      <option value="10">10</option>
+      <option value="25" selected>25</option>
+      <option value="50">50</option>
+      <option value="100">100</option>
+    </select></label>
+  </div>
+
+  <div class="top-layout">
+    <div>
+      <div id="cap-banner"></div>
+      <div id="top-list"></div>
+    </div>
+    <div>
+      <div class="card">
+        <h2>Team leaderboard</h2>
+        <div class="card-sub">Mean watchability across appearances (home + away), min. 8 games.</div>
+        <div id="team-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 id="peaks-title">Weekly peaks</h2>
+    <div class="card-sub">The highest-scoring game of each week.</div>
+    <div id="peaks-mount"></div>
+  </div>
+</main>
+
+<script src="/app.js"></script>
+<script src="/charts.js"></script>
+<script>
+let REGISTRY = [];
+let LATEST_SCORED_SEASON = null;
+
+async function loadMeta() {
+  const meta = await api("/meta");
+  const seasonSel = document.getElementById("f-season");
+  seasonSel.innerHTML = '<option value="">All</option>' + meta.seasons.slice().reverse().map((s) => `<option value="${s}">${s}</option>`).join("");
+  // Leave the leaderboard itself on "All" (the true global top games) -- but
+  // weekly-peaks needs one concrete season, and the most recent season in
+  // `meta.seasons` can be a schedule-only future one with zero scored games
+  // (e.g. 2026), so probe descending for the newest season that actually has one.
+  for (const s of meta.seasons.slice().reverse()) {
+    const probe = await api("/games", { season: s, scored: 1, limit: 1 });
+    if (probe.total > 0) { LATEST_SCORED_SEASON = s; break; }
+  }
+
+  const bySel = document.getElementById("f-by");
+  REGISTRY.forEach((m) => bySel.appendChild(el("option", { value: m.name, text: m.label })));
+}
+
+function currentFilters() {
+  return {
+    by: document.getElementById("f-by").value,
+    season: document.getElementById("f-season").value,
+    season_type: document.getElementById("f-season_type").value,
+    limit: document.getElementById("f-limit").value,
+  };
+}
+
+async function renderTop() {
+  const f = currentFilters();
+  const data = await api("/top", f);
+  const banner = document.getElementById("cap-banner");
+  banner.innerHTML = "";
+  if (data.cap_warning) banner.appendChild(el("div", { class: "cap-banner", text: `⚠ ${data.cap_warning}` }));
+
+  const list = document.getElementById("top-list");
+  list.innerHTML = "";
+  data.results.forEach((r) => {
+    const g = r.game;
+    const value = f.by === "composite" ? fmtScore(g.watchability_score) : fmtRaw(r.value);
+    const why = f.by === "composite" && r.top_contributors.length
+      ? `Driven by ${r.top_contributors.map((c) => c.label).join(" + ")}`
+      : (f.by !== "composite" ? `${r.at_cap ? "at cap" : "raw value"}` : "");
+    const item = el("div", { class: "top-list-item" }, [
+      el("div", { class: "pos", text: `#${r.rank}` }),
+      el("div", { class: "val tabular-nums", text: value }),
+      el("div", { class: "info" }, [
+        el("div", {}, [fmtMatchup(g), ...renderChips(g)]),
+        el("div", { class: "why", text: `${fmtDate(g.game_date)} · wk ${g.week ?? "—"}${why ? " · " + why : ""}` }),
+      ]),
+    ]);
+    item.addEventListener("click", () => (location.href = `/game.html?id=${g.game_id}`));
+    list.appendChild(item);
+  });
+}
+
+async function renderTeams() {
+  const f = currentFilters();
+  const data = await api("/top/teams", { season: f.season, season_type: f.season_type, min_games: 8, limit: 25 });
+  const mount = document.getElementById("team-list");
+  mount.innerHTML = "";
+  data.results.forEach((t) => {
+    const row = el("div", { class: "team-row" }, [
+      el("span", { text: `#${t.rank} ${t.name}` }),
+      el("span", { class: "val", text: `${fmtScore(t.avg_watchability)} / ${t.games_played}` }),
+    ]);
+    if (t.best_game) row.addEventListener("click", () => (location.href = `/game.html?id=${t.best_game.game_id}`));
+    row.style.cursor = "pointer";
+    mount.appendChild(row);
+  });
+}
+
+async function renderPeaks() {
+  const f = currentFilters();
+  const season = f.season || LATEST_SCORED_SEASON;
+  if (!season) return;
+  const seasonType = f.season_type === "all" ? "2" : f.season_type;
+  const data = await api("/top/weekly-peaks", { season, season_type: seasonType });
+  document.getElementById("peaks-title").textContent = `Weekly peaks — ${season}`;
+  const mount = document.getElementById("peaks-mount");
+  mount.innerHTML = "";
+  const byWeek = { [season]: data.weeks.map((w) => ({ week: w.week, avg_score: w.watchability_score, n: 1 })) };
+  multiLine(mount, byWeek);
+}
+
+function wire() {
+  document.querySelectorAll(".filters select").forEach((s) => s.addEventListener("change", refreshAll));
+}
+function refreshAll() {
+  renderTop();
+  renderTeams();
+  renderPeaks();
+}
+
+(async function init() {
+  const metricsResp = await api("/metrics");
+  REGISTRY = metricsResp.metrics;
+  await loadMeta();
+  wire();
+  refreshAll();
+})();
+</script>
+</body>
+</html>

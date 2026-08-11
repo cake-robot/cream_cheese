@@ -4,6 +4,7 @@ from .scoring import (
     CLUTCH_FINISH_WINDOW_SECONDS,
     CLUTCH_FINISH_FIELD_GOAL_VALUE,
     CLUTCH_FINISH_NON_FIELD_GOAL_VALUE,
+    CLUTCH_FINISH_OT_FLOOR,
 )
 
 
@@ -22,8 +23,8 @@ def _elapsed_seconds(period_number, time_of_play):
     Regulation-only synthetic elapsed-seconds clock, matching the exact
     convention espn.parse_summary_detail() uses: (period-1)*900 +
     (900 - secs_remaining). Returns None for OT or an unparseable clock --
-    OT games are already excluded from clutch_finish entirely (see
-    fox_clutch_finish), so this only ever needs to handle periods 1-4.
+    clutch_finish only ever looks at period-4 transitions (see
+    fox_clutch_finish), so OT plays never need a resolved elapsed value.
     """
     if period_number is None or period_number > 4:
         return None
@@ -110,38 +111,60 @@ def fox_lead_changes(fox_ladder):
 
 def fox_clutch_finish(fox_ladder, fox_plays_by_seq):
     """
-    Mirrors scoring.clutch_finish() exactly (same return convention: None
-    for OT/not-applicable, else 0.0/1.0/1.5), driven by Fox's ladder + plays
-    instead of ESPN's win_probability rows.
+    Mirrors scoring.clutch_finish() exactly (a team taking the lead, or
+    tying the game and that tie holding into overtime, within the final
+    minute of regulation; every OT game floors at CLUTCH_FINISH_OT_FLOOR
+    even with no such swing).
 
-    The last step in fox_ladder is the game's final score change,
-    chronologically, across both teams (build_score_sequence() appends
-    steps in scan order as they're encountered, not per-team). If that step
-    is range-localized (exact=0) rather than pinned to a specific play,
-    there's no single play to check the clock on -- the true scoring play
-    could be anywhere in [seq_lo, seq_hi] -- so this returns None
-    (undetermined) rather than guessing; diff_game() only compares
+    Walks the ladder with the same 0/home/away state tracking as
+    fox_lead_changes(), but only trusts the clock on a qualifying
+    transition when that step is exact (pinned to one play) -- a
+    range-localized step (exact=0) means the true scoring play could be
+    anywhere in [seq_lo, seq_hi], so its timing can't be verified. If such
+    an unresolvable step is the only candidate late swing, this returns
+    None (undetermined) rather than guessing; diff_game() only compares
     clutch_finish when both sides resolve to a concrete value.
     """
     if not fox_ladder:
         return None
-    if any(s["period_number"] is not None and s["period_number"] > 4 for s in fox_ladder):
-        return None
 
-    last = fox_ladder[-1]
-    if not last["exact"]:
-        return None
+    is_ot = any(s["period_number"] is not None and s["period_number"] > 4 for s in fox_ladder)
+    home_score, away_score = 0, 0
+    last_state = 0
+    last_qualifying_delta = None
+    ambiguous = False
 
-    play = fox_plays_by_seq.get(last["seq_hi"])
-    if not play:
-        return None
+    for step in fox_ladder:
+        if step["team"] == "home":
+            home_score = step["new_value"]
+        else:
+            away_score = step["new_value"]
+        if home_score > away_score:
+            state = 1
+        elif away_score > home_score:
+            state = -1
+        else:
+            state = 0
 
-    elapsed = _elapsed_seconds(play["period_number"], play["time_of_play"])
-    if elapsed is None:
+        if state != last_state:
+            if not step["exact"]:
+                ambiguous = True
+            else:
+                play = fox_plays_by_seq.get(step["seq_hi"])
+                elapsed = _elapsed_seconds(play["period_number"], play["time_of_play"]) if play else None
+                plausible_late = play and play["period_number"] is not None and play["period_number"] <= 4
+                if plausible_late and elapsed is None:
+                    ambiguous = True
+                elif elapsed is not None and elapsed >= REGULATION_SECONDS - CLUTCH_FINISH_WINDOW_SECONDS:
+                    if state != 0 or is_ot:
+                        last_qualifying_delta = step["delta"]
+        last_state = state
+
+    if last_qualifying_delta is not None:
+        return CLUTCH_FINISH_FIELD_GOAL_VALUE if last_qualifying_delta == 3 else CLUTCH_FINISH_NON_FIELD_GOAL_VALUE
+    if ambiguous:
         return None
-    if elapsed < REGULATION_SECONDS - CLUTCH_FINISH_WINDOW_SECONDS:
-        return 0.0
-    return CLUTCH_FINISH_FIELD_GOAL_VALUE if last["delta"] == 3 else CLUTCH_FINISH_NON_FIELD_GOAL_VALUE
+    return CLUTCH_FINISH_OT_FLOOR if is_ot else 0.0
 
 
 def diff_game(conn, game_id):
@@ -210,8 +233,8 @@ def diff_game(conn, game_id):
     diffs = {}
     if espn_lc != fox_lc:
         diffs["lead_changes"] = {"espn": espn_lc, "fox": fox_lc}
-    # clutch_finish: None means "not applicable" (OT) or "undetermined"
-    # (Fox couldn't resolve a time) -- only compare when both resolve.
+    # clutch_finish: None means "undetermined" (Fox couldn't resolve a
+    # play's clock) -- only compare when both sides resolve.
     if espn_cf is not None and fox_cf is not None and espn_cf != fox_cf:
         diffs["clutch_finish"] = {"espn": espn_cf, "fox": fox_cf}
 

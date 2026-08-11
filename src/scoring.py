@@ -29,6 +29,10 @@ CLUTCH_FINISH_WINDOW_SECONDS = 60
 MAX_CLUTCH_FINISH = 1.5
 CLUTCH_FINISH_FIELD_GOAL_VALUE = 1.0
 CLUTCH_FINISH_NON_FIELD_GOAL_VALUE = 1.5
+# Any game that reaches overtime carries some late tension even without a
+# final-minute swing -- below both real-event tiers above (0.7/1.5 = 0.47
+# normalized), but above a flat zero.
+CLUTCH_FINISH_OT_FLOOR = 0.7
 
 
 # --- Metric functions ---
@@ -58,46 +62,73 @@ def late_volatility(wp_rows):
 
 def clutch_finish(wp_rows):
     """
-    Credit for the game's decisive final score landing in the last minute of
-    regulation, worth more if it isn't a field goal.
+    Credit for the final minute of regulation being genuinely live: a team
+    taking the lead (breaking a tie or overcoming a prior deficit), OR the
+    trailing/tied team tying the game *and that tie holding through the end
+    of regulation* (i.e. it forces overtime). Both are worth more if the
+    decisive score isn't a field goal.
 
-    Returns None (not applicable) for games that went to overtime -- a game
-    tied at the end of regulation had no decisive final-minute score by
-    definition, and this should exclude such games from this metric entirely
-    (see score_game()) rather than scoring them 0, which would structurally
-    penalize every OT game regardless of how it was decided.
+    A score that pads a lead the scoring team already held doesn't count,
+    and neither does a tie that gets broken again before regulation ends --
+    that's not the game's actual final state, just a fleeting one (whatever
+    happens afterward, including a subsequent go-ahead score, is evaluated
+    on its own merits as it's encountered).
+
+    Every game that reaches overtime gets at least CLUTCH_FINISH_OT_FLOOR,
+    even with no qualifying swing in the final minute -- going to overtime
+    at all means regulation ended unresolved, which is real tension even
+    when the tying score happened earlier than the final minute.
 
     Field-goal detection uses the score delta alone (a made FG is exactly 3
     points; nothing else scores exactly 3) rather than fetching play-type
     data -- reuses the same non-decreasing score sanitization as
-    lead_changes() to ignore ESPN score-field glitches.
+    lead_changes() to ignore ESPN score-field glitches, and the same
+    3-state (home/away/tied) tracking, seeded tied like lead_changes().
     """
-    periods = [r["period_number"] for r in wp_rows]
-    if any(p is not None and p > 4 for p in periods):
-        return None
-
     home_score, away_score = 0, 0
-    last_change_elapsed = None
-    last_delta = None
+    last_state = 0
+    last_qualifying_delta = None
+    is_ot = any(r["period_number"] is not None and r["period_number"] > 4 for r in wp_rows)
+
     for r in wp_rows:
         h, a = r["home_score"], r["away_score"]
+        delta = None
         if h is not None and h > home_score:
-            last_delta = h - home_score
-            last_change_elapsed = r["clock_seconds_elapsed"]
+            delta = h - home_score
         if h is not None and h >= home_score:
             home_score = h
         if a is not None and a > away_score:
-            last_delta = a - away_score
-            last_change_elapsed = r["clock_seconds_elapsed"]
+            delta = a - away_score
         if a is not None and a >= away_score:
             away_score = a
 
-    if last_change_elapsed is None:
-        return 0.0
-    if last_change_elapsed < REGULATION_SECONDS - CLUTCH_FINISH_WINDOW_SECONDS:
-        return 0.0
+        if home_score > away_score:
+            state = 1
+        elif away_score > home_score:
+            state = -1
+        else:
+            state = 0
 
-    return CLUTCH_FINISH_FIELD_GOAL_VALUE if last_delta == 3 else CLUTCH_FINISH_NON_FIELD_GOAL_VALUE
+        if state != last_state:
+            period, elapsed = r["period_number"], r["clock_seconds_elapsed"]
+            in_window = (
+                period == 4 and elapsed is not None
+                and elapsed >= REGULATION_SECONDS - CLUTCH_FINISH_WINDOW_SECONDS
+            )
+            # A lead-take always qualifies if it's in the window. A
+            # tie-transition only qualifies if the game actually went to
+            # OT -- otherwise this tie was undone later in regulation and
+            # isn't the game's real final state (that later transition,
+            # win or tie, gets its own chance to qualify as it's reached).
+            if in_window and (state != 0 or is_ot):
+                last_qualifying_delta = delta
+        last_state = state
+
+    if last_qualifying_delta is not None:
+        return CLUTCH_FINISH_FIELD_GOAL_VALUE if last_qualifying_delta == 3 else CLUTCH_FINISH_NON_FIELD_GOAL_VALUE
+    if is_ot:
+        return CLUTCH_FINISH_OT_FLOOR
+    return 0.0
 
 
 def lead_changes(wp_rows):

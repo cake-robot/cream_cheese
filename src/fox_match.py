@@ -40,6 +40,7 @@ FOX_SCHOOL_ALIASES = {
     "Long Island University": "LIU",
     "Massachusetts": "UMass",
     "Miami": "Miami (FL)",
+    "Mississippi Valley State": "Miss Valley State",
     "NC State": "North Carolina St",
     "Nicholls": "Nicholls State",
     "Saint Francis": "St. Francis (PA)",

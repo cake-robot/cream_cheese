@@ -69,6 +69,29 @@ def _get_rank(competitor):
     return None
 
 
+def _is_conference_championship_note(season_type, event_note):
+    """
+    ESPN's own `conferenceCompetition` flag is false for conference
+    championship games themselves -- verified via live API checks across
+    all 9 FBS conferences that hold one (SEC, Big Ten, Big 12, ACC, MAC,
+    American, Mountain West, Sun Belt, Conference USA). `event_note`
+    (ESPN's own branded-event label, e.g. "SEC Championship") reliably
+    says "<Conference> Championship" for every one of them, whether that
+    conference uses a fixed neutral venue or the higher seed's home
+    stadium -- unlike a venue-based check, this covers all of them
+    uniformly with no per-conference special-casing.
+
+    Gated to season_type == 2 (regular season) because the College
+    Football Playoff National Championship's note also contains the word
+    "championship", but it's a cross-conference postseason game
+    (season_type == 3) -- requiring regular-season scope excludes it
+    without needing to pattern-match around that one case.
+    """
+    if season_type != 2 or not event_note:
+        return False
+    return "championship" in event_note.lower()
+
+
 def _parse_competition(event, comp):
     competitors = comp.get("competitors", [])
     home = next((c for c in competitors if c.get("homeAway") == "home"), {})
@@ -96,6 +119,17 @@ def _parse_competition(event, comp):
     venue = comp.get("venue")
     venue_name = venue.get("fullName") if venue else None
 
+    # ESPN's per-competition branded-event label, e.g. "SEC Championship",
+    # "Duke's Mayo Bowl", "College Football Playoff Semifinal at the Orange
+    # Bowl" -- empty for ordinary games. Captured verbatim, no filtering or
+    # interpretation here; just the raw headline for later use.
+    notes = comp.get("notes") or []
+    event_note = notes[0].get("headline") if notes else None
+    conference_game = int(
+        bool(comp.get("conferenceCompetition", False))
+        or _is_conference_championship_note(season_type, event_note)
+    )
+
     return {
         "game_id": str(event.get("id", comp.get("id", ""))),
         "season_year": season.get("year"),
@@ -110,9 +144,10 @@ def _parse_competition(event, comp):
         "away_team_abbr": away_team.get("abbreviation", ""),
         "away_team_name": away_team.get("displayName", ""),
         "away_rank": _get_rank(away),
-        "conference_game": int(bool(comp.get("conferenceCompetition", False))),
+        "conference_game": conference_game,
         "neutral_site": int(bool(comp.get("neutralSite", False))),
         "venue_name": venue_name,
+        "event_note": event_note,
         "status_state": status.get("state", "pre"),
         "completed": int(bool(status.get("completed", False))),
         "home_score": None,
@@ -153,10 +188,17 @@ def parse_summary_game_meta(summary):
     venue = comp.get("venue")
     venue_name = venue.get("fullName") if venue else None
 
+    season_type = season.get("type", 2)
+    event_note = ((comp.get("notes") or [{}])[0]).get("headline")
+    conference_game = int(
+        bool(comp.get("conferenceCompetition", False))
+        or _is_conference_championship_note(season_type, event_note)
+    )
+
     return {
         "game_id": str(header.get("id", "")),
         "season_year": season.get("year"),
-        "season_type": season.get("type", 2),
+        "season_type": season_type,
         "week": week_val if isinstance(week_val, int) else None,
         "game_date": comp.get("date", ""),
         "home_team_id": str(home_team.get("id", "")),
@@ -167,9 +209,10 @@ def parse_summary_game_meta(summary):
         "away_team_abbr": away_team.get("abbreviation", ""),
         "away_team_name": away_team.get("displayName", ""),
         "away_rank": _get_rank(away),
-        "conference_game": int(bool(comp.get("conferenceCompetition", False))),
+        "conference_game": conference_game,
         "neutral_site": int(bool(comp.get("neutralSite", False))),
         "venue_name": venue_name,
+        "event_note": event_note,
         "status_state": status.get("state", "post"),
         "completed": int(bool(status.get("completed", True))),
         "home_score": None,

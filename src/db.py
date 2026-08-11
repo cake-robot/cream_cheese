@@ -242,6 +242,15 @@ def init_db(path=None):
     if "time_of_play" not in fox_play_cols:
         conn.execute("ALTER TABLE fox_plays ADD COLUMN time_of_play TEXT")
 
+    game_cols = {row[1] for row in conn.execute("PRAGMA table_info(games)")}
+    if "event_note" not in game_cols:
+        # ESPN's per-competition `notes` field -- a branded event label present
+        # on bowls ("Duke's Mayo Bowl"), CFP rounds ("Semifinal at the Orange
+        # Bowl"), and conference championships ("SEC Championship"), empty for
+        # ordinary games. Captured going forward only -- existing rows are not
+        # backfilled, so this is NULL for every game already in the DB.
+        conn.execute("ALTER TABLE games ADD COLUMN event_note TEXT")
+
     conn.commit()
     return conn
 
@@ -299,7 +308,7 @@ def upsert_game(conn, game):
             game_id, season_year, season_type, week, game_date,
             home_team_id, home_team_abbr, home_team_name, home_rank,
             away_team_id, away_team_abbr, away_team_name, away_rank,
-            conference_game, neutral_site, venue_name,
+            conference_game, neutral_site, venue_name, event_note,
             status_state, completed,
             home_score, away_score, attendance, initial_home_wp,
             detail_fetched, watchability_score
@@ -307,7 +316,7 @@ def upsert_game(conn, game):
             :game_id, :season_year, :season_type, :week, :game_date,
             :home_team_id, :home_team_abbr, :home_team_name, :home_rank,
             :away_team_id, :away_team_abbr, :away_team_name, :away_rank,
-            :conference_game, :neutral_site, :venue_name,
+            :conference_game, :neutral_site, :venue_name, :event_note,
             :status_state, :completed,
             :home_score, :away_score, :attendance, :initial_home_wp,
             :detail_fetched, :watchability_score
@@ -328,6 +337,7 @@ def upsert_game(conn, game):
             conference_game = excluded.conference_game,
             neutral_site    = excluded.neutral_site,
             venue_name      = excluded.venue_name,
+            event_note      = excluded.event_note,
             status_state    = excluded.status_state,
             completed       = excluded.completed,
             home_score      = COALESCE(excluded.home_score, games.home_score),
@@ -341,6 +351,7 @@ def upsert_game(conn, game):
         "initial_home_wp": game.get("initial_home_wp"),
         "detail_fetched": game.get("detail_fetched", 0),
         "watchability_score": game.get("watchability_score"),
+        "event_note": game.get("event_note"),
     })
 
 

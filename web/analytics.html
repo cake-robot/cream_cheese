@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Analytics — Watchability</title>
+<link rel="stylesheet" href="/style.css">
+<script>
+(function () {
+  var t = localStorage.getItem("theme");
+  if (t && t !== "system") document.documentElement.setAttribute("data-theme", t);
+})();
+</script>
+</head>
+<body data-page="analytics">
+
+<header class="chrome">
+  <span class="brand">🏈 Watchability</span>
+  <nav>
+    <a href="/index.html">Games</a>
+    <a href="/top.html">Top games</a>
+    <a href="/analytics.html" aria-current="page">Analytics</a>
+  </nav>
+  <div class="theme-toggle" id="theme-toggle">
+    <button data-mode="light" aria-pressed="false">Light</button>
+    <button data-mode="dark" aria-pressed="false">Dark</button>
+    <button data-mode="system" aria-pressed="true">System</button>
+  </div>
+</header>
+
+<main>
+  <div class="page-title">Analytics</div>
+
+  <div class="filters">
+    <label>Season <select id="f-season"><option value="">All</option></select></label>
+    <label>Type <select id="f-season_type">
+      <option value="all">All</option>
+      <option value="2" selected>Regular</option>
+      <option value="3">Postseason</option>
+    </select></label>
+  </div>
+
+  <div class="stat-tiles" id="stat-tiles"></div>
+
+  <div class="card">
+    <h2>Score distribution</h2>
+    <div class="card-sub" id="dist-sub"></div>
+    <div id="dist-mount"></div>
+  </div>
+
+  <div class="card">
+    <h2>Designed weight vs. delivered contribution</h2>
+    <div class="card-sub" id="wvd-sub"></div>
+    <div id="wvd-mount"></div>
+    <div class="callout" id="callout"></div>
+    <div class="not-implemented" id="not-implemented"></div>
+  </div>
+
+  <div class="card">
+    <h2>Per-metric stats</h2>
+    <div id="stats-table-mount"></div>
+  </div>
+
+  <div class="card">
+    <h2>Mean score by week</h2>
+    <div class="card-sub">Regular season, most recent two seasons with data.</div>
+    <div id="byweek-mount"></div>
+  </div>
+
+  <div class="card">
+    <h2>Metric correlation</h2>
+    <div class="card-sub">Pairwise Pearson correlation of normalized metric values (and the composite score).</div>
+    <div id="heatmap-mount"></div>
+  </div>
+
+  <div class="card">
+    <h2>Saturation</h2>
+    <div class="card-sub">How often each metric's normalization cap is hit -- the composite can't distinguish games past this point.</div>
+    <div id="saturation-mount"></div>
+  </div>
+</main>
+
+<script src="/app.js"></script>
+<script src="/charts.js"></script>
+<script>
+function currentFilters() {
+  return {
+    season: document.getElementById("f-season").value,
+    season_type: document.getElementById("f-season_type").value,
+  };
+}
+
+function statTile(label, value) {
+  return el("div", { class: "stat-tile" }, [el("div", { class: "label", text: label }), el("div", { class: "value tabular-nums", text: value })]);
+}
+
+async function render() {
+  const f = currentFilters();
+  const data = await api("/analytics", f);
+
+  const tiles = document.getElementById("stat-tiles");
+  tiles.innerHTML = "";
+  tiles.appendChild(statTile("Games scored", String(data.n)));
+  tiles.appendChild(statTile("Median score", fmtScore(data.distribution.median)));
+  tiles.appendChild(statTile("Mean score", fmtScore(data.distribution.mean)));
+  tiles.appendChild(statTile("Max score", fmtScore(data.distribution.max)));
+
+  document.getElementById("dist-sub").textContent =
+    `n=${data.n} · p10 ${fmtScore(data.distribution.p10)} · median ${fmtScore(data.distribution.median)} · p90 ${fmtScore(data.distribution.p90)}`;
+  const distMount = document.getElementById("dist-mount");
+  distMount.innerHTML = "";
+  histogram(distMount, data.distribution.histogram, {
+    width: 640, height: 160,
+    markers: [
+      { value: data.distribution.p10, label: "p10" },
+      { value: data.distribution.median, label: "median" },
+      { value: data.distribution.p90, label: "p90" },
+    ],
+  });
+
+  document.getElementById("wvd-sub").textContent = `Share of the mean composite score, n=${data.n}.`;
+  const wvdMount = document.getElementById("wvd-mount");
+  wvdMount.innerHTML = "";
+  groupedBars(wvdMount, data.weight_vs_delivery);
+  document.getElementById("callout").textContent = data.callout || "";
+
+  const niMount = document.getElementById("not-implemented");
+  niMount.innerHTML = "";
+  niMount.appendChild(el("div", { text: "Designed but not implemented -- these do not exist in the data:" }));
+  niMount.appendChild(el("ul", {}, data.not_implemented.map((ni) => el("li", { text: `${ni.name}: ${ni.note}` }))));
+
+  const statsMount = document.getElementById("stats-table-mount");
+  statsMount.innerHTML = "";
+  const table = el("table", { class: "stats-table" }, [
+    el("thead", {}, el("tr", {}, ["Metric", "N", "Avg raw", "Max raw", "Avg norm", "At cap", "% at cap"].map((h) => el("th", { text: h })))),
+    el("tbody", {}, data.weight_vs_delivery.map((r) => el("tr", {}, [
+      el("td", { text: r.label }),
+      el("td", { class: "tabular-nums", text: String(r.n) }),
+      el("td", { class: "tabular-nums", text: fmtRaw(r.avg_raw) }),
+      el("td", { class: "tabular-nums", text: fmtRaw(r.max_raw) }),
+      el("td", { class: "tabular-nums", text: fmtRaw(r.avg_norm) }),
+      el("td", { class: "tabular-nums", text: String(r.n_at_cap) }),
+      el("td", { class: "tabular-nums", text: `${r.pct_at_cap.toFixed(1)}%` }),
+    ]))),
+  ]);
+  statsMount.appendChild(table);
+
+  const byWeekMount = document.getElementById("byweek-mount");
+  byWeekMount.innerHTML = "";
+  if (Object.keys(data.by_week).length) multiLine(byWeekMount, data.by_week);
+
+  const heatMount = document.getElementById("heatmap-mount");
+  heatMount.innerHTML = "";
+  if (data.correlation.matrix.length) heatmap(heatMount, data.correlation);
+
+  const satMount = document.getElementById("saturation-mount");
+  satMount.innerHTML = "";
+  const satTable = el("table", { class: "stats-table" }, [
+    el("thead", {}, el("tr", {}, ["Metric", "Cap", "N at cap", "% at cap"].map((h) => el("th", { text: h })))),
+    el("tbody", {}, data.weight_vs_delivery.map((r) => el("tr", {}, [
+      el("td", { text: r.label }),
+      el("td", { class: "tabular-nums", text: r.cap !== null ? String(r.cap) : "—" }),
+      el("td", { class: "tabular-nums", text: String(r.n_at_cap) }),
+      el("td", {}, r.pct_at_cap > 1 ? el("span", { class: "chip warn", text: `⚠ ${r.pct_at_cap.toFixed(1)}% at cap` }) : el("span", { class: "tabular-nums", text: `${r.pct_at_cap.toFixed(1)}%` })),
+    ]))),
+  ]);
+  satMount.appendChild(satTable);
+}
+
+(async function init() {
+  const meta = await api("/meta");
+  const seasonSel = document.getElementById("f-season");
+  seasonSel.innerHTML = '<option value="">All</option>' + meta.seasons.slice().reverse().map((s) => `<option value="${s}">${s}</option>`).join("");
+  document.querySelectorAll(".filters select").forEach((s) => s.addEventListener("change", render));
+  render();
+})();
+</script>
+</body>
+</html>
