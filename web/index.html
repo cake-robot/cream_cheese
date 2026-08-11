@@ -188,11 +188,15 @@ function renderTable(data) {
           el("div", { class: "score-meter" }, el("i", { style: `width:${Math.min(100, (g.watchability_score / 0.70) * 100)}%` })),
           el("span", { class: "pctile", text: g.percentile !== null ? fmtPct(g.percentile) : "" }),
         ]);
+    const pi = postseasonInfo(g);
+    const wkCell = pi
+      ? el("span", { title: pi.label, text: pi.short })
+      : el("span", { text: g.season_type === 3 ? "Postseason" : (g.week !== null ? String(g.week) : "—") });
     const row = el("tr", {}, [
       el("td", { class: "tabular-nums", text: g.rank ? String(g.rank) : "—" }),
       el("td", {}, [el("span", { class: "matchup", text: fmtMatchup(g) }), ...renderChips(g)]),
       el("td", { text: fmtDate(g.game_date) }),
-      el("td", { text: g.week !== null ? String(g.week) : "—" }),
+      el("td", {}, wkCell),
       el("td", {}, scoreCell),
       el("td", { text: g.watchability_score !== null ? "⌄" : "" , style: "color:var(--ink-muted);cursor:pointer" }),
     ]);

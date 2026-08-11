@@ -248,6 +248,7 @@ table.games-table tbody tr:last-child td { border-bottom: none; }
 }
 .chip.warn { color: var(--warning); border-color: currentColor; }
 .chip.muted { color: var(--ink-muted); }
+.chip.accent { color: var(--series-1); border-color: currentColor; }
 
 .pagination {
   display: flex; align-items: center; justify-content: space-between;

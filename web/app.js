@@ -84,11 +84,62 @@ function setParams(patch, { push = false } = {}) {
   else history.replaceState(null, "", url);
 }
 
+// ---- postseason labeling ----------------------------------------------------
+
+const CFP_ROUND_ABBR = { "First Round": "R1", "Quarterfinal": "QF", "Semifinal": "SF", "National Championship": "NCG" };
+
+// ESPN's `event_note` is the per-game branded-event headline (e.g. "College
+// Football Playoff Quarterfinal at the Rose Bowl Presented by Prudential",
+// or plain "Duke's Mayo Bowl" for a non-playoff bowl). Every postseason game
+// is stored with week=1 -- ESPN has no real week numbering once the regular
+// season ends -- so this is what actually distinguishes one postseason game
+// from another. New Year's Six bowls (Rose, Sugar, Orange, Cotton, Peach,
+// Fiesta) host CFP quarterfinals/semifinals on a rotating basis, so the same
+// bowl name can appear either as a plain bowl or as a CFP round depending on
+// the season -- `isCFP` is what should drive the distinct-from-bowls styling,
+// not the bowl name itself.
+function postseasonInfo(g) {
+  if (g.season_type !== 3 || !g.event_note) return null;
+  const note = g.event_note.replace(/\s+Presented by\b.*$/i, "").trim();
+  const isCFP = /college football playoff/i.test(note);
+  if (!isCFP) return { isCFP: false, label: note, short: note };
+  const roundMatch = note.match(/First Round|Quarterfinal|Semifinal|National Championship/i);
+  const round = roundMatch ? roundMatch[0] : "Playoff";
+  const bowlMatch = note.match(/at the (.+)$/i);
+  const bowl = bowlMatch ? bowlMatch[1].trim() : null;
+  const abbr = CFP_ROUND_ABBR[round] || round;
+  return {
+    isCFP: true,
+    round,
+    bowl,
+    label: bowl ? `CFP ${round} · ${bowl}` : `CFP ${round}`,
+    short: bowl ? `${abbr} · ${bowl}` : abbr,
+  };
+}
+
+// Full "<year> <postseason detail | week N>" string for detail views.
+function seasonWeekLabel(g) {
+  const pi = postseasonInfo(g);
+  if (pi) return `${g.season_year} · ${pi.label}`;
+  if (g.season_type === 3) return `${g.season_year} · postseason`;
+  return `${g.season_year} week ${g.week ?? "—"}`;
+}
+
+// g.venue_name and a CFP bowl host (e.g. the Rose Bowl is both the stadium
+// and the event name) can be the literal same string -- suppress the venue
+// so it isn't printed twice in a row.
+function venueLabel(g) {
+  const pi = postseasonInfo(g);
+  if (pi && pi.bowl && g.venue_name && pi.bowl.toLowerCase() === g.venue_name.toLowerCase()) return null;
+  return g.venue_name || null;
+}
+
 // ---- chips ------------------------------------------------------------------
 
 function gameChips(g) {
   const chips = [];
   if (g.ot) chips.push(["OT", "warn"]);
+  if (postseasonInfo(g)?.isCFP) chips.push(["CFP", "accent"]);
   if (g.conference_game) chips.push(["CONF", "muted"]);
   if (g.neutral_site) chips.push(["NEU", "muted"]);
   // Deliberately separate: a real Fox-derived value substitution vs. a

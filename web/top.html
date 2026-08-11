@@ -120,12 +120,14 @@ async function renderTop() {
     const why = f.by === "composite" && r.top_contributors.length
       ? `Driven by ${r.top_contributors.map((c) => c.label).join(" + ")}`
       : (f.by !== "composite" ? `${r.at_cap ? "at cap" : "raw value"}` : "");
+    const pi = postseasonInfo(g);
+    const whenLabel = pi ? pi.short : (g.season_type === 3 ? "postseason" : `wk ${g.week ?? "—"}`);
     const item = el("div", { class: "top-list-item" }, [
       el("div", { class: "pos", text: `#${r.rank}` }),
       el("div", { class: "val tabular-nums", text: value }),
       el("div", { class: "info" }, [
         el("div", {}, [fmtMatchup(g), ...renderChips(g)]),
-        el("div", { class: "why", text: `${fmtDate(g.game_date)} · wk ${g.week ?? "—"}${why ? " · " + why : ""}` }),
+        el("div", { class: "why", text: `${fmtDate(g.game_date)} · ${whenLabel}${why ? " · " + why : ""}` }),
       ]),
     ]);
     item.addEventListener("click", () => (location.href = `/game.html?id=${g.game_id}`));

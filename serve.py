@@ -322,6 +322,7 @@ def shape_game(row, metrics_map, rank=None, n_scored=None, has_fox_correction=Fa
         "season_year": row["season_year"],
         "season_type": row["season_type"],
         "week": row["week"],
+        "event_note": row["event_note"],
         "game_date": row["game_date"],
         "away": {
             "abbr": row["away_team_abbr"],
@@ -856,7 +857,14 @@ def api_game_detail(game_id):
             rank_context = {
                 "global": {"rank": rc["rnk_g"], "percentile": percentile_from_rank(rc["rnk_g"], rc["n_g"]), "n": rc["n_g"]},
                 "season": {"rank": rc["rnk_s"], "percentile": percentile_from_rank(rc["rnk_s"], rc["n_s"]), "n": rc["n_s"], "label": str(row["season_year"])},
-                "week": {"rank": rc["rnk_w"], "percentile": percentile_from_rank(rc["rnk_w"], rc["n_w"]), "n": rc["n_w"], "label": f"{row['season_year']} week {row['week']}"},
+                "week": {
+                    "rank": rc["rnk_w"], "percentile": percentile_from_rank(rc["rnk_w"], rc["n_w"]), "n": rc["n_w"],
+                    # Every postseason game is stored as week=1 (ESPN has no
+                    # real week numbering once the regular season ends), so
+                    # this partition is actually "all of that year's postseason"
+                    # -- label it that way instead of the misleading "week 1".
+                    "label": f"{row['season_year']} postseason" if row["season_type"] == 3 else f"{row['season_year']} week {row['week']}",
+                },
             }
             gr = rc["rnk_g"]
             nb_rows = conn.execute(f"""

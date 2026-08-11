@@ -44,8 +44,8 @@ function renderNotScored(mount, detail) {
   const g = detail.game;
   mount.appendChild(el("div", { class: "matchup-header" }, [
     el("div", {}, [
-      el("h1", { text: fmtMatchup(g) }),
-      el("div", { class: "sub", text: `${fmtDate(g.game_date)}${g.venue_name ? " · " + g.venue_name : ""} · ${g.season_year} week ${g.week ?? "—"}` }),
+      el("h1", {}, [fmtMatchup(g) + " ", ...renderChips(g)]),
+      el("div", { class: "sub", text: `${fmtDate(g.game_date)}${venueLabel(g) ? " · " + venueLabel(g) : ""} · ${seasonWeekLabel(g)}` }),
     ]),
   ]));
   mount.appendChild(el("div", { class: "card" }, [
@@ -92,7 +92,7 @@ function renderScored(mount, detail) {
   const header = el("div", { class: "matchup-header" }, [
     el("div", {}, [
       el("h1", {}, [fmtMatchup(g) + " ", ...renderChips(g)]),
-      el("div", { class: "sub", text: `${fmtDate(g.game_date)}${g.venue_name ? " · " + g.venue_name : ""}${g.attendance ? " · " + g.attendance.toLocaleString() : ""} · ${g.season_year} week ${g.week ?? "—"}` }),
+      el("div", { class: "sub", text: `${fmtDate(g.game_date)}${venueLabel(g) ? " · " + venueLabel(g) : ""}${g.attendance ? " · " + g.attendance.toLocaleString() : ""} · ${seasonWeekLabel(g)}` }),
     ]),
     el("div", { class: "neighbor-nav" }, [
       detail.neighbors.prev_by_rank
