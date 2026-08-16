@@ -204,6 +204,257 @@ function wpChart(mount, wp, game) {
 }
 
 /* ---------------------------------------------------------------------
+ * scoreChart -- the running score, away vs. home, as a step function over
+ * some event ordinal (play index for ESPN, scoring-step index for Fox --
+ * never elapsed clock, which is non-monotonic in OT/replay-review games).
+ * One shared y-axis (both lines are the same unit, points), stairsteps
+ * rather than a smooth line because the value is genuinely constant
+ * between scoring plays, markers only where the score actually changed.
+ *
+ * Takes a source-agnostic `data` shape rather than the raw API payload,
+ * so the same renderer draws both the ESPN and Fox score progressions --
+ * see espnScoreSeries()/foxScoreSeries() below for the two adapters.
+ * data = { n, home, away, period_starts, score_changes, subtitle(idx),
+ *          ariaLabel, unitLabel, tableColumns: [{header, cell(idx)}] }
+ * ------------------------------------------------------------------- */
+function scoreChart(mount, data, game) {
+  const W = 760, H = 220;
+  const margin = { top: 14, right: 18, bottom: 30, left: 30 };
+  const plotW = W - margin.left - margin.right;
+  const plotH = H - margin.top - margin.bottom;
+  const n = data.n;
+  const home = data.home, away = data.away;
+  const homeAbbr = game.home.abbr, awayAbbr = game.away.abbr;
+
+  const rawMax = Math.max(1, ...home, ...away);
+  const maxY = Math.ceil((rawMax * 1.15) / 5) * 5;
+
+  const x = linScale([0, Math.max(n - 1, 1)], [margin.left, margin.left + plotW]);
+  const y = linScale([0, maxY], [margin.top + plotH, margin.top]);
+
+  const root = svg("svg", {
+    viewBox: `0 0 ${W} ${H}`, role: "img", tabindex: "0",
+    "aria-label": data.ariaLabel || `Score progression, ${awayAbbr} at ${homeAbbr}`,
+    "shape-rendering": "geometricPrecision",
+  });
+
+  // period bands (alternating tint), same convention as wpChart
+  data.period_starts.forEach((p, i) => {
+    const nextI = data.period_starts[i + 1] ? data.period_starts[i + 1].i : n - 1;
+    if (i % 2 === 1) {
+      root.appendChild(svg("rect", {
+        x: x(p.i).toFixed(1), y: margin.top, width: Math.max(x(nextI) - x(p.i), 0).toFixed(1), height: plotH,
+        fill: "var(--page)",
+      }));
+    }
+  });
+
+  // gridlines
+  [0, 0.25, 0.5, 0.75, 1].forEach((f) => {
+    const v = maxY * f;
+    root.appendChild(svg("line", {
+      x1: margin.left, x2: margin.left + plotW, y1: y(v).toFixed(1), y2: y(v).toFixed(1),
+      stroke: "var(--grid)", "stroke-width": "1", "vector-effect": "non-scaling-stroke",
+    }));
+    root.appendChild(svgText(margin.left - 5, y(v).toFixed(1), String(Math.round(v)), {
+      "font-size": "9.5", fill: "var(--ink-muted)", "text-anchor": "end", "dominant-baseline": "middle",
+    }));
+  });
+
+  // period boundary rules + labels
+  data.period_starts.forEach((p, i) => {
+    if (i > 0) {
+      root.appendChild(svg("line", {
+        x1: x(p.i).toFixed(1), x2: x(p.i).toFixed(1), y1: margin.top, y2: margin.top + plotH,
+        stroke: "var(--grid)", "stroke-width": "1", "vector-effect": "non-scaling-stroke",
+      }));
+    }
+    const nextI = data.period_starts[i + 1] ? data.period_starts[i + 1].i : n - 1;
+    const midX = (x(p.i) + x(nextI)) / 2;
+    root.appendChild(svgText(midX, H - 6, p.label, {
+      "font-size": "9.5", fill: "var(--ink-muted)", "text-anchor": "middle",
+    }));
+  });
+
+  function stepPath(values) {
+    let d = `M${x(0).toFixed(1)},${y(values[0]).toFixed(1)}`;
+    for (let i = 1; i < n; i++) {
+      d += ` H${x(i).toFixed(1)} V${y(values[i]).toFixed(1)}`;
+    }
+    return d;
+  }
+
+  const series = [
+    { values: away, color: "var(--series-1)", abbr: awayAbbr, team: "away" },
+    { values: home, color: "var(--series-2)", abbr: homeAbbr, team: "home" },
+  ];
+
+  series.forEach((s) => {
+    root.appendChild(svg("path", {
+      d: stepPath(s.values), fill: "none", stroke: s.color, "stroke-width": "2",
+      "stroke-linejoin": "round", "stroke-linecap": "round", "vector-effect": "non-scaling-stroke",
+    }));
+  });
+
+  // score-change markers, colored by the team that scored
+  data.score_changes.forEach((sc) => {
+    const s = sc.team === "home" ? series[1] : series[0];
+    root.appendChild(svg("circle", {
+      cx: x(sc.i).toFixed(1), cy: y(sc.team === "home" ? sc.home : sc.away).toFixed(1), r: "4",
+      fill: s.color, stroke: "var(--surface-1)", "stroke-width": "2",
+    }));
+  });
+
+  // end markers + direct labels, floated above the line/dot (nudged apart if the two labels would collide)
+  const lastI = n - 1;
+  const dotYs = series.map((s) => y(s.values[lastI]));
+  const labelYs = dotYs.map((v) => v - 10);
+  if (Math.abs(dotYs[0] - dotYs[1]) < 13) {
+    const mid = (dotYs[0] + dotYs[1]) / 2;
+    const lo = dotYs[0] <= dotYs[1] ? 0 : 1; // higher-on-screen (smaller y) series
+    labelYs[lo] = mid - 14;
+    labelYs[1 - lo] = mid + 16;
+  }
+  series.forEach((s, i) => {
+    root.appendChild(svg("circle", {
+      cx: x(lastI).toFixed(1), cy: dotYs[i].toFixed(1), r: "4",
+      fill: s.color, stroke: "var(--surface-1)", "stroke-width": "2",
+    }));
+    root.appendChild(svgText(x(lastI) - 6, labelYs[i], `${s.abbr} ${s.values[lastI]}`, {
+      "font-size": "11", fill: s.color, "text-anchor": "end", "font-weight": "600",
+    }));
+  });
+
+  // hover / keyboard crosshair
+  const crosshair = svg("line", {
+    x1: 0, x2: 0, y1: margin.top, y2: margin.top + plotH,
+    stroke: "var(--ink-muted)", "stroke-width": "1", "vector-effect": "non-scaling-stroke",
+    visibility: "hidden",
+  });
+  const crossDots = series.map((s) => svg("circle", { r: "4", fill: s.color, stroke: "var(--surface-1)", "stroke-width": "2", visibility: "hidden" }));
+  root.appendChild(crosshair);
+  crossDots.forEach((d) => root.appendChild(d));
+
+  function moveTo(idx, clientX, clientY) {
+    idx = Math.max(0, Math.min(n - 1, idx));
+    const px = x(idx);
+    crosshair.setAttribute("x1", px.toFixed(1));
+    crosshair.setAttribute("x2", px.toFixed(1));
+    crosshair.setAttribute("visibility", "visible");
+    series.forEach((s, i) => {
+      crossDots[i].setAttribute("cx", px.toFixed(1));
+      crossDots[i].setAttribute("cy", y(s.values[idx]).toFixed(1));
+      crossDots[i].setAttribute("visibility", "visible");
+    });
+    const period = data.period_starts.slice().reverse().find((p) => p.i <= idx);
+    const sub = data.subtitle(idx);
+    const html = `<div class="tt-value">${awayAbbr} ${away[idx]} – ${homeAbbr} ${home[idx]}</div>` +
+      `<div class="tt-sub">${period ? period.label : ""}${sub ? " · " + sub : ""}</div>`;
+    if (clientX !== undefined) showTooltip(html, clientX, clientY);
+  }
+
+  const hitRect = svg("rect", {
+    x: margin.left, y: margin.top, width: plotW, height: plotH, fill: "transparent",
+  });
+  hitRect.addEventListener("pointermove", (ev) => {
+    const rect = root.getBoundingClientRect();
+    const scale = W / rect.width;
+    const localX = (ev.clientX - rect.left) * scale;
+    const idx = Math.round((localX - margin.left) / plotW * (n - 1));
+    moveTo(idx, ev.clientX, ev.clientY);
+  });
+  hitRect.addEventListener("pointerleave", () => {
+    crosshair.setAttribute("visibility", "hidden");
+    crossDots.forEach((d) => d.setAttribute("visibility", "hidden"));
+    hideTooltip();
+  });
+  root.appendChild(hitRect);
+
+  let focusIdx = 0;
+  root.addEventListener("keydown", (ev) => {
+    if (["ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"].includes(ev.key)) ev.preventDefault();
+    if (ev.key === "ArrowLeft") focusIdx -= 1;
+    else if (ev.key === "ArrowRight") focusIdx += 1;
+    else if (ev.key === "PageDown") focusIdx -= 10;
+    else if (ev.key === "PageUp") focusIdx += 10;
+    else if (ev.key === "Home") focusIdx = 0;
+    else if (ev.key === "End") focusIdx = n - 1;
+    else return;
+    const rect = root.getBoundingClientRect();
+    const px = x(Math.max(0, Math.min(n - 1, focusIdx))) / W * rect.width + rect.left;
+    const py = rect.top + rect.height / 2;
+    moveTo(focusIdx, px, py);
+  });
+  root.addEventListener("blur", () => {
+    crosshair.setAttribute("visibility", "hidden");
+    crossDots.forEach((d) => d.setAttribute("visibility", "hidden"));
+    hideTooltip();
+  });
+
+  const key = el("div", { class: "chart-key" }, [
+    el("span", { class: "k" }, [el("span", { class: "line", style: "background:var(--series-1)" }), awayAbbr]),
+    el("span", { class: "k" }, [el("span", { class: "line", style: "background:var(--series-2)" }), homeAbbr]),
+    el("span", { class: "k" }, [el("span", { class: "dot" }), "Scoring play"]),
+  ]);
+
+  mount.appendChild(key);
+  mount.appendChild(el("div", { class: "viz" }, root));
+
+  const rows = Array.from({ length: n }, (_, i) => [
+    String(i),
+    data.period_starts.slice().reverse().find((p) => p.i <= i)?.label || "",
+    ...data.tableColumns.map((c) => c.cell(i)),
+    String(away[i]),
+    String(home[i]),
+  ]);
+  mount.appendChild(tableTwin(`Show as table (${data.unitLabel})`,
+    [data.indexLabel || "#", "Period", ...data.tableColumns.map((c) => c.header), `${awayAbbr} score`, `${homeAbbr} score`], rows));
+  if (data.note) mount.appendChild(el("div", { class: "caveat" }, data.note));
+}
+
+/* ---------------------------------------------------------------------
+ * espnScoreSeries / foxScoreSeries -- adapt the two API payload shapes
+ * (build_wp_payload's wp, build_fox_score_payload's fox_score) into the
+ * source-agnostic `data` shape scoreChart() draws.
+ * ------------------------------------------------------------------- */
+function espnScoreSeries(wp) {
+  return {
+    n: wp.n,
+    home: wp.home_score_clean,
+    away: wp.away_score_clean,
+    period_starts: wp.meta.period_starts,
+    score_changes: wp.meta.score_changes,
+    subtitle: (i) => wp.clock_display[i] || "",
+    ariaLabel: `ESPN score progression, ${wp.n} plays`,
+    unitLabel: `${wp.n} plays`,
+    indexLabel: "Play #",
+    tableColumns: [{ header: "Clock", cell: (i) => wp.clock_display[i] || "" }],
+  };
+}
+
+function foxScoreSeries(fox) {
+  const mismatch = fox.meta.final.home !== fox.meta.box_score_final.home
+    || fox.meta.final.away !== fox.meta.box_score_final.away;
+  return {
+    n: fox.n,
+    home: fox.home_score_clean,
+    away: fox.away_score_clean,
+    period_starts: fox.meta.period_starts,
+    score_changes: fox.meta.score_changes,
+    subtitle: (i) => fox.evidence[i] || (i === 0 ? "Pregame" : ""),
+    ariaLabel: `Fox score progression, ${fox.n} scoring events`,
+    unitLabel: `${fox.n} scoring events`,
+    indexLabel: "Step #",
+    tableColumns: [{ header: "Play", cell: (i) => fox.evidence[i] || "" }],
+    note: mismatch
+      ? `Note: Fox's own final score (${fox.meta.final.away}–${fox.meta.final.home}) disagrees with ` +
+        `the box score (${fox.meta.box_score_final.away}–${fox.meta.box_score_final.home}) -- ` +
+        `Fox's play-by-play for this game is incomplete or unreliable near the end.`
+      : null,
+  };
+}
+
+/* ---------------------------------------------------------------------
  * contributionBars -- the highest-value chart. One horizontal bar per
  * metric, sorted by weighted contribution descending. Missing (n/a) and
  * real-zero metrics are drawn differently in geometry, never in shade.

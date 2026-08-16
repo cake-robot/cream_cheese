@@ -93,6 +93,15 @@ METRIC_COPY = {
             "with no such swing in the final minute."
         ),
     },
+    "comeback_erosion": {
+        "label": "Comeback erosion",
+        "description": (
+            "Credit for a commanding lead getting torn down -- measured once per "
+            "lead-change arc, in coin-flip-normalized win-probability terms, so a "
+            "heavy pregame favorite's high WP off a modest lead doesn't count on "
+            "its own."
+        ),
+    },
 }
 
 assert set(METRIC_COPY) == set(scoring.METRICS_BY_NAME), (
@@ -486,6 +495,14 @@ def build_misalignment_callout(rows):
     )
 
 
+def period_label(p):
+    if p == 0:
+        return "Pregame"
+    if p <= 4:
+        return f"Q{p}"
+    return f"OT{p - 4}"
+
+
 def build_wp_payload(wp_rows, game_row):
     """Parallel-array WP series for the game-detail chart. See serve.py's
     module docstring notes / the design plan for why: play-ordinal x-axis
@@ -517,13 +534,6 @@ def build_wp_payload(wp_rows, game_row):
             a = ra
         home_clean.append(h)
         away_clean.append(a)
-
-    def period_label(p):
-        if p == 0:
-            return "Pregame"
-        if p <= 4:
-            return f"Q{p}"
-        return f"OT{p - 4}"
 
     period_starts = []
     prev = None
@@ -571,6 +581,97 @@ def build_wp_payload(wp_rows, game_row):
             "final": {"home": game_row["home_score"], "away": game_row["away_score"]},
             "elapsed_monotonic": elapsed_monotonic,
             "wp_final": home_win_pct[-1] if home_win_pct else None,
+        },
+    }
+
+
+def build_fox_score_payload(conn, game_id, game_row):
+    """Fox's own running score, shaped to match build_wp_payload's score
+    fields closely enough that the same chart renderer can draw either one.
+    x = step ordinal into fox_score_sequence (one entry per actual scoring
+    event, already reconciled by fox.build_score_sequence() -- group-level
+    backstop scores included -- so this is the validated ladder, not a
+    naive re-derivation from raw play rows).
+
+    Fox's home/away assignment is matched independently of ESPN's (see
+    fox_match.match_game -- a neutral-site game can come back flipped), so
+    every team-labeled value here is remapped into ESPN's home/away frame
+    via team_crosswalk before it leaves this function. Nothing downstream
+    needs to know Fox ever disagreed about which side was "home"."""
+    fox_game = conn.execute(
+        "SELECT fox_event_id FROM fox_games WHERE game_id=?", (game_id,)
+    ).fetchone()
+    if fox_game is None:
+        return None
+    fox_event_id = fox_game["fox_event_id"]
+
+    fox_event = conn.execute(
+        "SELECT home_fox_team_id, away_fox_team_id, home_score, away_score, status_line "
+        "FROM fox_events WHERE fox_event_id=?", (fox_event_id,)
+    ).fetchone()
+    if fox_event is None or fox_event["home_fox_team_id"] is None:
+        return None
+
+    espn_for_fox_home = conn.execute(
+        "SELECT espn_team_id FROM team_crosswalk WHERE fox_team_id=?",
+        (fox_event["home_fox_team_id"],),
+    ).fetchone()
+    flipped = bool(espn_for_fox_home) and espn_for_fox_home["espn_team_id"] != game_row["home_team_id"]
+
+    def to_espn(side):
+        """Map a Fox-frame 'home'/'away' label into ESPN's frame."""
+        if not flipped:
+            return side
+        return "away" if side == "home" else "home"
+
+    steps = conn.execute(
+        "SELECT step_number, team, new_value, delta, exact, period_number, evidence "
+        "FROM fox_score_sequence WHERE fox_event_id=? ORDER BY step_number",
+        (fox_event_id,),
+    ).fetchall()
+    n = len(steps) + 1  # a synthetic 0-0 pregame point precedes the first step
+
+    home_score, away_score = [0], [0]
+    period_filled, evidence, exact_flags = [0], [None], [True]
+    score_changes = []
+    h, a = 0, 0
+    for s in steps:
+        espn_team = to_espn(s["team"])
+        if espn_team == "home":
+            h = s["new_value"]
+        else:
+            a = s["new_value"]
+        home_score.append(h)
+        away_score.append(a)
+        period_filled.append(s["period_number"] if s["period_number"] is not None else period_filled[-1])
+        evidence.append(s["evidence"])
+        exact_flags.append(bool(s["exact"]))
+        score_changes.append({
+            "i": len(home_score) - 1, "home": h, "away": a,
+            "delta": s["delta"], "team": espn_team, "exact": bool(s["exact"]),
+        })
+
+    period_starts = []
+    prev = None
+    for idx, p in enumerate(period_filled):
+        if p != prev:
+            period_starts.append({"i": idx, "period": p, "label": period_label(p)})
+            prev = p
+
+    return {
+        "n": n,
+        "i": list(range(n)),
+        "home_score_clean": home_score,
+        "away_score_clean": away_score,
+        "evidence": evidence,
+        "exact": exact_flags,
+        "meta": {
+            "period_starts": period_starts,
+            "score_changes": score_changes,
+            "final": {"home": home_score[-1], "away": away_score[-1]},
+            "box_score_final": {"home": game_row["home_score"], "away": game_row["away_score"]},
+            "status_line": fox_event["status_line"],
+            "flipped": flipped,
         },
     }
 
@@ -1224,6 +1325,8 @@ def api_game_detail(game_id):
         "fox_event_id": fox_event_row["fox_event_id"] if fox_event_row else None,
     }
 
+    fox_score_payload = build_fox_score_payload(conn, game_id, row)
+
     # shape_game() does `row["is_ot"]` / `row.keys()` -- sqlite3.Row supports
     # both, but we need to inject the separately-queried is_ot flag onto it,
     # so build a plain dict (which also supports both) instead.
@@ -1274,6 +1377,7 @@ def api_game_detail(game_id):
         "ot": ot_info,
         "corrections": corrections_payload,
         "wp": wp_payload,
+        "fox_score": fox_score_payload,
         "neighbors": neighbors,
         "live": live_payload,
         "live_history": live_history,
