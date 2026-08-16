@@ -506,7 +506,8 @@ def score_games(conn, game_ids=None, rescore=False):
         label = f"{row['away_team_abbr']} @ {row['home_team_abbr']}"
 
         wp_rows = conn.execute(
-            "SELECT home_win_pct, home_score, away_score, period_number, clock_seconds_elapsed FROM win_probability WHERE game_id = ? ORDER BY play_sequence, id",
+            "SELECT home_win_pct, home_score, away_score, period_number, clock_seconds_elapsed "
+            "FROM win_probability WHERE game_id = ? AND period_number IS NOT NULL ORDER BY play_sequence, id",
             (game_id,),
         ).fetchall()
 

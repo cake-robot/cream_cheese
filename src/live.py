@@ -187,7 +187,16 @@ def build_live_context(*, wp_rows, home_rank, away_rank, initial_home_wp,
     on whatever prefix of the series is available, and elapsed/progress are
     derived from the fresher scoreboard clock rather than the WP series's
     own (possibly stale) tail.
+
+    Drops any pregame rows (period_number IS NULL) before they reach the
+    metric functions -- ESPN's feed occasionally emits an extra pregame WP
+    entry sitting at an implausible extreme (0.0/1.0) before a snap has
+    happened, which wp_volatility_rate (no per-row score/period guard,
+    unlike lead_change_rate/late_volatility_rate) would otherwise read as a
+    real in-game swing. Same fix as scoring.score_games()'s query for
+    completed games.
     """
+    wp_rows = [r for r in wp_rows if r["period_number"] is not None]
     wp_now = wp_now_of(wp_rows)
     elapsed = _elapsed_from_status(status_period, status_clock_seconds)
     if elapsed is None and wp_rows:
