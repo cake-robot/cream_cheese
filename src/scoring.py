@@ -1,6 +1,6 @@
 import sqlite3
 
-from . import db
+from . import db, wp_baseline
 
 # --- Normalization caps (tunable) ---
 MAX_VOLATILITY = 10.0
@@ -33,6 +33,15 @@ CLUTCH_FINISH_NON_FIELD_GOAL_VALUE = 1.5
 # final-minute swing -- below both real-event tiers above (0.7/1.5 = 0.47
 # normalized), but above a flat zero.
 CLUTCH_FINISH_OT_FLOOR = 0.7
+
+# --- comeback_erosion: how far a side's coin-flip-normalized WP must have
+# climbed before a later decline off it counts as eroding a real lead.
+# Chosen empirically: a coinflip team up 14 at Q1 end implies ~79-83% by
+# wp_baseline (verified against 82.4% actual win rate in 51 comparable
+# historical games); 0.84 sits above that, requiring something closer to a
+# genuine 3rd-quarter-or-later command of the game, not just a good
+# Q1 lead. ---
+COMEBACK_EROSION_THRESHOLD = 0.84
 
 
 # --- Metric functions ---
@@ -284,6 +293,121 @@ def upset_risk(initial_home_wp, home_rank, away_rank):
     return (skew ** UPSET_RISK_POWER) * quality
 
 
+def _sanitized_score_events(wp_rows):
+    """
+    Collapse wp_rows to a chronological list of (clock_seconds_elapsed,
+    score_diff) for each *real* score change, in two passes:
+
+    1. Drop isolated spikes -- a distinct (home,away) tuple immediately
+       followed by a LOWER one in either coordinate is noise that gets
+       reverted, not a real score (confirmed example: an away score
+       reading 13 -> 16 -> 13 for a single row). This is the failure mode
+       the classic non-decreasing/running-max guard (used below, and in
+       lead_changes()/clutch_finish()) actually makes WORSE, not better --
+       it would lock in the bad high value as the new floor and reject the
+       correct lower readings that follow. Iterated to a fixed point in
+       case of adjacent spikes.
+    2. Standard non-decreasing sanitization (defends against the OTHER
+       failure mode, a row reverting to a stale LOWER value -- confirmed
+       example: a score reading -1 for 14 consecutive rows), now that
+       spikes are already gone.
+    """
+    distinct = []
+    last = None
+    for r in wp_rows:
+        if r["clock_seconds_elapsed"] is None:
+            continue
+        cur = (r["home_score"], r["away_score"])
+        if cur != last:
+            distinct.append((r["clock_seconds_elapsed"], cur[0], cur[1]))
+            last = cur
+
+    changed = True
+    while changed:
+        changed = False
+        cleaned = []
+        i = 0
+        while i < len(distinct):
+            if i < len(distinct) - 1:
+                _, h, a = distinct[i]
+                _, h2, a2 = distinct[i + 1]
+                if (h is not None and h2 is not None and h > h2) or \
+                   (a is not None and a2 is not None and a > a2):
+                    changed = True
+                    i += 1
+                    continue
+            cleaned.append(distinct[i])
+            i += 1
+        distinct = cleaned
+
+    events = []
+    last = (None, None)
+    home_max, away_max = 0, 0
+    for elapsed, h, a in distinct:
+        if h is not None and h >= home_max:
+            home_max = h
+        if a is not None and a >= away_max:
+            away_max = a
+        cur = (home_max, away_max)
+        if cur != last:
+            events.append((elapsed, cur[0] - cur[1]))
+            last = cur
+    return events
+
+
+def comeback_erosion(wp_rows):
+    """
+    Did a real, commanding lead get torn down -- credited once per "arc"
+    (the stretch between lead changes), at the moment the arc ends, using
+    that arc's own coin-flip-normalized WP extreme. Segmenting the game
+    this way and crediting exactly once per arc is what stops a team from
+    getting extra credit for continuing to blow a game open after they've
+    already completed the comeback (confirmed case: SDSU@USU's real
+    comeback completed around 0.39 when USU first retook the lead: crediting
+    continued Q4 margin-building on top of that inflated it to 0.90 in an
+    earlier, unsegmented version of this metric).
+
+    "Commanding" is judged in coin-flip terms (wp_baseline.coinflip_wp_elapsed
+    -- the pregame line forced to 50/50), not raw WP, so a heavy pregame
+    favorite's WP being high because it was already expected to be doesn't
+    count on its own (confirmed case: Alabama's 93% WP off a modest early
+    lead against 9%-underdog FSU was mostly the pregame anchor, not a real
+    lead -- coin-flip-normalized it never reaches COMEBACK_EROSION_THRESHOLD).
+
+    A tie counts as full erosion of whoever was ahead, same as the
+    opponent actually taking the lead -- checked explicitly, not just on
+    transitions to the opposite side (an earlier version only checked on a
+    flip to the other side and wrongly scored 0 for USC 30-Penn State 33,
+    whose real drama was USC's lead getting fully erased into a tie before
+    PSU won in OT).
+
+    Uses elapsed-time directly (via coinflip_wp_elapsed), not quarter
+    buckets, so it evaluates Q4/OT rows too -- extrapolating
+    wp_baseline.ELAPSED_MODEL (fit on Q1-3 only) past its trained range,
+    same accepted-but-unverified tradeoff as elsewhere in wp_baseline.
+    """
+    events = _sanitized_score_events(wp_rows)
+    if not events:
+        return 0.0
+    best = 0.0
+    lo = hi = 0.5
+    state = 0  # -1 away ahead, +1 home ahead, 0 tied
+    for elapsed, sd in events:
+        w = wp_baseline.coinflip_wp_elapsed(elapsed, sd)
+        new_state = 1 if sd > 0 else (-1 if sd < 0 else 0)
+        if new_state != state:
+            if hi >= COMEBACK_EROSION_THRESHOLD:
+                best = max(best, hi - w)
+            if lo <= 1 - COMEBACK_EROSION_THRESHOLD:
+                best = max(best, w - lo)
+            lo = hi = w
+            state = new_state
+        else:
+            lo = min(lo, w)
+            hi = max(hi, w)
+    return best
+
+
 # --- Metric registry ---
 # Each fn takes a context dict: {"wp_rows": [...], "home_rank": int|None,
 # "away_rank": int|None, "initial_home_wp": float|None}
@@ -296,6 +420,7 @@ METRICS = [
     {"name": "upset_risk",       "fn": lambda ctx: upset_risk(ctx["initial_home_wp"], ctx["home_rank"], ctx["away_rank"]), "weight": 1.0, "cap": None},
     {"name": "late_volatility",  "fn": lambda ctx: late_volatility(ctx["wp_rows"]),                   "weight": 0.5, "cap": MAX_LATE_VOLATILITY},
     {"name": "clutch_finish",    "fn": lambda ctx: clutch_finish(ctx["wp_rows"]),                      "weight": 1.0, "cap": MAX_CLUTCH_FINISH},
+    {"name": "comeback_erosion", "fn": lambda ctx: comeback_erosion(ctx["wp_rows"]),                    "weight": 1.0, "cap": None},
 ]
 
 METRICS_BY_NAME = {m["name"]: m for m in METRICS}
