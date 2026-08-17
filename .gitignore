@@ -85,3 +85,5 @@ data/cfb.db
 data/cfb.db-shm
 data/cfb.db-wal
 data/spoilers.json
+data/live.lock
+logs/
