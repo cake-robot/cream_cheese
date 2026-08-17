@@ -15,13 +15,15 @@
 <body data-page="games">
 
 <header class="chrome">
-  <span class="brand">🏈 Watchability</span>
+  <a class="brand" href="/">🏈 Watchability</a>
   <nav>
+    <a href="/">Settings</a>
     <a href="/slate.html">Slate</a>
     <a href="/index.html" aria-current="page">Games</a>
     <a href="/top.html">Top games</a>
     <a href="/analytics.html">Analytics</a>
   </nav>
+  <div id="spoiler-toggle"></div>
   <div class="theme-toggle" id="theme-toggle">
     <button data-mode="light" aria-pressed="false">Light</button>
     <button data-mode="dark" aria-pressed="false">Dark</button>
@@ -105,15 +107,7 @@ function refreshWeekOptions() {
   const seasonType = document.getElementById("f-season_type").value;
   const weekSel = document.getElementById("f-week");
   const current = weekSel.value;
-  let weeks = new Set();
-  if (season && seasonType !== "all") {
-    (META.weeks[`${season}:${seasonType}`] || []).forEach((w) => weeks.add(w));
-  } else if (season) {
-    ["2", "3"].forEach((st) => (META.weeks[`${season}:${st}`] || []).forEach((w) => weeks.add(w)));
-  } else {
-    Object.values(META.weeks).forEach((arr) => arr.forEach((w) => weeks.add(w)));
-  }
-  const sorted = Array.from(weeks).sort((a, b) => a - b);
+  const sorted = weeksForSeason(META, season, seasonType);
   weekSel.innerHTML = '<option value="">All</option>' + sorted.map((w) => `<option value="${w}">${w}</option>`).join("");
   if (sorted.includes(Number(current))) weekSel.value = current;
 }
@@ -171,6 +165,13 @@ async function loadAndRender(page = 0, limit = 50) {
   CURRENT = { data, page, limit };
   renderTable(data);
   frame.classList.remove("loading-frame");
+  // Best-effort prefill for the spoiler popover -- only when the filters
+  // pin down a single (season, type, week), not "All".
+  if (filters.season && filters.season_type !== "all" && filters.week) {
+    setSpoilerContext({
+      season_year: Number(filters.season), season_type: Number(filters.season_type), week: Number(filters.week),
+    });
+  }
 }
 
 function renderTable(data) {
@@ -227,6 +228,11 @@ function renderTable(data) {
   strip.appendChild(el("span", { text: `${data.total} games` }));
   if (data.filtered_score_stats.n) {
     strip.appendChild(el("span", { text: `median ${fmtScore(data.filtered_score_stats.median)}` }));
+  }
+  if (data.spoiler_excluded && data.spoiler_excluded.count) {
+    strip.appendChild(el("span", {
+      text: `⚠ ${data.spoiler_excluded.count} spoiler-protected games not shown here — see Slate`,
+    }));
   }
   const from = data.offset + 1, to = Math.min(data.offset + data.limit, data.total);
   strip.appendChild(el("span", { text: data.total ? `showing ${from}–${to}` : "" }));

@@ -15,13 +15,15 @@
 <body data-page="game">
 
 <header class="chrome">
-  <span class="brand">🏈 Watchability</span>
+  <a class="brand" href="/">🏈 Watchability</a>
   <nav>
+    <a href="/">Settings</a>
     <a href="/slate.html">Slate</a>
     <a href="/index.html">Games</a>
     <a href="/top.html">Top games</a>
     <a href="/analytics.html">Analytics</a>
   </nav>
+  <div id="spoiler-toggle"></div>
   <div class="theme-toggle" id="theme-toggle">
     <button data-mode="light" aria-pressed="false">Light</button>
     <button data-mode="dark" aria-pressed="false">Dark</button>
@@ -39,6 +41,42 @@
 <script>
 function gameId() {
   return new URLSearchParams(location.search).get("id");
+}
+
+// Checked before the scored/live/not-scored branches in loadAndRenderGame()
+// below, regardless of the game's actual status_state -- a spoiler-hidden
+// game always renders this and nothing else, whether it's completed, live,
+// or upcoming. (Routing on watchability_score/status_state instead would
+// misfire here: a hidden but actually-scored-and-completed game comes back
+// with watchability_score/live both null, which would otherwise fall
+// through to renderNotScored()'s "This game has no win-probability data,
+// so it has not been scored" -- true for an unscored game, false and
+// misleading for one that's just hidden.)
+function renderHidden(mount, detail) {
+  const g = detail.game;
+  mount.appendChild(el("div", { class: "matchup-header" }, [
+    el("div", {}, [
+      el("h1", {}, [fmtMatchup(g) + " ", ...renderChips(g)]),
+      el("div", { class: "sub", text: `${fmtDate(g.game_date)}${venueLabel(g) ? " · " + venueLabel(g) : ""}${g.attendance ? " · " + g.attendance.toLocaleString() : ""} · ${seasonWeekLabel(g)}` }),
+    ]),
+  ]));
+  const card = el("div", { class: "card" }, [
+    el("h2", { text: "🙈 Watchability hidden" }),
+    el("div", {
+      class: "card-sub",
+      text: "This game is spoiler-protected -- its score, charts, and what drove it are hidden. "
+        + "Reveal it for this session, or change the setting for its week from the Spoilers menu above.",
+    }),
+  ]);
+  const revealBtn = el("button", { class: "reset", text: "Reveal this game" });
+  revealBtn.addEventListener("click", async () => {
+    addRevealed(g.game_id);
+    revealBtn.disabled = true;
+    revealBtn.textContent = "Loading…";
+    await loadAndRenderGame();
+  });
+  card.appendChild(revealBtn);
+  mount.appendChild(card);
 }
 
 function renderNotScored(mount, detail) {
@@ -281,15 +319,10 @@ function renderScored(mount, detail) {
   });
 }
 
-(async function init() {
+async function loadAndRenderGame() {
   const id = gameId();
   const mount = document.getElementById("body-mount");
   if (!id) { mount.textContent = "No game id provided."; return; }
-  const savedSearch = sessionStorage.getItem("games-return-search");
-  if (savedSearch) document.getElementById("back-link").href = "/index.html" + savedSearch;
-
-  const metricsResp = await api("/metrics");
-  metricsResp.metrics.forEach((m) => (REGISTRY_LABEL[m.name] = m.label));
 
   let detail;
   try {
@@ -299,7 +332,9 @@ function renderScored(mount, detail) {
     return;
   }
   mount.innerHTML = "";
-  if (detail.game.watchability_score !== null) {
+  if (detail.game.spoiler_hidden) {
+    renderHidden(mount, detail);
+  } else if (detail.game.watchability_score !== null) {
     renderScored(mount, detail);
   } else if (detail.game.status_state === "in" && detail.live) {
     const liveRegistry = await api("/slate/registry");
@@ -308,6 +343,17 @@ function renderScored(mount, detail) {
   } else {
     renderNotScored(mount, detail);
   }
+  setSpoilerContext({ season_year: detail.game.season_year, season_type: detail.game.season_type, week: detail.game.week });
+}
+
+(async function init() {
+  const savedSearch = sessionStorage.getItem("games-return-search");
+  if (savedSearch) document.getElementById("back-link").href = "/index.html" + savedSearch;
+
+  const metricsResp = await api("/metrics");
+  metricsResp.metrics.forEach((m) => (REGISTRY_LABEL[m.name] = m.label));
+
+  await loadAndRenderGame();
 })();
 </script>
 </body>

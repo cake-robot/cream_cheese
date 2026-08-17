@@ -91,6 +91,8 @@ header.chrome .brand {
   font-size: 16px;
   margin-right: 8px;
   white-space: nowrap;
+  color: var(--ink-1);
+  text-decoration: none;
 }
 
 header.chrome nav {
@@ -133,6 +135,67 @@ header.chrome nav a[aria-current="page"] {
   color: var(--ink-1);
   font-weight: 700;
 }
+
+/* ---- spoiler control (nav pill) + spoiler settings page ---- */
+
+.spoiler-pill {
+  display: inline-block;
+  font: inherit;
+  font-size: 13px;
+  background: var(--surface-1);
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  padding: 5px 12px;
+  cursor: pointer;
+  color: var(--ink-2);
+  white-space: nowrap;
+  text-decoration: none;
+}
+.spoiler-pill:hover { color: var(--ink-1); border-color: var(--axis); text-decoration: none; }
+
+.spoiler-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.spoiler-row select, .spoiler-row input[type="text"] {
+  font: inherit;
+  font-size: 12.5px;
+  padding: 4px 5px;
+  border: 1px solid var(--axis);
+  border-radius: 5px;
+  background: var(--surface-1);
+  color: var(--ink-1);
+}
+.spoiler-row span { font-size: 13px; color: var(--ink-2); }
+
+.spoiler-overrides { display: flex; flex-direction: column; gap: 4px; }
+.spoiler-empty { color: var(--ink-muted); font-size: 12.5px; }
+.spoiler-override-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+.spoiler-remove {
+  cursor: pointer;
+  color: var(--ink-muted);
+  padding: 0 4px;
+}
+.spoiler-remove:hover { color: var(--critical); }
+
+/* ---- spoiler settings page ---- */
+
+.status-line {
+  font-size: 13px;
+  color: var(--ink-2);
+  margin-bottom: 14px;
+  min-height: 18px;
+}
+.status-line.error { color: var(--critical); }
 
 main {
   max-width: 1180px;
@@ -177,7 +240,9 @@ main {
   color: var(--ink-1);
 }
 .filters .spacer { flex: 1 1 auto; }
-.filters button.reset {
+/* Not scoped to .filters -- also used standalone on the spoiler settings
+   page's .spoiler-row groups. */
+button.reset {
   font-size: 13px;
   color: var(--ink-2);
   background: none;
@@ -186,6 +251,7 @@ main {
   padding: 4px 10px;
   cursor: pointer;
 }
+button.reset:disabled { opacity: .4; cursor: default; }
 
 .summary-strip {
   display: flex;

@@ -6,14 +6,37 @@ const API = "/api";
 
 async function api(path, params) {
   const url = new URL(API + path, location.origin);
-  if (params) {
-    for (const [k, v] of Object.entries(params)) {
-      if (v === undefined || v === null || v === "") continue;
-      if (Array.isArray(v)) v.forEach((item) => url.searchParams.append(k, item));
-      else url.searchParams.set(k, v);
-    }
+  // Every GET automatically carries this session's revealed game ids as
+  // `reveal=` params -- the entire opt-in contract is an id list (no
+  // `reveal=all`), so this can never blanket-unhide anything; it just
+  // means a Reveal click on the game page sticks across back-navigation
+  // to the list, with no per-page wiring.
+  const merged = { ...(params || {}) };
+  const revealed = revealedIds();
+  if (revealed.length) {
+    const existing = merged.reveal ? [].concat(merged.reveal) : [];
+    merged.reveal = Array.from(new Set([...existing, ...revealed]));
+  }
+  for (const [k, v] of Object.entries(merged)) {
+    if (v === undefined || v === null || v === "") continue;
+    if (Array.isArray(v)) v.forEach((item) => url.searchParams.append(k, item));
+    else url.searchParams.set(k, v);
   }
   const res = await fetch(url);
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).detail || detail; } catch (e) { /* ignore */ }
+    throw new Error(`${res.status}: ${detail}`);
+  }
+  return res.json();
+}
+
+async function apiPost(path, body) {
+  const res = await fetch(API + path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
   if (!res.ok) {
     let detail = res.statusText;
     try { detail = (await res.json()).detail || detail; } catch (e) { /* ignore */ }
@@ -141,10 +164,27 @@ function venueLabel(g) {
   return g.venue_name || null;
 }
 
+// ---- week lookup (shared by index.html's Week filter and the spoiler
+// popover's "This week" section, so there's one implementation of "which
+// weeks exist for this season/type" instead of two) --------------------------
+
+function weeksForSeason(meta, season, seasonType) {
+  const weeks = new Set();
+  if (season && seasonType && seasonType !== "all") {
+    (meta.weeks[`${season}:${seasonType}`] || []).forEach((w) => weeks.add(w));
+  } else if (season) {
+    ["2", "3"].forEach((st) => (meta.weeks[`${season}:${st}`] || []).forEach((w) => weeks.add(w)));
+  } else {
+    Object.values(meta.weeks).forEach((arr) => arr.forEach((w) => weeks.add(w)));
+  }
+  return Array.from(weeks).sort((a, b) => a - b);
+}
+
 // ---- chips ------------------------------------------------------------------
 
 function gameChips(g) {
   const chips = [];
+  if (g.spoiler_hidden) chips.push(["HIDDEN", "muted"]);
   if (g.status_state === "in") chips.push(["LIVE", "accent"]);
   if (g.ot) chips.push(["OT", "warn"]);
   if (postseasonInfo(g)?.isCFP) chips.push(["CFP", "accent"]);
@@ -158,8 +198,13 @@ function gameChips(g) {
   if (g.has_manual_correction) chips.push(["MANUAL", "muted"]);
   // "NOT SCORED" means "this game is done and we have nothing" -- a live or
   // not-yet-started game is unscored by design, not by gap, so it gets the
-  // LIVE chip (above) or no chip at all instead of this one.
-  if (g.watchability_score === null && g.status_state === "post") chips.push(["NOT SCORED", "muted"]);
+  // LIVE chip (above) or no chip at all instead of this one. A spoiler-
+  // hidden game also has a null watchability_score, but it very much HAS
+  // been scored -- the HIDDEN chip already covers that case, so exclude it
+  // here rather than showing the misleading claim that nothing exists yet.
+  if (g.watchability_score === null && g.status_state === "post" && !g.spoiler_hidden) {
+    chips.push(["NOT SCORED", "muted"]);
+  }
   return chips;
 }
 function renderChips(g) {
@@ -239,6 +284,86 @@ function tableTwin(summaryText, headers, rows) {
   ]);
 }
 
+// ---- spoiler control ---------------------------------------------------------
+//
+// This is a manual, not algorithmic, control: the user decides when a
+// week/game stops needing spoiler protection (e.g. "it's week 3, I don't
+// care about week 1 anymore"), nothing here infers that. Three pieces:
+//   - revealedIds()/addRevealed() -- session-only per-game reveal opt-in,
+//     read automatically by every api() call above.
+//   - setSpoilerContext() -- optional per-page hint (season/type/week)
+//     so the popover's "This week" section can open prefilled; every page
+//     still works without calling it, just with blank selects.
+//   - initSpoilerControl() -- the nav pill + popover itself.
+
+const REVEAL_KEY = "spoiler-revealed";
+
+function revealedIds() {
+  try {
+    const raw = sessionStorage.getItem(REVEAL_KEY);
+    const ids = raw ? JSON.parse(raw) : [];
+    return Array.isArray(ids) ? ids : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function addRevealed(gameId) {
+  const ids = revealedIds();
+  if (!ids.includes(gameId)) {
+    ids.push(gameId);
+    sessionStorage.setItem(REVEAL_KEY, JSON.stringify(ids));
+  }
+}
+
+let SPOILER_CONTEXT = { season_year: null, season_type: null, week: null };
+function setSpoilerContext(ctx) {
+  SPOILER_CONTEXT = { ...SPOILER_CONTEXT, ...ctx };
+}
+
+// Mirrors src/spoilers.py's _default_hidden() -- same ordinal comparison
+// (postseason sorts after every regular-season week of the same year, and
+// is one undivided unit within itself). Used only to label the nav pill;
+// the server is authoritative for actual redaction/exclusion.
+function defaultHidden(seasonYear, seasonType, week, hiddenFrom) {
+  const ty = hiddenFrom.season_year, tt = hiddenFrom.season_type, tw = hiddenFrom.week;
+  if (seasonYear !== ty) return seasonYear > ty;
+  if (tt === 2) {
+    if (seasonType === 3) return true;
+    return week >= tw;
+  }
+  return seasonType === 3;
+}
+
+// A status pill, not an editor -- actually changing anything happens on
+// the dedicated /settings.html page (which is also the site root). This
+// used to be an inline popover with its own Save/Clear controls, but that
+// meant two implementations of the same read-modify-write logic to keep
+// in sync, and a failed write here had nowhere to surface an error (see
+// the settings page's runWrite(), which does). One editor, linked to from
+// everywhere, is simpler and doesn't silently eat failures.
+async function initSpoilerControl() {
+  const mount = document.getElementById("spoiler-toggle");
+  if (!mount) return;
+
+  const link = el("a", { class: "spoiler-pill", href: "/", text: "Spoilers" });
+  mount.appendChild(link);
+
+  try {
+    const policy = (await api("/spoilers")).policy;
+    const ctx = SPOILER_CONTEXT;
+    if (ctx.season_year !== null && ctx.season_type !== null && ctx.week !== null) {
+      const key = `${ctx.season_year}:${ctx.season_type}:${ctx.week}`;
+      const hidden = key in policy.weeks ? policy.weeks[key] : defaultHidden(ctx.season_year, ctx.season_type, ctx.week, policy.hidden_from);
+      link.textContent = hidden ? "🙈 Spoilers hidden" : "👁 Spoilers shown";
+    }
+  } catch (e) {
+    // Leave the generic "Spoilers" label -- this is a status hint, not
+    // something worth failing loudly over.
+  }
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   initThemeToggle();
+  initSpoilerControl();
 });

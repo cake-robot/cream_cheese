@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spoiler settings — Watchability</title>
+<link rel="stylesheet" href="/style.css">
+<script>
+(function () {
+  var t = localStorage.getItem("theme");
+  if (t && t !== "system") document.documentElement.setAttribute("data-theme", t);
+})();
+</script>
+</head>
+<body data-page="settings">
+
+<header class="chrome">
+  <a class="brand" href="/">🏈 Watchability</a>
+  <nav>
+    <a href="/" aria-current="page">Settings</a>
+    <a href="/slate.html">Slate</a>
+    <a href="/index.html">Games</a>
+    <a href="/top.html">Top games</a>
+    <a href="/analytics.html">Analytics</a>
+  </nav>
+  <div class="theme-toggle" id="theme-toggle">
+    <button data-mode="light" aria-pressed="false">Light</button>
+    <button data-mode="dark" aria-pressed="false">Dark</button>
+    <button data-mode="system" aria-pressed="true">System</button>
+  </div>
+</header>
+
+<main>
+  <div class="page-title">Spoiler settings</div>
+  <div class="card-sub" style="margin-bottom:18px;font-size:13.5px">
+    Manual controls for what's spoiler-protected -- nothing here changes on its own.
+    The <a href="/slate.html">Slate</a> is the one page that still shows protected games
+    (ranked by watchability, numbers withheld). Everywhere else, a protected game is left
+    off the list entirely.
+  </div>
+
+  <div id="status-line" class="status-line"></div>
+
+  <div class="card">
+    <h2>Default</h2>
+    <div class="card-sub">
+      Every game from this point in the season calendar onward is protected -- a later season
+      entirely, or this season from the chosen week on -- unless a week or game override below
+      says otherwise. This is what you'd move forward mid-season (e.g. "I don't care about
+      being spoiled for week 1 anymore").
+    </div>
+    <div class="spoiler-row">
+      <span>Hide from</span>
+      <select id="f-default-season"></select>
+      <select id="f-default-type">
+        <option value="2">Regular</option>
+        <option value="3">Postseason</option>
+      </select>
+      <select id="f-default-week"></select>
+      <span>onward</span>
+      <button class="reset" id="btn-save-default">Save</button>
+      <button class="reset" id="btn-reset-default">Reset to default</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Week overrides</h2>
+    <div class="card-sub">Beats the default, in either direction, for one (season, type, week).</div>
+    <div class="spoiler-row">
+      <select id="f-week-season"></select>
+      <select id="f-week-type">
+        <option value="2">Regular</option>
+        <option value="3">Postseason</option>
+      </select>
+      <select id="f-week-week"></select>
+      <select id="f-week-state">
+        <option value="hidden">Hidden</option>
+        <option value="shown">Revealed</option>
+        <option value="default">Default</option>
+      </select>
+      <button class="reset" id="btn-save-week">Save</button>
+    </div>
+    <div id="week-overrides-list" class="spoiler-overrides" style="margin-top:14px"></div>
+  </div>
+
+  <div class="card">
+    <h2>Game overrides</h2>
+    <div class="card-sub">
+      Beats both the default and any week override, for one specific game -- the strongest tier.
+      Games tab search excludes protected games, so search here instead; it deliberately doesn't.
+    </div>
+    <div class="spoiler-row">
+      <input type="text" id="f-game-search" placeholder="team or venue" style="width:180px">
+      <select id="f-game-state">
+        <option value="hidden">Hidden</option>
+        <option value="shown">Revealed</option>
+      </select>
+      <button class="reset" id="btn-save-game" disabled>Save</button>
+    </div>
+    <div id="game-search-results" style="margin-top:8px"></div>
+    <div id="game-overrides-list" class="spoiler-overrides" style="margin-top:14px"></div>
+  </div>
+</main>
+
+<script src="/app.js"></script>
+<script>
+let META = null;
+let SELECTED_GAME = null;
+
+function setStatus(msg, isError) {
+  const box = document.getElementById("status-line");
+  box.textContent = msg;
+  box.classList.toggle("error", !!isError);
+}
+
+async function runWrite(fn, successMsg) {
+  try {
+    await fn();
+    setStatus(successMsg, false);
+    await refreshPolicy();
+  } catch (e) {
+    setStatus(`Failed: ${e.message}`, true);
+  }
+}
+
+// A regular season is always weeks 1-15 in this corpus (see /api/meta),
+// but the Default threshold has to be settable for a season that doesn't
+// exist in the DB yet -- that's the entire point of it (see the
+// /api/spoilers/default handler's docstring). So its week options come
+// from this fixed range, not from weeksForSeason(), which only knows
+// about weeks some game has actually been played in.
+const STANDARD_WEEKS = Array.from({ length: 15 }, (_, i) => i + 1);
+
+async function loadMeta() {
+  META = await api("/meta");
+
+  const defaultSeasonSel = document.getElementById("f-default-season");
+  const years = new Set(META.seasons);
+  years.add(2026);
+  const maxKnown = Math.max(...years);
+  years.add(maxKnown + 1);
+  years.add(maxKnown + 2);
+  const yearList = Array.from(years).sort((a, b) => a - b);
+  defaultSeasonSel.innerHTML = yearList.map((y) => `<option value="${y}">${y}</option>`).join("");
+  refreshDefaultWeekOptions();
+
+  const weekSeasonSel = document.getElementById("f-week-season");
+  weekSeasonSel.innerHTML = META.seasons.slice().sort((a, b) => a - b)
+    .map((s) => `<option value="${s}">${s}</option>`).join("");
+  refreshWeekWeekOptions();
+}
+
+function refreshDefaultWeekOptions() {
+  const seasonType = document.getElementById("f-default-type").value;
+  const weekSel = document.getElementById("f-default-week");
+  const current = weekSel.value;
+  const weeks = seasonType === "3" ? [1] : STANDARD_WEEKS;
+  weekSel.innerHTML = weeks.map((w) => `<option value="${w}">${w}</option>`).join("");
+  if (weeks.includes(Number(current))) weekSel.value = current;
+}
+
+function refreshWeekWeekOptions() {
+  const season = document.getElementById("f-week-season").value;
+  const seasonType = document.getElementById("f-week-type").value;
+  const weekSel = document.getElementById("f-week-week");
+  const current = weekSel.value;
+  const weeks = weeksForSeason(META, season, seasonType);
+  weekSel.innerHTML = weeks.map((w) => `<option value="${w}">${w}</option>`).join("");
+  if (weeks.includes(Number(current))) weekSel.value = current;
+}
+
+function overrideLabel(o) {
+  if (o.type === "week") {
+    return `${o.season_year} ${o.season_type === 3 ? "postseason" : `week ${o.week}`} — ${o.hidden ? "hidden" : "revealed"}`;
+  }
+  return `game ${o.game_id} — ${o.hidden ? "hidden" : "revealed"}`;
+}
+
+function renderOverrideRow(o, labelText, onClear) {
+  const removeBtn = el("span", { class: "spoiler-remove", text: "✕", title: "Clear this override" });
+  removeBtn.addEventListener("click", onClear);
+  return el("div", { class: "spoiler-override-row" }, [el("span", { text: labelText }), removeBtn]);
+}
+
+async function renderOverrides(overrides) {
+  const weekList = document.getElementById("week-overrides-list");
+  const gameList = document.getElementById("game-overrides-list");
+  weekList.innerHTML = "";
+  gameList.innerHTML = "";
+
+  const weeks = overrides.filter((o) => o.type === "week");
+  const games = overrides.filter((o) => o.type === "game");
+
+  if (!weeks.length) {
+    weekList.appendChild(el("div", { class: "spoiler-empty", text: "No week overrides set." }));
+  }
+  weeks.forEach((o) => {
+    weekList.appendChild(renderOverrideRow(o, overrideLabel(o), () => runWrite(
+      () => apiPost("/spoilers/week", { season_year: o.season_year, season_type: o.season_type, week: o.week, hidden: null }),
+      `Cleared the override for ${o.season_year} ${o.season_type === 3 ? "postseason" : "week " + o.week}.`,
+    )));
+  });
+
+  if (!games.length) {
+    gameList.appendChild(el("div", { class: "spoiler-empty", text: "No individual game overrides set." }));
+  }
+  games.forEach((o) => {
+    const row = el("div", { class: "spoiler-override-row" }, [el("span", { text: `Loading ${o.game_id}…` })]);
+    gameList.appendChild(row);
+    // /api/spoilers/search deliberately bypasses the spoiler policy -- this
+    // list needs to label hidden games too, or every row here would just
+    // read "Loading" forever.
+    api("/spoilers/search", { game_id: o.game_id }).then((data) => {
+      const g = data.results[0];
+      const labelText = g
+        ? `${fmtMatchup(g)} — ${seasonWeekLabel(g)} — ${o.hidden ? "hidden" : "revealed"}`
+        : overrideLabel(o);
+      row.innerHTML = "";
+      row.appendChild(el("a", { href: `/game.html?id=${o.game_id}`, text: labelText }));
+      const removeBtn = el("span", { class: "spoiler-remove", text: "✕", title: "Clear this override" });
+      removeBtn.addEventListener("click", () => runWrite(
+        () => apiPost("/spoilers/game", { game_id: o.game_id, hidden: null }),
+        `Cleared the override for ${labelText}.`,
+      ));
+      row.appendChild(removeBtn);
+    });
+  });
+}
+
+const STOCK_DEFAULT = { season_year: 2026, season_type: 2, week: 1 };
+
+function defaultLabel(hf) {
+  return `${hf.season_year} ${hf.season_type === 3 ? "postseason" : "week " + hf.week}`;
+}
+
+async function refreshPolicy() {
+  const sp = await api("/spoilers");
+  const policy = sp.policy;
+  const hf = policy.hidden_from;
+  document.getElementById("f-default-season").value = String(hf.season_year);
+  document.getElementById("f-default-type").value = String(hf.season_type);
+  refreshDefaultWeekOptions();
+  document.getElementById("f-default-week").value = String(hf.week);
+  document.getElementById("btn-reset-default").disabled = hf.season_year === STOCK_DEFAULT.season_year
+    && hf.season_type === STOCK_DEFAULT.season_type && hf.week === STOCK_DEFAULT.week;
+  await renderOverrides(sp.active_overrides);
+
+  const corpus = await api("/games", { scored: "all", limit: 1 });
+  const n = corpus.spoiler_excluded.count;
+  setStatus(`${n} game${n === 1 ? "" : "s"} currently spoiler-protected across the corpus.`, false);
+}
+
+// ---- default ----------------------------------------------------------------
+
+document.getElementById("f-default-type").addEventListener("change", refreshDefaultWeekOptions);
+document.getElementById("btn-save-default").addEventListener("click", () => {
+  const season_year = Number(document.getElementById("f-default-season").value);
+  const season_type = Number(document.getElementById("f-default-type").value);
+  const week = Number(document.getElementById("f-default-week").value);
+  runWrite(
+    () => apiPost("/spoilers/default", { season_year, season_type, week }),
+    `Default set to hide from ${defaultLabel({ season_year, season_type, week })} onward.`,
+  );
+});
+document.getElementById("btn-reset-default").addEventListener("click", () => {
+  runWrite(() => apiPost("/spoilers/default", { season_year: null }), `Default reset to ${defaultLabel(STOCK_DEFAULT)}.`);
+});
+
+// ---- week override ------------------------------------------------------------
+
+document.getElementById("f-week-season").addEventListener("change", refreshWeekWeekOptions);
+document.getElementById("f-week-type").addEventListener("change", refreshWeekWeekOptions);
+document.getElementById("btn-save-week").addEventListener("click", () => {
+  const season_year = Number(document.getElementById("f-week-season").value);
+  const season_type = Number(document.getElementById("f-week-type").value);
+  const week = Number(document.getElementById("f-week-week").value);
+  const stateVal = document.getElementById("f-week-state").value;
+  const hidden = stateVal === "default" ? null : stateVal === "hidden";
+  const label = `${season_year} ${season_type === 3 ? "postseason" : "week " + week}`;
+  runWrite(() => apiPost("/spoilers/week", { season_year, season_type, week, hidden }), `${label} set to ${stateVal}.`);
+});
+
+// ---- game override -------------------------------------------------------------
+
+let searchTimer = null;
+document.getElementById("f-game-search").addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  SELECTED_GAME = null;
+  document.getElementById("btn-save-game").disabled = true;
+  const q = document.getElementById("f-game-search").value.trim();
+  const resultsMount = document.getElementById("game-search-results");
+  if (!q) { resultsMount.innerHTML = ""; return; }
+  searchTimer = setTimeout(async () => {
+    const data = await api("/spoilers/search", { q, limit: 10 });
+    resultsMount.innerHTML = "";
+    if (!data.results.length) {
+      resultsMount.appendChild(el("div", { class: "spoiler-empty", text: "No matching games." }));
+      return;
+    }
+    data.results.forEach((g) => {
+      const row = el("div", { class: "spoiler-override-row", style: "cursor:pointer" }, [
+        el("span", { text: `${fmtMatchup(g)} — ${fmtDate(g.game_date)} · ${seasonWeekLabel(g)}` }),
+      ]);
+      row.addEventListener("click", () => {
+        SELECTED_GAME = g;
+        document.getElementById("f-game-search").value = `${g.away.abbr} at ${g.home.abbr} (${fmtDate(g.game_date)})`;
+        document.getElementById("btn-save-game").disabled = false;
+        resultsMount.innerHTML = "";
+      });
+      resultsMount.appendChild(row);
+    });
+  }, 250);
+});
+
+document.getElementById("btn-save-game").addEventListener("click", () => {
+  if (!SELECTED_GAME) { setStatus("Search and pick a game first.", true); return; }
+  const stateVal = document.getElementById("f-game-state").value;
+  const label = `${fmtMatchup(SELECTED_GAME)} — ${seasonWeekLabel(SELECTED_GAME)}`;
+  runWrite(
+    () => apiPost("/spoilers/game", { game_id: SELECTED_GAME.game_id, hidden: stateVal === "hidden" }),
+    `${label} set to ${stateVal}.`,
+  );
+});
+
+(async function init() {
+  await loadMeta();
+  await refreshPolicy();
+})();
+</script>
+</body>
+</html>

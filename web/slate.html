@@ -15,13 +15,15 @@
 <body data-page="slate">
 
 <header class="chrome">
-  <span class="brand">🏈 Watchability</span>
+  <a class="brand" href="/">🏈 Watchability</a>
   <nav>
+    <a href="/">Settings</a>
     <a href="/slate.html" aria-current="page">Slate</a>
     <a href="/index.html">Games</a>
     <a href="/top.html">Top games</a>
     <a href="/analytics.html">Analytics</a>
   </nav>
+  <div id="spoiler-toggle"></div>
   <div class="theme-toggle" id="theme-toggle">
     <button data-mode="light" aria-pressed="false">Light</button>
     <button data-mode="dark" aria-pressed="false">Dark</button>
@@ -143,16 +145,26 @@ function renderLiveSection(games) {
   hero.appendChild(el("div", { class: "matchup-header" }, [
     el("div", {}, [
       el("h2", {}, [fmtMatchup(top) + " ", ...renderChips(top)]),
-      el("div", { class: "sub", text: top.live.status.detail || "" }),
+      el("div", { class: "sub", text: top.live.status.detail || (top.spoiler_hidden ? "In progress" : "") }),
     ]),
   ]));
-  hero.appendChild(el("div", { class: "hero-row" }, [
-    el("div", { class: "hero-score tabular-nums", text: fmtScore(top.live.live_score) }),
-    el("div", { class: "hero-context" }, [el("div", { text: top.live.headline })]),
-  ]));
-  hero.appendChild(halvesBars(top.live.quality_so_far, top.live.drama_from_here));
-  const note = divergeNote(top.live);
-  if (note) hero.appendChild(el("div", { class: "diverge-note", text: note }));
+  if (top.spoiler_hidden) {
+    // Ranked (this IS the top-ranked live game), but every number that
+    // would say *how* it's going -- composite score, headline, quality/
+    // drama bars -- is withheld.
+    hero.appendChild(el("div", {
+      class: "hero-context", style: "margin-top:10px",
+      text: "Ranked #1 among live games right now, but watchability is hidden for this game.",
+    }));
+  } else {
+    hero.appendChild(el("div", { class: "hero-row" }, [
+      el("div", { class: "hero-score tabular-nums", text: fmtScore(top.live.live_score) }),
+      el("div", { class: "hero-context" }, [el("div", { text: top.live.headline })]),
+    ]));
+    hero.appendChild(halvesBars(top.live.quality_so_far, top.live.drama_from_here));
+    const note = divergeNote(top.live);
+    if (note) hero.appendChild(el("div", { class: "diverge-note", text: note }));
+  }
   hero.style.cursor = "pointer";
   hero.addEventListener("click", () => (location.href = `/game.html?id=${top.game_id}`));
   wrap.appendChild(hero);
@@ -162,16 +174,22 @@ function renderLiveSection(games) {
 
   const list = el("div", { class: "card" });
   rest.forEach((g) => {
-    const flash = PREV_LIVE_SCORES[g.game_id] !== undefined
+    const flash = !g.spoiler_hidden && PREV_LIVE_SCORES[g.game_id] !== undefined
       && Math.abs(PREV_LIVE_SCORES[g.game_id] - g.live.live_score) > 0.05;
     PREV_LIVE_SCORES[g.game_id] = g.live.live_score;
 
     const toggle = el("span", { text: "⌄", style: "color:var(--ink-muted);cursor:pointer;padding:0 6px" });
+    const valCell = g.spoiler_hidden
+      ? el("div", { class: "val", text: "—" })
+      : el("div", { class: "val tabular-nums", text: fmtScore(g.live.live_score) });
+    const whyText = g.spoiler_hidden
+      ? (g.live.status.detail || "In progress")
+      : `${g.live.status.detail || ""}${g.live.headline ? " · " + g.live.headline : ""}`;
     const row = el("div", { class: "top-list-item" + (flash ? " updated-flash" : "") }, [
-      el("div", { class: "val tabular-nums", text: fmtScore(g.live.live_score) }),
+      valCell,
       el("div", { class: "info" }, [
         el("div", {}, [fmtMatchup(g), ...renderChips(g)]),
-        el("div", { class: "why", text: `${g.live.status.detail || ""}${g.live.headline ? " · " + g.live.headline : ""}` }),
+        el("div", { class: "why", text: whyText }),
       ]),
       toggle,
     ]);
@@ -182,17 +200,24 @@ function renderLiveSection(games) {
     });
 
     const expandWrap = el("div", { style: "display:none;padding:6px 0 14px 4px" });
-    toggle.addEventListener("click", (ev) => {
-      ev.stopPropagation();
-      const showing = expandWrap.style.display !== "none";
-      expandWrap.style.display = showing ? "none" : "block";
-      if (showing) { EXPANDED.delete(g.game_id); return; }
-      EXPANDED.add(g.game_id);
-      if (expandWrap.children.length === 0) renderLiveExpand(expandWrap, g);
-    });
-    if (EXPANDED.has(g.game_id)) {
-      expandWrap.style.display = "block";
-      renderLiveExpand(expandWrap, g);
+    if (g.spoiler_hidden) {
+      // No live metric breakdown exists to expand into when the game is
+      // spoiler-hidden (live.so_far/from_here.metrics come back empty) --
+      // drop the expand affordance entirely rather than show a dead toggle.
+      toggle.style.visibility = "hidden";
+    } else {
+      toggle.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        const showing = expandWrap.style.display !== "none";
+        expandWrap.style.display = showing ? "none" : "block";
+        if (showing) { EXPANDED.delete(g.game_id); return; }
+        EXPANDED.add(g.game_id);
+        if (expandWrap.children.length === 0) renderLiveExpand(expandWrap, g);
+      });
+      if (EXPANDED.has(g.game_id)) {
+        expandWrap.style.display = "block";
+        renderLiveExpand(expandWrap, g);
+      }
     }
 
     list.appendChild(row);
@@ -211,6 +236,12 @@ function renderCompletedSection(games) {
     return;
   }
   const card = el("div", { class: "card" });
+  if (games.some((g) => g.spoiler_hidden)) {
+    card.appendChild(el("div", {
+      class: "card-sub",
+      text: "Ranked most to least watchable -- scores hidden for spoiler-protected games.",
+    }));
+  }
   games.forEach((g) => {
     const scoreCell = g.watchability_score === null
       ? el("span", { text: "—" })
@@ -274,6 +305,11 @@ async function loadSlate({ push = false } = {}) {
     renderLiveSection(data.sections.live);
     renderCompletedSection(data.sections.completed);
     renderUpcomingSection(data.sections.upcoming);
+    // Best-effort prefill for the spoiler popover's "This week" section --
+    // a day/week window can resolve to more than one (season, type, week)
+    // tuple, so this just picks the first rather than trying to represent
+    // all of them.
+    if (data.weeks && data.weeks.length) setSpoilerContext(data.weeks[0]);
   } catch (e) {
     errBox.textContent = `Could not load slate: ${e.message}`;
   } finally {
