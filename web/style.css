@@ -51,15 +51,6 @@ header.chrome {
   flex-wrap: wrap;
 }
 
-header.chrome .brand {
-  font-weight: 700;
-  font-size: 16px;
-  margin-right: 8px;
-  white-space: nowrap;
-  color: var(--ink-1);
-  text-decoration: none;
-}
-
 header.chrome nav {
   display: flex;
   gap: 18px;
