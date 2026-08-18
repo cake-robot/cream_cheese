@@ -1,49 +1,10 @@
 /* ---------------------------------------------------------------------
-   Design tokens. Light is the default; dark applies under prefers-color-
-   scheme AND under the explicit [data-theme="dark"] override (the toggle
-   beats OS setting, OS setting beats nothing). Palette per the dataviz
-   skill's reference instance, unmodified, fixed slot order.
+   Design tokens. Dark-only -- no light/system option. Palette per the
+   dataviz skill's reference instance (dark variant), unmodified, fixed
+   slot order.
    --------------------------------------------------------------------- */
 
 :root {
-  --surface-1: #fcfcfb;
-  --page: #f9f9f7;
-  --ink-1: #0b0b0b;
-  --ink-2: #52514e;
-  --ink-muted: #898781;
-  --grid: #e1e0d9;
-  --axis: #c3c2b7;
-  --hairline: rgba(11, 11, 11, .10);
-  --series-1: #2a78d6;
-  --series-2: #eb6834;
-  --div-neg: #2a78d6;
-  --div-mid: #f0efec;
-  --div-pos: #d03b3b;
-  --track: #cde2fb;
-  --warning: #fab219;
-  --critical: #d03b3b;
-  color-scheme: light;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --surface-1: #1a1a19;
-    --page: #0d0d0d;
-    --ink-1: #ffffff;
-    --ink-2: #c3c2b7;
-    --ink-muted: #8f8d87;
-    --grid: #2c2c2a;
-    --axis: #383835;
-    --hairline: rgba(255, 255, 255, .12);
-    --series-1: #3987e5;
-    --series-2: #d95926;
-    --div-mid: #383835;
-    --track: #184f95;
-    color-scheme: dark;
-  }
-}
-
-:root[data-theme="dark"] {
   --surface-1: #1a1a19;
   --page: #0d0d0d;
   --ink-1: #ffffff;
@@ -54,8 +15,12 @@
   --hairline: rgba(255, 255, 255, .12);
   --series-1: #3987e5;
   --series-2: #d95926;
+  --div-neg: #2a78d6;
   --div-mid: #383835;
+  --div-pos: #d03b3b;
   --track: #184f95;
+  --warning: #fab219;
+  --critical: #d03b3b;
   color-scheme: dark;
 }
 

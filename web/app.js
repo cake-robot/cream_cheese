@@ -253,24 +253,6 @@ function hideTooltip() {
   if (tooltipEl) tooltipEl.style.display = "none";
 }
 
-// ---- theme toggle -------------------------------------------------------------
-
-function initThemeToggle() {
-  const box = document.getElementById("theme-toggle");
-  if (!box) return;
-  const current = localStorage.getItem("theme") || "system";
-  const apply = (mode) => {
-    if (mode === "system") document.documentElement.removeAttribute("data-theme");
-    else document.documentElement.setAttribute("data-theme", mode);
-    localStorage.setItem("theme", mode);
-    box.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === mode)));
-  };
-  box.querySelectorAll("button").forEach((b) => {
-    b.addEventListener("click", () => apply(b.dataset.mode));
-  });
-  apply(current);
-}
-
 // ---- shared table-twin builder (non-chart tables reuse this too) --------------
 
 function tableTwin(summaryText, headers, rows) {
@@ -340,6 +322,5 @@ async function initAccountMenu() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-  initThemeToggle();
   initAccountMenu();
 });
