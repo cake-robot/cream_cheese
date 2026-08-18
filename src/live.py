@@ -409,6 +409,26 @@ def score_live(ctx, cycle_seq=None):
 
 # --- Refresh loop ---
 
+def _next_et_deadline(until_str):
+    """Parse an "HH:MM" wall-clock time and return the next occurrence of it
+    in US/Eastern, strictly after now -- so a deadline of "02:00" started at
+    9am always means 2am *tomorrow*, never a deadline already in the past.
+    ET (not system local time) so the same --live-until value means the same
+    thing whether this runs on a Pacific laptop or a VPS set to UTC."""
+    try:
+        hour, minute = (int(p) for p in until_str.split(":", 1))
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ValueError
+    except ValueError:
+        raise ValueError(f"--live-until must be HH:MM (24-hour), got {until_str!r}") from None
+    et = ZoneInfo("America/New_York")
+    now = datetime.now(et)
+    deadline = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if deadline <= now:
+        deadline += timedelta(days=1)
+    return deadline
+
+
 def _et_today_tomorrow():
     """ESPN's scoreboard `dates` param is interpreted in US/Eastern (verified
     live); span today through tomorrow ET so a 9pm PT Saturday kickoff
@@ -423,9 +443,25 @@ def _acquire_lock():
     if os.path.exists(LOCK_PATH):
         with open(LOCK_PATH) as f:
             existing = f.read().strip()
-        raise RuntimeError(
-            f"{LOCK_PATH} already exists (pid {existing}) -- another `--live` process may "
-            f"already be running. Remove the file yourself if you're sure it isn't."
+        stale = False
+        try:
+            os.kill(int(existing), 0)
+        except ValueError:
+            stale = False  # unparseable pid -- don't guess, treat as a live lock
+        except ProcessLookupError:
+            stale = True
+        except PermissionError:
+            pass  # pid exists and we can't signal it -- treat as live
+        else:
+            pass  # os.kill succeeded -- pid is alive
+        if not stale:
+            raise RuntimeError(
+                f"{LOCK_PATH} already exists (pid {existing}) -- another `--live` process may "
+                f"already be running. Remove the file yourself if you're sure it isn't."
+            )
+        logger.warning(
+            "live: %s referenced pid %s, which is no longer running -- reclaiming stale lock",
+            LOCK_PATH, existing,
         )
     os.makedirs(os.path.dirname(LOCK_PATH) or ".", exist_ok=True)
     with open(LOCK_PATH, "w") as f:
@@ -688,14 +724,23 @@ def run_cycle(conn, cycle_seq, summary_budget=LIVE_SUMMARY_BUDGET, mode="normal"
 
 
 def run_forever(conn, interval=LIVE_INTERVAL_SECONDS, summary_budget=LIVE_SUMMARY_BUDGET,
-                 once=False, mode="normal", dates=None):
+                 once=False, mode="normal", dates=None, until=None):
     """
     The `--live` daemon entry point. Handles its own SIGINT/SIGTERM
     (finishes the current cycle, commits, releases the lock, exits cleanly)
     and single-writer discipline via a PID lock file -- both skipped in
     dry_run mode, which takes no lock and mutates nothing.
+
+    `until`, if given, is an "HH:MM" ET wall-clock time (see
+    _next_et_deadline); reaching it exits through the same clean path as a
+    SIGTERM -- lets a scheduler (launchd/systemd/cron) start this at a fixed
+    time and trust it to end its own window rather than needing a separate
+    "stop at time" mechanism, which most schedulers don't have.
     """
     stop = {"flag": False}
+    deadline = _next_et_deadline(until) if until else None
+    if deadline is not None:
+        logger.info("live: --live-until %s -- will exit cleanly at %s", until, deadline.isoformat())
 
     def _handle_signal(signum, _frame):
         logger.info("live: received signal %d, finishing current cycle then exiting", signum)
@@ -703,6 +748,9 @@ def run_forever(conn, interval=LIVE_INTERVAL_SECONDS, summary_budget=LIVE_SUMMAR
 
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
+
+    def _deadline_passed():
+        return deadline is not None and datetime.now(deadline.tzinfo) >= deadline
 
     lock_path = None
     if mode != "dry_run":
@@ -723,14 +771,16 @@ def run_forever(conn, interval=LIVE_INTERVAL_SECONDS, summary_budget=LIVE_SUMMAR
                 logger.exception("live: cycle %d failed -- continuing", cycle_seq)
                 elapsed = 0.0
 
-            if once or stop["flag"]:
+            if once or stop["flag"] or _deadline_passed():
+                if deadline is not None and not stop["flag"] and not once:
+                    logger.info("live: reached --live-until deadline, exiting cleanly")
                 break
 
             sleep_for = max(0.0, interval - elapsed)
             if elapsed > interval:
                 logger.warning("live: cycle %d ran long (%.1fs of a %ds budget)", cycle_seq, elapsed, interval)
             slept = 0
-            while slept < sleep_for and not stop["flag"]:
+            while slept < sleep_for and not stop["flag"] and not _deadline_passed():
                 time.sleep(min(1.0, sleep_for - slept))
                 slept += 1
     finally:

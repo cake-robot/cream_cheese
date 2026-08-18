@@ -4,9 +4,18 @@ data/cfb.db via Flask's test client. No fixtures needed -- 2026 gives ~900
 naturally-hidden scheduled games under the default policy, and 2025 gives a
 large revealed, scored corpus to hide/reveal in individual tests.
 
-Each test gets its own scratch spoilers.json (spoilers.POLICY_PATH
-monkeypatched to a tempdir), so nothing here touches the repo's real
-data/spoilers.json and tests don't interfere with each other.
+Every route now requires a session (see serve.py's login-wall before_request
+gate), and every spoiler route now reads/writes a per-user policy in
+data/users.db rather than the old shared data/spoilers.json (see
+src/spoilers.py's get_user_policy/save_user_policy and serve.py's
+spoiler_ctx()). So each test gets its own scratch users.db (users.DB_PATH
+monkeypatched to a tempdir) with one freshly-created, freshly-logged-in
+user -- a brand-new account's spoiler policy is the same DEFAULT_HIDDEN_FROM
+this file's tests were already written against, so the actual assertions
+below are unchanged; only setUp/tearDown had to learn about accounts.
+data/spoilers.json is no longer in serve.py's request path at all (it's
+now read only by the one-shot migration script), so it needs no isolation
+here.
 
 Run with: ./venv/bin/python -m unittest discover tests
 """
@@ -17,7 +26,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src import spoilers
+from src import users
 
 import serve
 
@@ -57,17 +66,35 @@ def _raw_db():
 class SpoilerApiTestCase(unittest.TestCase):
     def setUp(self):
         self._tmpdir = tempfile.mkdtemp()
-        self._orig_path = spoilers.POLICY_PATH
-        spoilers.POLICY_PATH = Path(self._tmpdir) / "spoilers.json"
-        spoilers._cache["key"] = None
-        spoilers._cache["policy"] = None
+        self._orig_users_db_path = users.DB_PATH
+        users.DB_PATH = Path(self._tmpdir) / "users.db"
+        conn = users.init_db(users.DB_PATH)
+        users.create_user(conn, "testuser", "testuserpassword1", invite_code=None)
+        conn.close()
+
         serve.app.testing = True
         self.client = serve.app.test_client()
+        # /api/login is rate-limited to 5/minute in production (see
+        # serve.py) -- the limiter's in-memory storage is process-wide and
+        # persists across tests, and every test's login here shares one
+        # bucket (Flask's test client always presents as 127.0.0.1, so
+        # _rate_limit_key()'s CF-Connecting-IP fallback can't tell tests
+        # apart). Reset before every test rather than exempting login from
+        # the limiter in test mode -- this way a change to the real 5/minute
+        # limit still gets exercised by whatever here happens to log in
+        # more than 5 times.
+        serve.limiter.reset()
+        # Every route requires a session now -- log the fixture user in
+        # once here so every self.get()/self.post() below carries a valid
+        # cookie, same as a real browser would after visiting /login.html.
+        login_resp = self.client.post(
+            "/api/login", json={"username": "testuser", "password": "testuserpassword1"},
+            headers={"Origin": "http://127.0.0.1:5050"},
+        )
+        assert login_resp.status_code == 200, login_resp.get_data(as_text=True)
 
     def tearDown(self):
-        spoilers.POLICY_PATH = self._orig_path
-        spoilers._cache["key"] = None
-        spoilers._cache["policy"] = None
+        users.DB_PATH = self._orig_users_db_path
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
     def get(self, path, **params):
@@ -76,7 +103,12 @@ class SpoilerApiTestCase(unittest.TestCase):
         return resp.get_json()
 
     def post(self, path, body):
-        resp = self.client.post(path, json=body)
+        # serve.py's origin guard rejects a POST with no Origin header (see
+        # test_cross_origin_post_rejected / test_same_origin_post_allowed
+        # below for the guard's own tests) -- everything else in this file
+        # is exercising route behavior, not the guard, so it needs a
+        # same-origin Origin header to get past it.
+        resp = self.client.post(path, json=body, headers={"Origin": "http://127.0.0.1:5050"})
         self.assertEqual(resp.status_code, 200, resp.get_data(as_text=True))
         return resp.get_json()
 
@@ -323,6 +355,67 @@ class TestSpoilersSearch(SpoilerApiTestCase):
         self.assertEqual(data["results"], [])
 
 
+class TestPerUserIsolation(SpoilerApiTestCase):
+    """The thing the whole per-user rewrite (src/users.py, src/spoilers.py's
+    get_user_policy/save_user_policy, serve.py's spoiler_ctx()) was for:
+    two different logged-in sessions get two different redactions from the
+    exact same route, and neither can see or affect the other's policy."""
+
+    def _second_logged_in_client(self):
+        conn = users.get_connection(users.DB_PATH)
+        users.create_user(conn, "seconduser", "seconduserpassword1", invite_code=None)
+        conn.close()
+        client2 = serve.app.test_client()
+        resp = client2.post(
+            "/api/login", json={"username": "seconduser", "password": "seconduserpassword1"},
+            headers={"Origin": "http://127.0.0.1:5050"},
+        )
+        assert resp.status_code == 200, resp.get_data(as_text=True)
+        return client2
+
+    def test_week_hide_by_one_user_does_not_affect_another(self):
+        gid = self._any_2025_week5_game_id()
+        client2 = self._second_logged_in_client()
+
+        # Before either user touches anything, both see the same default
+        # (2025 is well before DEFAULT_HIDDEN_FROM's 2026 week 1) -- confirms
+        # this test's premise (game visible pre-hide) rather than assuming it.
+        pre = self.get("/api/games", season=2025, week=5, scored="all")
+        self.assertTrue(any(g["game_id"] == gid for g in pre["games"]))
+
+        # self.client (testuser, logged in by setUp) hides week 5 of 2025.
+        self.post("/api/spoilers/week", {"season_year": 2025, "season_type": 2, "week": 5, "hidden": True})
+
+        after_testuser = self.get("/api/games", season=2025, week=5, scored="all")
+        self.assertFalse(
+            any(g["game_id"] == gid for g in after_testuser["games"]),
+            "testuser hid this week -- it must be excluded from testuser's own list",
+        )
+
+        resp2 = client2.get("/api/games", query_string={"season": 2025, "week": 5, "scored": "all"})
+        self.assertEqual(resp2.status_code, 200, resp2.get_data(as_text=True))
+        after_seconduser = resp2.get_json()
+        self.assertTrue(
+            any(g["game_id"] == gid for g in after_seconduser["games"]),
+            "seconduser never touched this week -- testuser's override must not leak across accounts",
+        )
+
+    def test_default_threshold_is_independent_per_user(self):
+        client2 = self._second_logged_in_client()
+
+        self.post("/api/spoilers/default", {"season_year": 2025, "season_type": 2, "week": 1})
+        testuser_policy = self.get("/api/spoilers")["policy"]
+        self.assertEqual(testuser_policy["hidden_from"], {"season_year": 2025, "season_type": 2, "week": 1})
+
+        resp2 = client2.get("/api/spoilers")
+        self.assertEqual(resp2.status_code, 200)
+        seconduser_policy = resp2.get_json()["policy"]
+        self.assertEqual(
+            seconduser_policy["hidden_from"], {"season_year": 2026, "season_type": 2, "week": 1},
+            "seconduser's default threshold must still be the account default, untouched by testuser's write",
+        )
+
+
 class TestWritePath(SpoilerApiTestCase):
     def test_week_game_default_round_trip(self):
         gid = self._any_2025_scored_game()["game_id"]
@@ -345,11 +438,17 @@ class TestWritePath(SpoilerApiTestCase):
         # The whole point of the default threshold is future-proofing a
         # season not yet in the DB -- unlike week/game overrides, this
         # must succeed even though no 2031 games exist.
-        resp = self.client.post("/api/spoilers/default", json={"season_year": 2031, "season_type": 2, "week": 4})
+        resp = self.client.post(
+            "/api/spoilers/default", json={"season_year": 2031, "season_type": 2, "week": 4},
+            headers={"Origin": "http://127.0.0.1:5050"},
+        )
         self.assertEqual(resp.status_code, 200)
 
     def test_default_bad_season_type_rejected(self):
-        resp = self.client.post("/api/spoilers/default", json={"season_year": 2027, "season_type": 5, "week": 1})
+        resp = self.client.post(
+            "/api/spoilers/default", json={"season_year": 2027, "season_type": 5, "week": 1},
+            headers={"Origin": "http://127.0.0.1:5050"},
+        )
         self.assertEqual(resp.status_code, 400)
 
     def test_mid_season_default_recalibration(self):
@@ -371,12 +470,16 @@ class TestWritePath(SpoilerApiTestCase):
 
     def test_bad_week_rejected(self):
         resp = self.client.post(
-            "/api/spoilers/week", json={"season_year": 1900, "season_type": 2, "week": 1, "hidden": True}
+            "/api/spoilers/week", json={"season_year": 1900, "season_type": 2, "week": 1, "hidden": True},
+            headers={"Origin": "http://127.0.0.1:5050"},
         )
         self.assertEqual(resp.status_code, 404)
 
     def test_bad_game_rejected(self):
-        resp = self.client.post("/api/spoilers/game", json={"game_id": "nonexistent_id", "hidden": True})
+        resp = self.client.post(
+            "/api/spoilers/game", json={"game_id": "nonexistent_id", "hidden": True},
+            headers={"Origin": "http://127.0.0.1:5050"},
+        )
         self.assertEqual(resp.status_code, 404)
 
     def test_cross_origin_post_rejected(self):

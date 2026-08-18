@@ -84,6 +84,10 @@ celerybeat-schedule
 data/cfb.db
 data/cfb.db-shm
 data/cfb.db-wal
+data/users.db
+data/users.db-shm
+data/users.db-wal
 data/spoilers.json
+data/auth.json
 data/live.lock
 logs/

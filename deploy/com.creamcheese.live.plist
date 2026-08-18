@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.creamcheese.live</string>
+
+    <!-- caffeinate -i blocks idle sleep (not lid-close sleep -- see the
+         deployment plan doc's residual-limitations section; this is the
+         thing Phase 2 exists to fix). --live-until 02:00 makes the poller
+         end its own window at 2am ET the next day through the same clean
+         shutdown path as a SIGTERM (see src/live.py's run_forever) --
+         launchd has no "stop at time" primitive, so the process has to do
+         this itself. Adjust the time here if your games regularly run
+         later/earlier than that. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/caffeinate</string>
+        <string>-i</string>
+        <string>/Users/ericsayre/Documents/cream_cheese/venv/bin/python</string>
+        <string>pipeline.py</string>
+        <string>--live</string>
+        <string>--live-until</string>
+        <string>02:00</string>
+    </array>
+
+    <!-- config.DB_PATH is a relative path ("data/cfb.db") and pipeline.py
+         resolves it against cwd, not against the script's own location --
+         this MUST be set correctly or the live poller will create/open the
+         wrong database file. -->
+    <key>WorkingDirectory</key>
+    <string>/Users/ericsayre/Documents/cream_cheese</string>
+
+    <!-- Starts the poller at 09:00 local time on Thursday/Friday/Saturday
+         (Weekday: 4/5/6 -- Sunday=0). Misses Tue/Wed MACtion and weekday
+         bowl/CFP games; `just live-now` covers those manually, and
+         `just discover <week>` backfills anything a missed window never
+         caught live. -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Weekday</key><integer>4</integer>
+            <key>Hour</key><integer>9</integer>
+            <key>Minute</key><integer>0</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>5</integer>
+            <key>Hour</key><integer>9</integer>
+            <key>Minute</key><integer>0</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>6</integer>
+            <key>Hour</key><integer>9</integer>
+            <key>Minute</key><integer>0</integer>
+        </dict>
+    </array>
+
+    <!-- Respawn on a crash (nonzero/signal exit), but NOT on the clean
+         --live-until exit (status 0) -- that one's supposed to end the
+         window, not restart it a second later. -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <!-- Must live outside ~/Documents -- see com.creamcheese.serve.plist for
+         why (xpcproxy's stdio-redirect open gets a TCC EPERM otherwise). -->
+    <key>StandardOutPath</key>
+    <string>/Users/ericsayre/Library/Logs/creamcheese/live.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/ericsayre/Library/Logs/creamcheese/live.log</string>
+</dict>
+</plist>

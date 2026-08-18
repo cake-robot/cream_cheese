@@ -37,6 +37,8 @@ import tempfile
 import threading
 from datetime import datetime, timezone
 
+from . import users as _users
+
 DEFAULT_HIDDEN_FROM = {"season_year": 2026, "season_type": 2, "week": 1}
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -262,6 +264,123 @@ def set_default(season_year, season_type, week):
                 "season_year": int(season_year), "season_type": int(season_type), "week": int(week),
             }
         return save_policy(policy)
+
+
+# ---------------------------------------------------------------------------
+# Per-user policy storage -- backed by data/users.db (via src/users.py)
+# instead of the single shared data/spoilers.json file above. Added once the
+# app grew multiple accounts, each with their own spoiler preferences; the
+# file-based functions above remain untouched (and still fully tested by
+# tests/test_spoilers_policy.py) because the one-shot migration script that
+# seeds the first admin's row from data/spoilers.json still needs them (see
+# `just migrate-spoilers`). No mtime/size cache here the way load_policy()
+# has one: that cache existed because spoilers.json could be read many
+# times per second across every request, regardless of user; a per-user
+# policy is already read at most once per request via serve.py's
+# g.spoiler_ctx, so a second cache layer here would add complexity without
+# a measurable payoff.
+# ---------------------------------------------------------------------------
+
+def get_user_policy(user_id, conn=None):
+    """Per-user analog of load_policy(). Falls back to a fresh default
+    policy for a user with no row yet (brand-new account, or the pre-
+    migration gap before `just migrate-spoilers` has run for this user) --
+    same "never take the site down over missing/malformed prefs" contract
+    load_policy() has for a missing/corrupt file."""
+    own_conn = conn is None
+    conn = conn or _users.get_connection()
+    try:
+        raw = _users.get_policy_json(conn, user_id)
+    finally:
+        if own_conn:
+            conn.close()
+    if raw is None:
+        return _default_policy()
+    try:
+        loaded = json.loads(raw)
+    except ValueError:
+        return _default_policy()
+    return _normalize(loaded) if isinstance(loaded, dict) else _default_policy()
+
+
+def save_user_policy(user_id, policy, conn=None):
+    policy = _normalize(policy)
+    policy["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    own_conn = conn is None
+    conn = conn or _users.get_connection()
+    try:
+        _users.set_policy_json(conn, user_id, json.dumps(policy, sort_keys=True))
+    finally:
+        if own_conn:
+            conn.close()
+    return policy
+
+
+def set_user_week(user_id, season_year, season_type, week, hidden, conn=None):
+    """hidden: True | False | None -- see set_week()'s docstring; same
+    tri-state semantics, just scoped to one user_id. The read-modify-write
+    is one critical section under users.LOCK (see that module's docstring
+    for why this needs to be the same lock object users.py itself uses
+    internally, not a separate one) so a concurrent set_user_*() call for
+    the same user can't read stale state."""
+    own_conn = conn is None
+    conn = conn or _users.get_connection()
+    try:
+        with _users.LOCK:
+            policy = get_user_policy(user_id, conn=conn)
+            key = week_key(season_year, season_type, week)
+            weeks = dict(policy.get("weeks", {}))
+            if hidden is None:
+                weeks.pop(key, None)
+            else:
+                weeks[key] = bool(hidden)
+            policy = dict(policy)
+            policy["weeks"] = weeks
+            return save_user_policy(user_id, policy, conn=conn)
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def set_user_game(user_id, game_id, hidden, conn=None):
+    own_conn = conn is None
+    conn = conn or _users.get_connection()
+    try:
+        with _users.LOCK:
+            policy = get_user_policy(user_id, conn=conn)
+            games = dict(policy.get("games", {}))
+            if hidden is None:
+                games.pop(game_id, None)
+            else:
+                games[game_id] = bool(hidden)
+            policy = dict(policy)
+            policy["games"] = games
+            return save_user_policy(user_id, policy, conn=conn)
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def set_user_default(user_id, season_year, season_type, week, conn=None):
+    """season_year: int | None -- see set_default()'s docstring; None
+    resets the threshold to DEFAULT_HIDDEN_FROM and ignores
+    season_type/week."""
+    own_conn = conn is None
+    conn = conn or _users.get_connection()
+    try:
+        with _users.LOCK:
+            policy = get_user_policy(user_id, conn=conn)
+            policy = dict(policy)
+            if season_year is None:
+                policy["hidden_from"] = dict(DEFAULT_HIDDEN_FROM)
+            else:
+                policy["hidden_from"] = {
+                    "season_year": int(season_year), "season_type": int(season_type), "week": int(week),
+                }
+            return save_user_policy(user_id, policy, conn=conn)
+    finally:
+        if own_conn:
+            conn.close()
 
 
 # ---------------------------------------------------------------------------

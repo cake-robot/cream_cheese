@@ -9,22 +9,27 @@ Run from anywhere:
     ./venv/bin/python serve.py
 """
 
+import json
 import os
 import pathlib
+import secrets
 import sqlite3
 import sys
 from datetime import datetime, timedelta
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
-from flask import Flask, abort, g, jsonify, request, send_from_directory
+from flask import Flask, abort, g, jsonify, redirect, request, send_from_directory, session
+from flask_limiter import Limiter
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from src import config, corrections as corrections_module, live, scoring, spoilers  # noqa: E402
+from src import config, corrections as corrections_module, live, scoring, spoilers, users  # noqa: E402
 
 DB_FILE = (REPO_ROOT / config.DB_PATH).resolve()
 WEB_DIR = REPO_ROOT / "web"
+AUTH_FILE = REPO_ROOT / "data" / "auth.json"
 
 TOTAL_WEIGHT = sum(m["weight"] for m in scoring.METRICS)
 MANUAL_CORRECTION_GAME_IDS = {c["game_id"] for c in corrections_module.CORRECTIONS}
@@ -220,6 +225,73 @@ OT_EXISTS_SQL = (
 app = Flask(__name__, static_folder=None)
 
 
+def _load_or_create_secret_key():
+    """app.secret_key signs the session cookie -- data/auth.json holds only
+    this, never a password (those live hashed in data/users.db via
+    src/users.py). Auto-generated on first run rather than requiring a
+    manual init step: an unreadable/corrupt file is a real problem (fail
+    loudly), but a missing one just means this is the first run anywhere,
+    which should work out of the box. Regenerating it invalidates every
+    existing session cookie, which is a minor inconvenience, not a
+    security or data-integrity issue -- so this file is worth including in
+    backups (see `just backup`) but isn't precious the way users.db is."""
+    if AUTH_FILE.exists():
+        try:
+            data = json.loads(AUTH_FILE.read_text())
+            key = data.get("secret_key")
+        except (OSError, ValueError):
+            key = None
+        if isinstance(key, str) and len(key) >= 32:
+            return key
+        raise SystemExit(f"FATAL: {AUTH_FILE} exists but doesn't contain a valid secret_key")
+    AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
+    key = secrets.token_hex(32)
+    AUTH_FILE.write_text(json.dumps({"secret_key": key}, indent=2) + "\n")
+    print(f"[serve.py] generated a new session secret at {AUTH_FILE}")
+    return key
+
+
+app.secret_key = _load_or_create_secret_key()
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    # Tied to CC_PUBLIC_ORIGIN (see ALLOWED_POST_ORIGINS below) rather than
+    # hardcoded True: once that's set we're expected to be reached only via
+    # the HTTPS tunnel, so the cookie can require Secure. Left off for
+    # plain-http local/loopback testing, where a Secure cookie would just
+    # silently never be sent back by the browser and every login would
+    # appear to fail for no visible reason.
+    SESSION_COOKIE_SECURE=bool(os.environ.get("CC_PUBLIC_ORIGIN", "").startswith("https://")),
+    PERMANENT_SESSION_LIFETIME=timedelta(days=30),
+)
+
+
+def _rate_limit_key():
+    """cloudflared sets CF-Connecting-IP on every request it proxies, so
+    this is the real visitor IP once the tunnel is the only way in. Falls
+    back to remote_addr for local/loopback testing where that header is
+    never set. This is only a safe key precisely because serve.py stays
+    bound to 127.0.0.1 (see the __main__ block) with cloudflared as the
+    sole ingress -- a client talking to this process directly could forge
+    CF-Connecting-IP and pick its own rate-limit bucket. If this process is
+    ever bound to a non-loopback address directly (no tunnel in front of
+    it), this key function must change first."""
+    return request.headers.get("CF-Connecting-IP", request.remote_addr) or "unknown"
+
+
+limiter = Limiter(key_func=_rate_limit_key, app=app, storage_uri="memory://", default_limits=["120 per minute"])
+
+
+@limiter.request_filter
+def _exempt_static_from_rate_limit():
+    # default_limits above applies only to /api/* -- static assets
+    # (style.css, app.js, charts.js, every page) and the two auth pages
+    # stay unlimited. The two POST routes that most need a tighter cap
+    # (login, signup) get their own stricter @limiter.limit() below, which
+    # stacks with -- doesn't replace -- the 120/minute default.
+    return not request.path.startswith("/api/")
+
+
 # ---------------------------------------------------------------------------
 # Connection handling -- one read-only connection per request, never write-mode.
 # ---------------------------------------------------------------------------
@@ -242,6 +314,18 @@ def get_db():
         conn.execute("PRAGMA busy_timeout = 5000")
         g.db = conn
     return g.db
+
+
+def get_users_db():
+    """Fresh per-request connection to data/users.db, same lifecycle as
+    get_db()'s cfb.db connection above -- opened lazily, closed in
+    close_db()'s teardown. Unlike get_db() this one is read-write: accounts,
+    invites, and per-user spoiler policy all live here (see src/users.py's
+    module docstring for why this is a second database rather than a table
+    in cfb.db)."""
+    if "users_db" not in g:
+        g.users_db = users.get_connection()
+    return g.users_db
 
 
 def _startup_selfcheck():
@@ -280,29 +364,110 @@ def _startup_selfcheck():
         f"default hidden from {hf_label} onward"
     )
 
+    # data/users.db: accounts, invites, and (once a user has saved settings
+    # at least once) per-user spoiler policy. init_db() is idempotent --
+    # CREATE TABLE IF NOT EXISTS -- so this is safe to run on every start,
+    # same as db.init_db() for cfb.db in pipeline.py.
+    users_conn = users.init_db()
+    if not os.access(users.DB_PATH.parent, os.W_OK):
+        raise SystemExit(f"FATAL: {users.DB_PATH.parent} is not writable -- accounts need it")
+    n_users = users_conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
+    n_open_invites = users_conn.execute(
+        "SELECT COUNT(*) AS n FROM invites WHERE redeemed_by IS NULL"
+    ).fetchone()["n"]
+    users_conn.close()
+    print(f"[serve.py] accounts OK -- {n_users} user(s), {n_open_invites} unredeemed invite(s)")
+    if n_users == 0:
+        print("[serve.py] no accounts exist yet -- run `just create-admin <username>` before logging in")
+
 
 @app.teardown_appcontext
 def close_db(exc):
     db = g.pop("db", None)
     if db is not None:
         db.close()
+    users_db = g.pop("users_db", None)
+    if users_db is not None:
+        users_db.close()
+
+
+# ---------------------------------------------------------------------------
+# Auth gate -- registered ahead of _guard_writes below (Flask runs
+# before_request hooks in registration/definition order), so an
+# unauthenticated request never reaches either the origin check or a route
+# handler. Login-wall-on-everything: every path requires a session except
+# the small allowlist needed to reach the login/signup pages themselves and
+# the loopback-only healthz probe `just status` depends on.
+# ---------------------------------------------------------------------------
+
+_UNAUTH_PATHS = {"/login.html", "/signup.html", "/style.css", "/api/login", "/api/signup"}
+
+
+def current_user():
+    """The logged-in user's row, or None -- cached on flask.g like get_db().
+    A session whose session_epoch doesn't match the user's current one
+    (password changed, or an admin forced a logout) is treated as if there
+    were no session at all, rather than raising -- the cookie itself is
+    still well-formed, it's just stale, and the right behavior for a stale
+    cookie is the same as no cookie: fall through to logged-out."""
+    if "user" not in g:
+        g.user = None
+        user_id = session.get("user_id")
+        if user_id is not None:
+            row = users.get_user_by_id(get_users_db(), user_id)
+            if row is not None and row["session_epoch"] == session.get("session_epoch"):
+                g.user = row
+    return g.user
+
+
+def _is_loopback(addr):
+    return addr in ("127.0.0.1", "::1")
+
+
+@app.before_request
+def _require_auth():
+    path = request.path
+    if path in _UNAUTH_PATHS:
+        return None
+    if path == "/api/healthz":
+        # cloudflared sets CF-Connecting-IP on every request it proxies;
+        # its absence together with a loopback remote_addr is what
+        # distinguishes `just status`'s own curl (never left the machine)
+        # from a real visitor arriving through the tunnel, who must still
+        # authenticate -- healthz exposes scored-game counts and live-feed
+        # staleness, which have no business being public.
+        if "CF-Connecting-IP" not in request.headers and _is_loopback(request.remote_addr):
+            return None
+    if current_user() is None:
+        if path.startswith("/api/"):
+            abort(401, description="login required")
+        target = path + (("?" + request.query_string.decode("utf-8", "ignore")) if request.query_string else "")
+        return redirect(f"/login.html?next={quote(target, safe='')}")
+    return None
 
 
 ALLOWED_POST_ORIGINS = {"http://127.0.0.1:5050", "http://localhost:5050"}
+# The public tunnel hostname, once one exists, is supplied at deploy time
+# rather than hardcoded here -- e.g. CC_PUBLIC_ORIGIN=https://cfb.example.com.
+_public_origin = os.environ.get("CC_PUBLIC_ORIGIN")
+if _public_origin:
+    ALLOWED_POST_ORIGINS.add(_public_origin)
 
 
 @app.before_request
 def _guard_writes():
-    """Every POST route in this app touches only spoilers.save_policy()
-    (data/spoilers.json) -- cfb.db stays strictly read-only. But Flask's
-    dev server (debug=True) has no CSRF protection, so any other page open
-    in the same browser could otherwise POST a spoiler change here. The
-    bind stays 127.0.0.1 (see __main__ below); this just rejects a
-    cross-origin POST outright rather than trusting the browser's origin
-    isolation alone."""
+    """Every POST route in this app writes only to data/users.db (accounts,
+    invites, per-user spoiler policy via src/users.py) -- cfb.db stays
+    strictly read-only. This is the only CSRF defense: no Origin header, or
+    an Origin outside the allowlist,
+    is rejected outright. Failing open on a missing Origin was tolerable
+    when this only ever ran on loopback with a trusted single user; once a
+    tunnel makes the app reachable from anywhere, an absent Origin is no
+    longer good evidence of a same-origin request, so it's treated the same
+    as a wrong one."""
     if request.method == "POST":
         origin = request.headers.get("Origin")
-        if origin is not None and origin not in ALLOWED_POST_ORIGINS:
+        if origin not in ALLOWED_POST_ORIGINS:
             abort(403, description="cross-origin POST rejected")
 
 
@@ -314,6 +479,24 @@ def _no_store(resp):
     setting changes and the user hits Back."""
     if request.path.startswith("/api/"):
         resp.headers["Cache-Control"] = "no-store"
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["Referrer-Policy"] = "no-referrer"
+    # 'unsafe-inline' is required for both script-src and style-src: every
+    # page in web/ has multiple inline <script> blocks plus a few inline
+    # style= attributes, and there is no templating layer here to add
+    # per-request nonces without a much larger rewrite. Everything else is
+    # same-origin -- no CDN dependency exists anywhere in web/ -- so this is
+    # still a meaningful restriction against injected third-party content.
+    resp.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self'; "
+        "connect-src 'self'; "
+        "base-uri 'none'; "
+        "form-action 'self'"
+    )
     return resp
 
 
@@ -348,14 +531,23 @@ def _walk_spoiler_leaks(node, path=""):
             yield from _walk_spoiler_leaks(v, f"{path}[{i}]")
 
 
+SPOILER_TRIPWIRE = os.environ.get("CC_SPOILER_TRIPWIRE", "1") != "0"
+
+
 @app.after_request
 def _assert_no_spoiler_leaks(resp):
-    """Debug-only (app.debug is True under __main__'s app.run(debug=True)):
-    walks every JSON response and fails loudly if a spoiler_hidden game
+    """Walks every JSON response and fails loudly if a spoiler_hidden game
     still carries a redacted field, turning "a new endpoint forgot to
-    think about spoilers" into an immediate 500 instead of a silent
-    leak."""
-    if not app.debug or not resp.is_json:
+    think about spoilers" into an immediate 500 instead of a silent leak.
+
+    Independent of app.debug on purpose: this used to be gated on debug
+    mode, but debug=True is not safe to run once the app is reachable from
+    outside loopback (Werkzeug's debugger is remote code execution if
+    exposed), and disabling debug must not also disable the one thing in
+    this file that actively watches for a spoiler leaking to someone other
+    than you. Set CC_SPOILER_TRIPWIRE=0 to turn it off (e.g. if the extra
+    per-response walk ever shows up as real latency)."""
+    if not SPOILER_TRIPWIRE or not resp.is_json:
         return resp
     try:
         data = resp.get_json()
@@ -386,9 +578,16 @@ def spoiler_ctx():
     cached on flask.g -- mirrors get_db()'s per-request caching pattern.
     `reveal=<game_id>` (repeatable/comma-separated) is the entire opt-in
     contract: no `reveal=all`, so a stray param can never blanket-unhide
-    the corpus."""
+    the corpus.
+
+    Policy is per-user (src/spoilers.py's get_user_policy(), backed by
+    data/users.db) rather than the single shared data/spoilers.json this
+    used to read -- current_user() is guaranteed non-None here because
+    every route that reaches this point already passed the _require_auth
+    gate above, which is registered before any view function runs."""
     if "spoiler_ctx" not in g:
-        g.spoiler_ctx = (spoilers.load_policy(), _csv_strs(request.args, "reveal"))
+        policy = spoilers.get_user_policy(current_user()["user_id"], conn=get_users_db())
+        g.spoiler_ctx = (policy, _csv_strs(request.args, "reveal"))
     return g.spoiler_ctx
 
 
@@ -2042,7 +2241,7 @@ def _spoiler_active_overrides(policy):
 
 @app.route("/api/spoilers")
 def api_spoilers_get():
-    policy = spoilers.load_policy()
+    policy, _revealed = spoiler_ctx()
     return jsonify({"policy": policy, "active_overrides": _spoiler_active_overrides(policy)})
 
 
@@ -2110,7 +2309,9 @@ def api_spoilers_week():
     if exists is None:
         abort(404, description="no games match that season/season_type/week")
 
-    policy = spoilers.set_week(season_year, season_type, week, hidden)
+    policy = spoilers.set_user_week(
+        current_user()["user_id"], season_year, season_type, week, hidden, conn=get_users_db()
+    )
     return jsonify({"policy": policy, "active_overrides": _spoiler_active_overrides(policy)})
 
 
@@ -2129,7 +2330,7 @@ def api_spoilers_game():
     if exists is None:
         abort(404, description="no such game")
 
-    policy = spoilers.set_game(game_id, hidden)
+    policy = spoilers.set_user_game(current_user()["user_id"], game_id, hidden, conn=get_users_db())
     return jsonify({"policy": policy, "active_overrides": _spoiler_active_overrides(policy)})
 
 
@@ -2143,8 +2344,9 @@ def api_spoilers_default():
     week number that doesn't exist yet for that season is not an error."""
     data = request.get_json(silent=True) or {}
     season_year = data.get("season_year")
+    user_id = current_user()["user_id"]
     if season_year is None:
-        policy = spoilers.set_default(None, None, None)
+        policy = spoilers.set_user_default(user_id, None, None, None, conn=get_users_db())
         return jsonify({"policy": policy, "active_overrides": _spoiler_active_overrides(policy)})
 
     try:
@@ -2156,8 +2358,72 @@ def api_spoilers_default():
     if season_type not in (2, 3):
         abort(400, description="season_type must be 2 or 3")
 
-    policy = spoilers.set_default(season_year, season_type, week)
+    policy = spoilers.set_user_default(user_id, season_year, season_type, week, conn=get_users_db())
     return jsonify({"policy": policy, "active_overrides": _spoiler_active_overrides(policy)})
+
+
+# ---- auth -----------------------------------------------------------------
+
+def _start_session(user):
+    # session.clear() first: a login/signup from a browser that already had
+    # a (possibly different-user) session cookie must not merge state --
+    # e.g. spoiler_ctx or anything else keyed off flask.g within this
+    # request already ran before the auth gate could know who this is.
+    session.clear()
+    session["user_id"] = user["user_id"]
+    session["session_epoch"] = user["session_epoch"]
+    session.permanent = True
+
+
+@app.route("/api/login", methods=["POST"])
+@limiter.limit("5 per minute")
+def api_login():
+    data = request.get_json(silent=True) or {}
+    username = (data.get("username") or "").strip()
+    password = data.get("password") or ""
+    conn = get_users_db()
+    user = users.get_user_by_username(conn, username) if username else None
+    if user is None or not users.verify_password(user, password):
+        # Same message either way -- doesn't tell an attacker whether the
+        # username exists.
+        abort(401, description="invalid username or password")
+    users.touch_last_seen(conn, user["user_id"])
+    _start_session(user)
+    return jsonify({"username": user["username"], "is_admin": bool(user["is_admin"])})
+
+
+@app.route("/api/logout", methods=["POST"])
+def api_logout():
+    session.clear()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/signup", methods=["POST"])
+@limiter.limit("5 per hour")
+def api_signup():
+    data = request.get_json(silent=True) or {}
+    username = (data.get("username") or "").strip()
+    password = data.get("password") or ""
+    invite_code = (data.get("invite_code") or "").strip()
+    if not invite_code:
+        abort(400, description="an invite code is required")
+    conn = get_users_db()
+    try:
+        user = users.create_user(conn, username, password, invite_code=invite_code)
+    except users.UsernameTaken:
+        abort(409, description="that username is taken")
+    except users.InvalidInvite:
+        abort(400, description="invalid or already-used invite code")
+    except ValueError as e:
+        abort(400, description=str(e))
+    _start_session(user)
+    return jsonify({"username": user["username"], "is_admin": bool(user["is_admin"])})
+
+
+@app.route("/api/me")
+def api_me():
+    user = current_user()
+    return jsonify({"username": user["username"], "is_admin": bool(user["is_admin"])})
 
 
 # ---- static files -------------------------------------------------------------
@@ -2185,4 +2451,12 @@ def web_static(filename):
 
 if __name__ == "__main__":
     _startup_selfcheck()
-    app.run(host="127.0.0.1", port=5050, debug=True, use_reloader=False)
+    if os.environ.get("CC_DEV") == "1":
+        # Local iteration only -- Werkzeug's debugger + reloader. Never set
+        # CC_DEV=1 anywhere reachable from outside loopback: the debugger is
+        # remote code execution if it's ever exposed to the tunnel.
+        app.run(host="127.0.0.1", port=5050, debug=True, use_reloader=True)
+    else:
+        from waitress import serve as waitress_serve
+        print("[serve.py] serving via waitress on http://127.0.0.1:5050")
+        waitress_serve(app, host="127.0.0.1", port=5050, threads=8)

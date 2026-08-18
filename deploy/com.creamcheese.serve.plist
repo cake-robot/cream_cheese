@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.creamcheese.serve</string>
+
+    <!-- Always on -- the web UI should stay reachable whether or not games
+         are in progress (browsing history, checking settings), unlike the
+         live poller which only runs gameday windows. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/ericsayre/Documents/cream_cheese/venv/bin/python</string>
+        <string>serve.py</string>
+    </array>
+
+    <!-- config.DB_PATH and every other repo-relative path in serve.py are
+         resolved against REPO_ROOT (see serve.py's own code), so this
+         isn't strictly load-bearing the way it is for the live plist --
+         set anyway for consistency and so relative paths always behave
+         the same regardless of launchd's own default cwd (/). -->
+    <key>WorkingDirectory</key>
+    <string>/Users/ericsayre/Documents/cream_cheese</string>
+
+    <!-- Lets serve.py add the tunnel origin to its POST allowlist and turn
+         on Secure session cookies (see serve.py's ALLOWED_POST_ORIGINS /
+         SESSION_COOKIE_SECURE). -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>CC_PUBLIC_ORIGIN</key>
+        <string>https://cfb.tyronewinningham.org</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Must live outside ~/Documents: launchd's xpcproxy helper opens this
+         path before exec'ing ProgramArguments, and TCC silently denies that
+         file-read-data for a legacy (non-.app) background agent even with
+         Full Disk Access granted in System Settings -- the exec itself
+         fails with posix_spawn EPERM regardless of which binary is being
+         launched. ~/Library/Logs is outside the TCC-protected folders. -->
+    <key>StandardOutPath</key>
+    <string>/Users/ericsayre/Library/Logs/creamcheese/serve.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/ericsayre/Library/Logs/creamcheese/serve.log</string>
+</dict>
+</plist>

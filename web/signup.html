@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign up — Watchability</title>
+<link rel="stylesheet" href="/style.css">
+<script>
+(function () {
+  var t = localStorage.getItem("theme");
+  if (t && t !== "system") document.documentElement.setAttribute("data-theme", t);
+})();
+</script>
+</head>
+<body data-page="signup">
+
+<div class="auth-page">
+  <div class="auth-card">
+    <span class="auth-brand">🏈 Watchability</span>
+    <div class="auth-sub">Sign up with an invite code.</div>
+
+    <div id="status-line" class="status-line"></div>
+
+    <form id="signup-form" autocomplete="on">
+      <div class="auth-field">
+        <label for="f-invite">Invite code</label>
+        <input id="f-invite" name="invite_code" type="text" required autofocus>
+      </div>
+      <div class="auth-field">
+        <label for="f-username">Username</label>
+        <input id="f-username" name="username" type="text" autocomplete="username" required>
+      </div>
+      <div class="auth-field">
+        <label for="f-password">Password</label>
+        <input id="f-password" name="password" type="password" autocomplete="new-password" minlength="8" required>
+      </div>
+      <div class="auth-field">
+        <label for="f-password2">Confirm password</label>
+        <input id="f-password2" name="password2" type="password" autocomplete="new-password" minlength="8" required>
+      </div>
+      <button class="auth-submit" id="btn-submit" type="submit">Sign up</button>
+    </form>
+
+    <div class="auth-switch">Already have an account? <a href="/login.html">Log in</a></div>
+  </div>
+</div>
+
+<script>
+function setStatus(msg, isError) {
+  var el = document.getElementById("status-line");
+  el.textContent = msg || "";
+  el.classList.toggle("error", !!isError);
+}
+
+document.getElementById("signup-form").addEventListener("submit", async function (e) {
+  e.preventDefault();
+  var btn = document.getElementById("btn-submit");
+  var invite_code = document.getElementById("f-invite").value.trim();
+  var username = document.getElementById("f-username").value;
+  var password = document.getElementById("f-password").value;
+  var password2 = document.getElementById("f-password2").value;
+  setStatus("");
+  if (password !== password2) {
+    setStatus("Passwords don't match.", true);
+    return;
+  }
+  btn.disabled = true;
+  try {
+    var res = await fetch("/api/signup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ invite_code: invite_code, username: username, password: password }),
+    });
+    if (!res.ok) {
+      var detail = "Sign up failed.";
+      try { detail = (await res.json()).detail || detail; } catch (err) { /* ignore */ }
+      setStatus(detail, true);
+      btn.disabled = false;
+      return;
+    }
+    location.href = "/";
+  } catch (err) {
+    setStatus("Network error -- try again.", true);
+    btn.disabled = false;
+  }
+});
+</script>
+
+</body>
+</html>

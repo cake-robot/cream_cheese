@@ -566,6 +566,11 @@ def main():
                          help="Run the live loop writing only live_scores/live_metrics/"
                               "live_score_history -- never touches win_probability, "
                               "games.watchability_score, or game_metrics")
+    parser.add_argument("--live-until", type=str, metavar="HH:MM",
+                         help="Exit the live loop cleanly at this US/Eastern wall-clock time "
+                              "(next occurrence -- e.g. 02:00 started at 9am means 2am tomorrow). "
+                              "Lets a scheduler start --live at a fixed time and trust it to end "
+                              "its own gameday window.")
     parser.add_argument("--live-replay", action="store_true",
                          help="Offline replay of a stored game's WP series through the live "
                               "scorer at every prefix (requires --game); no network access")
@@ -585,6 +590,18 @@ def main():
     if args.live_dry_run and args.live_shadow:
         print("--live-dry-run and --live-shadow are mutually exclusive.", file=sys.stderr)
         sys.exit(1)
+
+    if args.live_until and not args.live:
+        print("--live-until only applies to --live (a single --live-once cycle "
+              "already exits immediately).", file=sys.stderr)
+        sys.exit(1)
+
+    if args.live_until:
+        try:
+            live._next_et_deadline(args.live_until)
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            sys.exit(1)
 
     conn = db.init_db()
 
@@ -616,6 +633,7 @@ def main():
         live.run_forever(
             conn, interval=interval, summary_budget=budget,
             once=args.live_once, mode=mode, dates=args.live_date,
+            until=args.live_until,
         )
         sys.exit(0)
 

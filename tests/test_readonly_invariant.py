@@ -1,9 +1,11 @@
 """
 Mechanical guard for the one invariant this whole feature was built around
 preserving: serve.py must never open data/cfb.db in anything but read-only
-mode. Spoiler prefs live in their own file (data/spoilers.json, owned by
-src/spoilers.py) specifically so this stays true -- see both modules'
-docstrings.
+mode. Every write serve.py performs -- accounts, invites, per-user spoiler
+policy -- goes through src/users.py instead, against the separate
+data/users.db (see that module's and src/spoilers.py's docstrings for why).
+test_users_db_invariant.py is this file's companion, checking the same
+separation from src/users.py's side.
 
 Run with: ./venv/bin/python -m unittest discover tests
 """

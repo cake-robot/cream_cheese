@@ -363,7 +363,34 @@ async function initSpoilerControl() {
   }
 }
 
+// ---- account menu (logout) -------------------------------------------------
+// Only reached on the six authenticated pages that carry <header
+// class="chrome"> -- login.html/signup.html don't include app.js at all
+// (see serve.py's login-wall docstring), so there's no unauthenticated
+// path where this fires and hits a 401 from /api/me.
+
+async function initAccountMenu() {
+  const header = document.querySelector("header.chrome");
+  if (!header) return;
+  let me;
+  try {
+    me = await api("/me");
+  } catch (e) {
+    return;
+  }
+  const logoutBtn = el("button", { class: "reset", text: "Log out" });
+  logoutBtn.addEventListener("click", async () => {
+    try { await apiPost("/logout", {}); } catch (e) { /* ignore -- redirect anyway */ }
+    location.href = "/login.html";
+  });
+  header.appendChild(el("div", { class: "account-menu" }, [
+    el("span", { class: "account-name", text: me.username }),
+    logoutBtn,
+  ]));
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   initThemeToggle();
   initSpoilerControl();
+  initAccountMenu();
 });

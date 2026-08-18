@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Log in — Watchability</title>
+<link rel="stylesheet" href="/style.css">
+<script>
+(function () {
+  var t = localStorage.getItem("theme");
+  if (t && t !== "system") document.documentElement.setAttribute("data-theme", t);
+})();
+</script>
+</head>
+<body data-page="login">
+
+<div class="auth-page">
+  <div class="auth-card">
+    <span class="auth-brand">🏈 Watchability</span>
+    <div class="auth-sub">Log in to continue.</div>
+
+    <div id="status-line" class="status-line"></div>
+
+    <form id="login-form" autocomplete="on">
+      <div class="auth-field">
+        <label for="f-username">Username</label>
+        <input id="f-username" name="username" type="text" autocomplete="username" required autofocus>
+      </div>
+      <div class="auth-field">
+        <label for="f-password">Password</label>
+        <input id="f-password" name="password" type="password" autocomplete="current-password" required>
+      </div>
+      <button class="auth-submit" id="btn-submit" type="submit">Log in</button>
+    </form>
+
+    <div class="auth-switch">Need an account? <a href="/signup.html">Sign up with an invite code</a></div>
+  </div>
+</div>
+
+<script>
+function setStatus(msg, isError) {
+  var el = document.getElementById("status-line");
+  el.textContent = msg || "";
+  el.classList.toggle("error", !!isError);
+}
+
+document.getElementById("login-form").addEventListener("submit", async function (e) {
+  e.preventDefault();
+  var btn = document.getElementById("btn-submit");
+  var username = document.getElementById("f-username").value;
+  var password = document.getElementById("f-password").value;
+  setStatus("");
+  btn.disabled = true;
+  try {
+    var res = await fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: username, password: password }),
+    });
+    if (!res.ok) {
+      var detail = "Log in failed.";
+      try { detail = (await res.json()).detail || detail; } catch (err) { /* ignore */ }
+      setStatus(detail, true);
+      btn.disabled = false;
+      return;
+    }
+    var next = new URLSearchParams(location.search).get("next") || "/";
+    // Only ever follow a same-site relative path -- `next` round-trips
+    // through a URL an attacker could construct and hand to someone
+    // (e.g. a link straight to this real login page with next set to an
+    // off-site URL), so a leading "/" but not "//" (protocol-relative,
+    // still off-site) is required before it's trusted.
+    if (!next.startsWith("/") || next.startsWith("//")) next = "/";
+    location.href = next;
+  } catch (err) {
+    setStatus("Network error -- try again.", true);
+    btn.disabled = false;
+  }
+});
+</script>
+
+</body>
+</html>
