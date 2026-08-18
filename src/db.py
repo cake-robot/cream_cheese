@@ -51,6 +51,13 @@ CREATE TABLE IF NOT EXISTS games (
 
 CREATE INDEX IF NOT EXISTS idx_games_season ON games(season_year, season_type, week);
 CREATE INDEX IF NOT EXISTS idx_games_detail ON games(completed, detail_fetched);
+-- Kickoff-time lookups: the live poller's schedule query (src/live.py's
+-- _schedule_interval) and serve.py's _default_slate_date both ask for
+-- "MIN(game_date) WHERE status_state='pre' AND game_date >= now". Leading
+-- with status_state makes this a covering index for both of those and for
+-- the poller's "is anything live right now" count -- game_date alone leaves
+-- the latter a full table scan.
+CREATE INDEX IF NOT EXISTS idx_games_state_date ON games(status_state, game_date);
 
 CREATE TRIGGER IF NOT EXISTS trg_games_updated_at
 AFTER UPDATE ON games

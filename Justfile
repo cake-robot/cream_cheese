@@ -14,10 +14,12 @@ default:
 
 # ---- launchd services -----------------------------------------------------
 # One-time setup: copies the plists in deploy/ into ~/Library/LaunchAgents
-# and bootstraps them with launchd. After this, serve is always-on
-# (RunAtLoad+KeepAlive) and live starts itself Thu/Fri/Sat 09:00 ET, ending
-# its own window at --live-until (see deploy/com.creamcheese.live.plist).
-# Safe to re-run -- bootout's failure (nothing loaded yet) is swallowed.
+# and bootstraps them with launchd. Both services are always-on now
+# (RunAtLoad+KeepAlive) -- live has no calendar window anymore, it derives
+# its own poll cadence from the kickoff times in `games` (see
+# deploy/com.creamcheese.live.plist and src/live.py's _schedule_interval).
+# Safe to re-run -- bootout's failure (nothing loaded yet) is swallowed, and
+# re-running after editing a plist is the correct way to pick up the change.
 install-services:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -28,7 +30,7 @@ install-services:
         launchctl bootstrap gui/{{uid}} {{plist_dir}}/$label.plist
         echo "installed and bootstrapped $label"
     done
-    echo "serve is running now; live will start itself Thu/Fri/Sat 09:00 ET -- 'just live-now' to start it immediately instead of waiting"
+    echo "both running now -- 'just status' to check"
 
 # Reverse of install-services -- unloads both from launchd and removes the
 # installed plists (the copies in deploy/ are untouched).
@@ -50,26 +52,53 @@ serve:
 stop-serve:
     launchctl bootout gui/{{uid}}/{{serve_label}} 2>/dev/null || echo "not running"
 
-# Start the live poller right now, ignoring the Thu/Fri/Sat schedule --
-# for off-schedule games (Tue/Wed MACtion, weekday bowls/CFP). Runs until
-# the same --live-until deadline a scheduled start would (see the plist);
-# `just discover <week>` backfills anything a window entirely missed.
+# Restart the poller right now -- e.g. after a code change (install-services
+# also does this, but is heavier). Always runs a cycle immediately on start,
+# so it's also the fastest way to force an instant catch-up mid-game.
 live-now:
     launchctl kickstart -k gui/{{uid}}/{{live_label}}
 
+# Stops the poller until the next login -- launchd reloads the plist (still
+# installed in ~/Library/LaunchAgents) automatically then, so this is a
+# pause, not an off switch. For "keep it off" (travel, offseason) use
+# `just disable-live` instead.
 stop-live:
     launchctl bootout gui/{{uid}}/{{live_label}} 2>/dev/null || echo "not running"
 
-# Run the live poller in the foreground (Ctrl-C to stop cleanly) -- outside
-# launchd entirely, e.g. for local testing before `install-services`.
-live-fg:
-    caffeinate -i {{venv}} pipeline.py --live
+# Persistently disable the poller -- survives reboots/logins, unlike
+# stop-live. `just enable-live` reverses it.
+disable-live:
+    #!/usr/bin/env bash
+    launchctl bootout gui/{{uid}}/{{live_label}} 2>/dev/null || true
+    launchctl disable gui/{{uid}}/{{live_label}}
+    echo "live poller disabled -- 'just enable-live' to bring it back"
 
-# Make sure both are running right now -- the usual gameday command once
-# services are installed (most days, `just live` doesn't need this at all;
-# it's already running on schedule).
-gameday: live-now serve
-    @echo "both started -- 'just status' to check"
+# Reverse of disable-live: re-enables and (re)starts the poller.
+enable-live:
+    #!/usr/bin/env bash
+    launchctl enable gui/{{uid}}/{{live_label}}
+    launchctl bootstrap gui/{{uid}} {{plist_dir}}/{{live_label}}.plist 2>/dev/null \
+        || launchctl kickstart -k gui/{{uid}}/{{live_label}}
+    echo "live poller enabled and running"
+
+# Run the live poller in the foreground (Ctrl-C to stop cleanly) -- outside
+# launchd entirely, e.g. for local testing before `install-services`. The
+# process manages its own caffeinate assertion now (see _sync_caffeinate),
+# so this no longer wraps itself in one.
+live-fg:
+    {{venv}} pipeline.py --live
+
+# The documented panic button: forces the old fixed-60s, always-awake
+# cadence in the foreground, bypassing schedule-aware sleeping entirely.
+# For a persistent version of this, see the FALLBACK comment in
+# deploy/com.creamcheese.live.plist.
+live-fixed:
+    {{venv}} pipeline.py --live --live-interval 60
+
+# Check both services are actually running -- most days nothing else is
+# needed, since both are always-on; this is the "did something go wrong"
+# check.
+gameday: status
 
 stop-all: stop-live stop-serve
 
@@ -88,9 +117,12 @@ logs-live:
 logs-serve:
     tail -f {{serve_log}}
 
-# Backfill discover+fetch+score for a specific week -- useful for days
-# --live's rolling today/tomorrow window never covered (e.g. Thu/Fri
-# openers if --live wasn't started until Saturday morning).
+# Discover+fetch+score a specific week. Also what keeps the schedule the
+# poller's own cadence depends on from rotting -- a never-discovered game
+# self-heals within 30min once it's in the today/tomorrow window (see
+# _schedule_interval), but stays invisible before that. season_type=3
+# (postseason) isn't covered by season-long discovery at all; run this
+# explicitly for bowls/CFP once the bracket is set.
 discover week season="2026":
     {{venv}} pipeline.py --week {{week}} --season {{season}}
 
@@ -129,8 +161,8 @@ migrate-spoilers:
 # ---- backups --------------------------------------------------------------
 
 # Snapshot both databases (VACUUM INTO -- safe against a live WAL database,
-# unlike a plain file copy, and safe to run while `just live`/`just serve`
-# are up) plus data/auth.json, to a timestamped directory outside the repo
+# unlike a plain file copy, and safe to run while the live poller/serve are
+# up) plus data/auth.json, to a timestamped directory outside the repo
 # (override with CC_BACKUP_DIR). Keeps the last 7 snapshots. data/users.db
 # has no ESPN source to rebuild from if it's lost -- unlike cfb.db, back it
 # up like it matters.

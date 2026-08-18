@@ -22,11 +22,14 @@ unstarted game is just listed, not scored (see the "Kickoff soon" slate
 section) -- so there is no pregame tier here.
 """
 
+import fcntl
 import logging
 import os
+import subprocess
+import sys
 import signal
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from . import db, espn, scoring
@@ -77,6 +80,53 @@ LIVE_MAX_STALENESS_SECONDS = 300
 LIVE_ALWAYS_REFRESH_PROGRESS = 0.85
 
 LOCK_PATH = "data/live.lock"
+
+# --- Schedule-aware sleeping ---
+# The poller runs continuously (see deploy/com.creamcheese.live.plist) and
+# derives its own cadence from the kickoff times already in `games`, rather
+# than from a launchd calendar schedule that was only ever a proxy for
+# "when are games on". LIVE_INTERVAL_SECONDS applies whenever something is
+# (or is about to be) in progress; otherwise the poller sleeps until just
+# before the next scheduled kickoff. See _schedule_interval.
+
+# How early before a scheduled kickoff to switch to the fast cadence.
+LIVE_KICKOFF_LEAD_SECONDS = 15 * 60
+
+# How long past a scheduled kickoff a game the scoreboard still calls 'pre'
+# is treated as possibly underway. ESPN routinely lags the real kickoff by a
+# few minutes, weather delays run longer, and a stored kickoff time can be
+# days stale (the schedule is only refreshed by `just discover`). Generous
+# on purpose: the cost of being wrong is one request a minute, the cost of
+# being right is not missing a game.
+LIVE_KICKOFF_GRACE_SECONDS = 6 * 3600
+
+# Ceiling on an idle sleep. Not a polling requirement -- the next kickoff is
+# known exactly -- but a bound on how long a stale or missing schedule can
+# blind the poller (run_cycle upserts every game the today/tomorrow
+# scoreboard returns on every cycle, including idle ones, so this cap is
+# also the self-heal rate for a game that was never discovered at all).
+LIVE_IDLE_INTERVAL_SECONDS = 30 * 60
+
+# `caffeinate` is asserted on a deliberately wider window than the fast poll
+# cadence: an assertion can only *keep* the machine awake, never wake it, so
+# by the time a kickoff is 15 minutes out it is already too late if the Mac
+# idle-slept that afternoon. Three hours ahead of the day's first kickoff
+# reproduces roughly what the old unconditional `caffeinate -i` under a
+# 09:00 StartCalendarInterval did on a gameday, without holding the machine
+# awake the other ~80% of the year.
+LIVE_CAFFEINATE_LEAD_SECONDS = 3 * 3600
+
+# Granularity of the interruptible sleep. Bounds SIGTERM latency (well under
+# launchd's default 20s SIGTERM->SIGKILL grace).
+LIVE_SLEEP_SLICE_SECONDS = 5.0
+
+# games.game_date as ESPN stores it -- UTC, minute precision, bare 'Z'. Not
+# a format SQLite's datetime() accepts, but lexicographically ordered, so
+# range comparisons are done against a string formatted the same way. Same
+# pattern as serve.py's _default_slate_date.
+GAME_DATE_FMT = "%Y-%m-%dT%H:%MZ"
+
+CAFFEINATE_PATH = "/usr/bin/caffeinate"
 
 
 # --- context helpers ---
@@ -439,41 +489,190 @@ def _et_today_tomorrow():
     return f"{today:%Y%m%d}-{tomorrow:%Y%m%d}"
 
 
+_SCHEDULE_SQL = """
+    SELECT (SELECT COUNT(*) FROM games WHERE status_state = 'in') AS n_live,
+           (SELECT MIN(game_date) FROM games
+             WHERE status_state = 'pre' AND game_date >= ?)       AS next_kickoff
+"""
+
+
+def _schedule_interval(conn, now=None):
+    """
+    How long to sleep before the next poll cycle, and whether to hold an
+    idle-sleep assertion, derived from the kickoff times in `games`.
+
+    Returns (seconds, hold_awake, reason). `reason` is for the log line --
+    an unattended always-on poller needs its cadence decisions to be
+    legible after the fact.
+
+    Three states:
+      - anything status_state='in'  -> LIVE_INTERVAL_SECONDS
+      - next scheduled kickoff within [now - LIVE_KICKOFF_GRACE_SECONDS,
+        now + LIVE_KICKOFF_LEAD_SECONDS] -> LIVE_INTERVAL_SECONDS
+      - otherwise sleep until LIVE_KICKOFF_LEAD_SECONDS before that kickoff,
+        capped at LIVE_IDLE_INTERVAL_SECONDS (and exactly that cap when
+        there is no upcoming game at all -- offseason, or a game that was
+        never discovered).
+
+    The grace floor is what collapses the first two cases into a single
+    MIN(): the earliest kickoff at or after `now - grace` is either already
+    inside the active window or it *is* the next one to wait for. It also
+    quietly excludes every past season's rows, which can never re-enter the
+    window no matter how long the process runs.
+
+    Both subqueries are covering seeks on idx_games_state_date. `now` is
+    injectable so this is testable without waiting for a real kickoff.
+    """
+    now = now or datetime.now(timezone.utc)
+    floor = (now - timedelta(seconds=LIVE_KICKOFF_GRACE_SECONDS)).strftime(GAME_DATE_FMT)
+    row = conn.execute(_SCHEDULE_SQL, (floor,)).fetchone()
+    n_live, next_kickoff = row["n_live"], row["next_kickoff"]
+
+    if n_live:
+        return float(LIVE_INTERVAL_SECONDS), True, f"{n_live} game(s) in progress"
+
+    if next_kickoff is None:
+        return float(LIVE_IDLE_INTERVAL_SECONDS), False, "no scheduled kickoff on record"
+
+    kick = datetime.strptime(next_kickoff, GAME_DATE_FMT).replace(tzinfo=timezone.utc)
+    until = (kick - now).total_seconds()
+
+    if until <= LIVE_KICKOFF_LEAD_SECONDS:
+        # Includes until < 0: a game the scoreboard still calls 'pre' whose
+        # scheduled kickoff has passed but is inside the grace window.
+        return float(LIVE_INTERVAL_SECONDS), True, f"kickoff {next_kickoff} ({until / 60:+.0f} min)"
+
+    # Floored at LIVE_INTERVAL_SECONDS so a kickoff 15m01s out can't produce
+    # a 1-second sleep and a wasted request; overshooting the lead by <=60s
+    # is immaterial against a 15-minute lead.
+    sleep_for = max(float(LIVE_INTERVAL_SECONDS),
+                     min(until - LIVE_KICKOFF_LEAD_SECONDS, float(LIVE_IDLE_INTERVAL_SECONDS)))
+    hold_awake = until <= LIVE_CAFFEINATE_LEAD_SECONDS
+    return sleep_for, hold_awake, f"next kickoff {next_kickoff} in {until / 3600:.1f}h"
+
+
 def _acquire_lock():
-    if os.path.exists(LOCK_PATH):
-        with open(LOCK_PATH) as f:
-            existing = f.read().strip()
-        stale = False
-        try:
-            os.kill(int(existing), 0)
-        except ValueError:
-            stale = False  # unparseable pid -- don't guess, treat as a live lock
-        except ProcessLookupError:
-            stale = True
-        except PermissionError:
-            pass  # pid exists and we can't signal it -- treat as live
-        else:
-            pass  # os.kill succeeded -- pid is alive
-        if not stale:
-            raise RuntimeError(
-                f"{LOCK_PATH} already exists (pid {existing}) -- another `--live` process may "
-                f"already be running. Remove the file yourself if you're sure it isn't."
-            )
-        logger.warning(
-            "live: %s referenced pid %s, which is no longer running -- reclaiming stale lock",
-            LOCK_PATH, existing,
-        )
+    """
+    Exclusive, kernel-enforced lock via flock on an fd held for the process
+    lifetime -- not a PID-liveness check on a lock *file*. The old approach
+    (os.path.exists then open-for-write, with staleness decided by
+    os.kill(pid, 0)) had a TOCTOU between the exists-check and the write,
+    and only reclaimed on ProcessLookupError -- so a SIGKILL whose PID got
+    reused would wedge the lock permanently, and under the live plist's
+    KeepAlive that becomes an infinite launchd-throttled crash loop. flock
+    is released by the kernel on *any* process death, including SIGKILL, so
+    that failure class can't happen. The PID is still written into the file
+    for human diagnostics only -- it plays no role in the locking itself.
+    """
     os.makedirs(os.path.dirname(LOCK_PATH) or ".", exist_ok=True)
-    with open(LOCK_PATH, "w") as f:
-        f.write(str(os.getpid()))
-    return LOCK_PATH
-
-
-def _release_lock(path):
+    fd = os.open(LOCK_PATH, os.O_RDWR | os.O_CREAT, 0o644)
     try:
-        os.remove(path)
-    except FileNotFoundError:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        existing = ""
+        try:
+            with open(LOCK_PATH) as f:
+                existing = f.read().strip()
+        except OSError:
+            pass
+        raise RuntimeError(
+            f"{LOCK_PATH} is held by pid {existing or '?'} -- the live poller is already running. "
+            f"Use `just stop-live` first, or `--live-dry-run` (which takes no lock)."
+        ) from None
+    os.ftruncate(fd, 0)
+    os.write(fd, str(os.getpid()).encode())
+    os.fsync(fd)
+    return fd
+
+
+def _release_lock(fd):
+    # Deliberately does not unlink LOCK_PATH: flock+unlink has its own
+    # classic race (a process that opens and locks the file between our
+    # close() and the remove() would have its lock silently orphaned once
+    # the path is deleted and later recreated under a new inode). Closing
+    # the fd alone releases the flock; the file persists holding whichever
+    # pid last ran, informational only, and gets truncated and rewritten by
+    # the next _acquire_lock.
+    try:
+        os.close(fd)
+    except OSError:
         pass
+
+
+def _sync_caffeinate(proc, want):
+    """
+    Hold or drop a macOS idle-sleep assertion, as a child `caffeinate -i`.
+
+    Moved out of the launchd plist (where it wrapped the whole process
+    unconditionally) because the poller now runs continuously: an
+    unconditional assertion would mean the machine never idle-sleeps again,
+    a real regression against the old ~14h x 3 days/week window. Asserted
+    only while games are live or close enough to kickoff (see
+    _schedule_interval's LIVE_CAFFEINATE_LEAD_SECONDS).
+
+    `-w <our pid>` is the dead-man's switch: the `finally` in run_forever
+    and the signal handlers cover clean exits, but a SIGKILL leaves nothing
+    to run cleanup, and a leaked caffeinate would silently pin the machine
+    awake forever. With -w, caffeinate notices our pid is gone and releases
+    the assertion on its own.
+
+    No-ops off darwin -- Phase 2 moves this to a Linux VPS, which has no
+    sleep to prevent. Returns the (possibly new, possibly None) handle;
+    call it as `caffeinate = _sync_caffeinate(caffeinate, want)`.
+    """
+    if sys.platform != "darwin" or not os.path.exists(CAFFEINATE_PATH):
+        return None
+
+    if want:
+        if proc is not None and proc.poll() is None:
+            return proc  # already held; poll() also reaps a dead child
+        try:
+            proc = subprocess.Popen(
+                [CAFFEINATE_PATH, "-i", "-w", str(os.getpid())],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            logger.info("live: holding idle-sleep assertion (caffeinate pid %d)", proc.pid)
+            return proc
+        except OSError:
+            logger.exception("live: could not start caffeinate -- continuing without an assertion")
+            return None
+
+    if proc is None:
+        return None
+    logger.info("live: releasing idle-sleep assertion (caffeinate pid %d)", proc.pid)
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=5)
+    return None
+
+
+def _sleep_until(wake_at, stop, deadline_passed):
+    """
+    Sleep in LIVE_SLEEP_SLICE_SECONDS slices until the wall-clock time
+    `wake_at` (a time.time()-style epoch timestamp), or until `stop()`/
+    `deadline_passed()` says to give up early.
+
+    Deliberately driven off time.time(), not an iteration counter: on
+    Darwin, time.sleep() is backed by a clock that does not advance across
+    system suspend, so counting iterations would carry the remaining sleep
+    budget *across* a lid-close and delay the first poll after wake by up
+    to a full idle interval -- exactly the window a 7pm kickoff falls into.
+    time.time() advances across suspend, so a wake past wake_at polls on
+    the very next slice instead of waiting out a stale budget.
+
+    Extracted as its own function so the wall-clock property is directly
+    testable (fake time.time()/time.sleep()) rather than only inferable
+    from reading run_forever's loop.
+    """
+    while not stop() and not deadline_passed():
+        remaining = wake_at - time.time()
+        if remaining <= 0:
+            return
+        time.sleep(min(LIVE_SLEEP_SLICE_SECONDS, remaining))
 
 
 def _tier2_priority(conn):
@@ -723,7 +922,7 @@ def run_cycle(conn, cycle_seq, summary_budget=LIVE_SUMMARY_BUDGET, mode="normal"
     return elapsed
 
 
-def run_forever(conn, interval=LIVE_INTERVAL_SECONDS, summary_budget=LIVE_SUMMARY_BUDGET,
+def run_forever(conn, interval=None, summary_budget=LIVE_SUMMARY_BUDGET,
                  once=False, mode="normal", dates=None, until=None):
     """
     The `--live` daemon entry point. Handles its own SIGINT/SIGTERM
@@ -731,11 +930,19 @@ def run_forever(conn, interval=LIVE_INTERVAL_SECONDS, summary_budget=LIVE_SUMMAR
     and single-writer discipline via a PID lock file -- both skipped in
     dry_run mode, which takes no lock and mutates nothing.
 
+    `interval=None` (the default) means schedule-aware: the sleep between
+    cycles is derived each iteration from _schedule_interval, which also
+    decides whether to hold a caffeinate idle-sleep assertion. Passing a
+    fixed `interval` (via --live-interval) disables that entirely -- fixed
+    cadence, wake-lock held for the whole run -- which is also the
+    documented fallback to the old always-poll behaviour if the
+    schedule-aware path ever needs to be bypassed.
+
     `until`, if given, is an "HH:MM" ET wall-clock time (see
     _next_et_deadline); reaching it exits through the same clean path as a
-    SIGTERM -- lets a scheduler (launchd/systemd/cron) start this at a fixed
-    time and trust it to end its own window rather than needing a separate
-    "stop at time" mechanism, which most schedulers don't have.
+    SIGTERM -- lets a scheduler start this at a fixed time and trust it to
+    end its own window. Mostly useful for manual/foreground runs now that
+    the plist itself runs unbounded.
     """
     stop = {"flag": False}
     deadline = _next_et_deadline(until) if until else None
@@ -752,9 +959,10 @@ def run_forever(conn, interval=LIVE_INTERVAL_SECONDS, summary_budget=LIVE_SUMMAR
     def _deadline_passed():
         return deadline is not None and datetime.now(deadline.tzinfo) >= deadline
 
-    lock_path = None
+    lock_fd = None
+    caffeinate = None
     if mode != "dry_run":
-        lock_path = _acquire_lock()
+        lock_fd = _acquire_lock()
         conn.execute("PRAGMA busy_timeout = 5000")
         try:
             reconcile_on_start(conn)
@@ -776,13 +984,29 @@ def run_forever(conn, interval=LIVE_INTERVAL_SECONDS, summary_budget=LIVE_SUMMAR
                     logger.info("live: reached --live-until deadline, exiting cleanly")
                 break
 
-            sleep_for = max(0.0, interval - elapsed)
-            if elapsed > interval:
-                logger.warning("live: cycle %d ran long (%.1fs of a %ds budget)", cycle_seq, elapsed, interval)
-            slept = 0
-            while slept < sleep_for and not stop["flag"] and not _deadline_passed():
-                time.sleep(min(1.0, sleep_for - slept))
-                slept += 1
+            if interval is not None:
+                period, hold_awake, reason = float(interval), True, f"--live-interval {interval}"
+            else:
+                try:
+                    period, hold_awake, reason = _schedule_interval(conn)
+                except Exception:
+                    logger.exception("live: schedule lookup failed -- falling back to %ds",
+                                      LIVE_INTERVAL_SECONDS)
+                    period, hold_awake, reason = float(LIVE_INTERVAL_SECONDS), True, "schedule lookup failed"
+
+            caffeinate = _sync_caffeinate(caffeinate, hold_awake and mode != "dry_run")
+
+            sleep_for = max(0.0, period - elapsed)
+            if elapsed > period:
+                logger.warning("live: cycle %d ran long (%.1fs of a %.0fs budget)", cycle_seq, elapsed, period)
+            if deadline is not None:
+                sleep_for = min(sleep_for, max(0.0, (deadline - datetime.now(deadline.tzinfo)).total_seconds()))
+            if period > LIVE_INTERVAL_SECONDS:
+                logger.info("live: idle -- sleeping %.0fs (%s)", sleep_for, reason)
+
+            wake_at = time.time() + sleep_for
+            _sleep_until(wake_at, lambda: stop["flag"], _deadline_passed)
     finally:
-        if lock_path is not None:
-            _release_lock(lock_path)
+        caffeinate = _sync_caffeinate(caffeinate, False)
+        if lock_fd is not None:
+            _release_lock(lock_fd)

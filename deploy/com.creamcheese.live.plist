@@ -5,64 +5,52 @@
     <key>Label</key>
     <string>com.creamcheese.live</string>
 
-    <!-- caffeinate -i blocks idle sleep (not lid-close sleep -- see the
-         deployment plan doc's residual-limitations section; this is the
-         thing Phase 2 exists to fix). --live-until 02:00 makes the poller
-         end its own window at 2am ET the next day through the same clean
-         shutdown path as a SIGTERM (see src/live.py's run_forever) --
-         launchd has no "stop at time" primitive, so the process has to do
-         this itself. Adjust the time here if your games regularly run
-         later/earlier than that. -->
+    <!-- Runs unbounded -- no --live-until, no StartCalendarInterval window.
+         Cadence is derived at runtime from the kickoff times already in
+         `games` (src/live.py's _schedule_interval): ~60s while a game is
+         live or within ~15min of kickoff, sleeping up to 30min otherwise.
+         The process also manages its own `caffeinate -i` child, asserted
+         only from ~3h before the day's first kickoff through the last game
+         -- NOT wrapped around the whole process the way it used to be,
+         since an always-on process with an unconditional caffeinate would
+         never let the Mac idle-sleep at all. See _sync_caffeinate.
+
+         FALLBACK: if the schedule-aware cadence ever needs to be bypassed
+         (e.g. the DB's kickoff schedule is stale/wrong on a gameday),
+         add "--live-interval" / "60" as two more strings in the array
+         below (or run `just live-fixed`). That forces the old fixed-60s,
+         always-awake behaviour with no code change. A full revert of this
+         file is also one command: `git checkout 2fa1af9 -- deploy/com.creamcheese.live.plist`. -->
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/caffeinate</string>
-        <string>-i</string>
         <string>/Users/ericsayre/Documents/cream_cheese/venv/bin/python</string>
         <string>pipeline.py</string>
         <string>--live</string>
-        <string>--live-until</string>
-        <string>02:00</string>
     </array>
 
     <!-- config.DB_PATH is a relative path ("data/cfb.db") and pipeline.py
          resolves it against cwd, not against the script's own location --
          this MUST be set correctly or the live poller will create/open the
-         wrong database file. -->
+         wrong database file. src/live.py's LOCK_PATH ("data/live.lock") is
+         the same kind of cwd-relative path. -->
     <key>WorkingDirectory</key>
     <string>/Users/ericsayre/Documents/cream_cheese</string>
 
-    <!-- Starts the poller at 09:00 local time on Thursday/Friday/Saturday
-         (Weekday: 4/5/6 -- Sunday=0). Misses Tue/Wed MACtion and weekday
-         bowl/CFP games; `just live-now` covers those manually, and
-         `just discover <week>` backfills anything a missed window never
-         caught live. -->
-    <key>StartCalendarInterval</key>
-    <array>
-        <dict>
-            <key>Weekday</key><integer>4</integer>
-            <key>Hour</key><integer>9</integer>
-            <key>Minute</key><integer>0</integer>
-        </dict>
-        <dict>
-            <key>Weekday</key><integer>5</integer>
-            <key>Hour</key><integer>9</integer>
-            <key>Minute</key><integer>0</integer>
-        </dict>
-        <dict>
-            <key>Weekday</key><integer>6</integer>
-            <key>Hour</key><integer>9</integer>
-            <key>Minute</key><integer>0</integer>
-        </dict>
-    </array>
-
-    <!-- Respawn on a crash (nonzero/signal exit), but NOT on the clean
-         --live-until exit (status 0) -- that one's supposed to end the
-         window, not restart it a second later. -->
+    <!-- Always on: starts at login (RunAtLoad) and is kept running
+         (KeepAlive) rather than started on a Thu/Fri/Sat calendar window --
+         that window was only ever a proxy for "when are games on", and
+         missed Tue/Wed MACtion and weekday bowl/CFP games entirely. Note
+         the old StartCalendarInterval's "Hour: 9" was LOCAL time despite
+         being documented elsewhere as "09:00 ET" -- a latent inconsistency
+         that goes away here since all of _schedule_interval's math is
+         UTC-vs-UTC. `just discover` still matters: an undiscovered game
+         (e.g. season_type=3/postseason, never pulled for a season) is only
+         found on the next scoreboard pull, up to 30min after the poller
+         goes idle-active for it -- see _schedule_interval's docstring. -->
+    <key>RunAtLoad</key>
+    <true/>
     <key>KeepAlive</key>
-    <dict>
-        <key>SuccessfulExit</key>
-        <false/>
-    </dict>
+    <true/>
 
     <!-- Must live outside ~/Documents -- see com.creamcheese.serve.plist for
          why (xpcproxy's stdio-redirect open gets a TCC EPERM otherwise). -->
