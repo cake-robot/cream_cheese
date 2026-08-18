@@ -138,21 +138,6 @@ header.chrome nav a[aria-current="page"] {
 
 /* ---- spoiler control (nav pill) + spoiler settings page ---- */
 
-.spoiler-pill {
-  display: inline-block;
-  font: inherit;
-  font-size: 13px;
-  background: var(--surface-1);
-  border: 1px solid var(--hairline);
-  border-radius: 999px;
-  padding: 5px 12px;
-  cursor: pointer;
-  color: var(--ink-2);
-  white-space: nowrap;
-  text-decoration: none;
-}
-.spoiler-pill:hover { color: var(--ink-1); border-color: var(--axis); text-decoration: none; }
-
 .spoiler-row {
   display: flex;
   flex-wrap: wrap;

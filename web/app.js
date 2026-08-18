@@ -288,13 +288,10 @@ function tableTwin(summaryText, headers, rows) {
 //
 // This is a manual, not algorithmic, control: the user decides when a
 // week/game stops needing spoiler protection (e.g. "it's week 3, I don't
-// care about week 1 anymore"), nothing here infers that. Three pieces:
-//   - revealedIds()/addRevealed() -- session-only per-game reveal opt-in,
-//     read automatically by every api() call above.
-//   - setSpoilerContext() -- optional per-page hint (season/type/week)
-//     so the popover's "This week" section can open prefilled; every page
-//     still works without calling it, just with blank selects.
-//   - initSpoilerControl() -- the nav pill + popover itself.
+// care about week 1 anymore"), nothing here infers that. revealedIds()/
+// addRevealed() are session-only per-game reveal opt-in, read automatically
+// by every api() call above. Actually changing the policy happens on the
+// dedicated /settings.html page (also the site root).
 
 const REVEAL_KEY = "spoiler-revealed";
 
@@ -313,53 +310,6 @@ function addRevealed(gameId) {
   if (!ids.includes(gameId)) {
     ids.push(gameId);
     sessionStorage.setItem(REVEAL_KEY, JSON.stringify(ids));
-  }
-}
-
-let SPOILER_CONTEXT = { season_year: null, season_type: null, week: null };
-function setSpoilerContext(ctx) {
-  SPOILER_CONTEXT = { ...SPOILER_CONTEXT, ...ctx };
-}
-
-// Mirrors src/spoilers.py's _default_hidden() -- same ordinal comparison
-// (postseason sorts after every regular-season week of the same year, and
-// is one undivided unit within itself). Used only to label the nav pill;
-// the server is authoritative for actual redaction/exclusion.
-function defaultHidden(seasonYear, seasonType, week, hiddenFrom) {
-  const ty = hiddenFrom.season_year, tt = hiddenFrom.season_type, tw = hiddenFrom.week;
-  if (seasonYear !== ty) return seasonYear > ty;
-  if (tt === 2) {
-    if (seasonType === 3) return true;
-    return week >= tw;
-  }
-  return seasonType === 3;
-}
-
-// A status pill, not an editor -- actually changing anything happens on
-// the dedicated /settings.html page (which is also the site root). This
-// used to be an inline popover with its own Save/Clear controls, but that
-// meant two implementations of the same read-modify-write logic to keep
-// in sync, and a failed write here had nowhere to surface an error (see
-// the settings page's runWrite(), which does). One editor, linked to from
-// everywhere, is simpler and doesn't silently eat failures.
-async function initSpoilerControl() {
-  const mount = document.getElementById("spoiler-toggle");
-  if (!mount) return;
-
-  const link = el("a", { class: "spoiler-pill", href: "/", text: "Spoilers" });
-  mount.appendChild(link);
-
-  try {
-    const policy = (await api("/spoilers")).policy;
-    const ctx = SPOILER_CONTEXT;
-    if (ctx.season_year !== null && ctx.season_type !== null && ctx.week !== null) {
-      const key = `${ctx.season_year}:${ctx.season_type}:${ctx.week}`;
-      const hidden = key in policy.weeks ? policy.weeks[key] : defaultHidden(ctx.season_year, ctx.season_type, ctx.week, policy.hidden_from);
-      link.textContent = hidden ? "🙈 Spoilers hidden" : "👁 Spoilers shown";
-    }
-  } catch (e) {
-    // Leave the generic "Spoilers" label -- this is a status hint, not
-    // something worth failing loudly over.
   }
 }
 
@@ -391,6 +341,5 @@ async function initAccountMenu() {
 
 document.addEventListener("DOMContentLoaded", () => {
   initThemeToggle();
-  initSpoilerControl();
   initAccountMenu();
 });

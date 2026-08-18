@@ -23,7 +23,6 @@
     <a href="/">Settings</a>
     <a href="/analytics.html">Analytics</a>
   </nav>
-  <div id="spoiler-toggle"></div>
   <div class="theme-toggle" id="theme-toggle">
     <button data-mode="light" aria-pressed="false">Light</button>
     <button data-mode="dark" aria-pressed="false">Dark</button>
@@ -307,11 +306,6 @@ async function loadSlate({ push = false } = {}) {
     renderLiveSection(data.sections.live);
     renderCompletedSection(data.sections.completed);
     renderUpcomingSection(data.sections.upcoming);
-    // Best-effort prefill for the spoiler popover's "This week" section --
-    // a day/week window can resolve to more than one (season, type, week)
-    // tuple, so this just picks the first rather than trying to represent
-    // all of them.
-    if (data.weeks && data.weeks.length) setSpoilerContext(data.weeks[0]);
   } catch (e) {
     errBox.textContent = `Could not load slate: ${e.message}`;
   } finally {

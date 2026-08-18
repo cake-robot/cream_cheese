@@ -23,7 +23,6 @@
     <a href="/">Settings</a>
     <a href="/analytics.html">Analytics</a>
   </nav>
-  <div id="spoiler-toggle"></div>
   <div class="theme-toggle" id="theme-toggle">
     <button data-mode="light" aria-pressed="false">Light</button>
     <button data-mode="dark" aria-pressed="false">Dark</button>
@@ -165,13 +164,6 @@ async function loadAndRender(page = 0, limit = 50) {
   CURRENT = { data, page, limit };
   renderTable(data);
   frame.classList.remove("loading-frame");
-  // Best-effort prefill for the spoiler popover -- only when the filters
-  // pin down a single (season, type, week), not "All".
-  if (filters.season && filters.season_type !== "all" && filters.week) {
-    setSpoilerContext({
-      season_year: Number(filters.season), season_type: Number(filters.season_type), week: Number(filters.week),
-    });
-  }
 }
 
 function renderTable(data) {

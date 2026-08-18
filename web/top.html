@@ -23,7 +23,6 @@
     <a href="/">Settings</a>
     <a href="/analytics.html">Analytics</a>
   </nav>
-  <div id="spoiler-toggle"></div>
   <div class="theme-toggle" id="theme-toggle">
     <button data-mode="light" aria-pressed="false">Light</button>
     <button data-mode="dark" aria-pressed="false">Dark</button>
@@ -119,9 +118,6 @@ async function renderTop() {
       class: "cap-banner",
       text: `⚠ ${data.spoiler_excluded.count} spoiler-protected games not shown here — see Slate`,
     }));
-  }
-  if (f.season && f.season_type !== "all") {
-    setSpoilerContext({ season_year: Number(f.season), season_type: Number(f.season_type), week: null });
   }
 
   const list = document.getElementById("top-list");

@@ -23,7 +23,6 @@
     <a href="/">Settings</a>
     <a href="/analytics.html">Analytics</a>
   </nav>
-  <div id="spoiler-toggle"></div>
   <div class="theme-toggle" id="theme-toggle">
     <button data-mode="light" aria-pressed="false">Light</button>
     <button data-mode="dark" aria-pressed="false">Dark</button>
@@ -65,7 +64,7 @@ function renderHidden(mount, detail) {
     el("div", {
       class: "card-sub",
       text: "This game is spoiler-protected -- its score, charts, and what drove it are hidden. "
-        + "Reveal it for this session, or change the setting for its week from the Spoilers menu above.",
+        + "Reveal it for this session, or change the setting for its week from Settings.",
     }),
   ]);
   const revealBtn = el("button", { class: "reset", text: "Reveal this game" });
@@ -343,7 +342,6 @@ async function loadAndRenderGame() {
   } else {
     renderNotScored(mount, detail);
   }
-  setSpoilerContext({ season_year: detail.game.season_year, season_type: detail.game.season_type, week: detail.game.week });
 }
 
 (async function init() {
