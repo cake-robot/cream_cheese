@@ -78,13 +78,10 @@ function currentFilters() {
 
 function applyFiltersToForm(params) {
   document.getElementById("f-scope").value = params.scope || "day";
-  document.getElementById("f-date").value = params.date || todayLocalISO();
-}
-
-function todayLocalISO() {
-  const d = new Date();
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  // Leave blank if the URL didn't pin a date -- the request then omits
+  // `date` and the server picks the nearest day with something still to
+  // watch (see api_slate's default), rather than always landing on today.
+  document.getElementById("f-date").value = params.date || "";
 }
 
 // ---- feed pill --------------------------------------------------------------
@@ -301,6 +298,11 @@ async function loadSlate({ push = false } = {}) {
     const data = await api("/slate", { ...f, tz });
     CURRENT_SLATE = data;
     errBox.textContent = "";
+    // The date field starts blank so the server can pick its own default;
+    // backfill it from what actually got resolved (but never clobber a
+    // date the user picked -- that always arrives non-empty already).
+    const dateInput = document.getElementById("f-date");
+    if (!dateInput.value) dateInput.value = data.date;
     renderFeedPill(data);
     renderLiveSection(data.sections.live);
     renderCompletedSection(data.sections.completed);

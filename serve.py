@@ -1172,6 +1172,25 @@ def api_slate_registry():
     })
 
 
+def _default_slate_date(conn, tz):
+    """No explicit ?date= -- pick the nearest day (today or later) that still
+    has something to watch, rather than always landing on "today" when
+    today's games are already final or there are no games today at all
+    (bye week between slates, offseason).
+    """
+    if conn.execute("SELECT 1 FROM games WHERE status_state = 'in' LIMIT 1").fetchone():
+        return datetime.now(tz).date()
+    now_utc_str = datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%MZ")
+    row = conn.execute(
+        "SELECT MIN(game_date) AS d FROM games WHERE status_state = 'pre' AND game_date >= ?",
+        (now_utc_str,),
+    ).fetchone()
+    if row and row["d"]:
+        next_utc = datetime.strptime(row["d"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=ZoneInfo("UTC"))
+        return next_utc.astimezone(tz).date()
+    return datetime.now(tz).date()
+
+
 def _slate_window(conn, scope, date_str, tz_name):
     """Resolve the requested scope into a (where_sql, params, resolved) tuple.
     `where_sql`/`params` select against `g.game_date` (a fixed-format UTC ISO
@@ -1197,7 +1216,7 @@ def _slate_window(conn, scope, date_str, tz_name):
         except ValueError:
             abort(400, description="date must be YYYY-MM-DD")
     else:
-        local_date = datetime.now(tz).date()
+        local_date = _default_slate_date(conn, tz)
 
     def _iso_utc(dt):
         return dt.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%MZ")
