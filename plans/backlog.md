@@ -18,18 +18,39 @@ clause. Worth double-checking with the user this is actually what "acronym
 support" meant before implementing -- flagged in passing, not scoped in
 detail.
 
-## Fox score chart: real game-time markers
+## Fox score-chart tooltip: point-differential signal
 
-Flagged 2026-08-18. `build_fox_score_payload()` (serve.py:936) positions
-the Fox score chart's x-axis by `step_number` -- ordinal index into
-`fox_score_sequence`, i.e. "the Nth scoring event" -- not by actual elapsed
-game-clock time. Period bands exist (`period_number` is tracked), but
-within a period every step is evenly spaced regardless of how much game
-clock actually elapsed between scores. The ESPN chart doesn't have this gap
--- `wp_payload` is genuinely time-proportional via `clock_seconds_elapsed`.
-`src/fox.py`'s parsed play data would need to carry a real elapsed-time (or
-game-clock) value per scoring step before the chart could plot on that
-axis; unclear yet whether Fox's raw play-by-play exposes that at all.
+Flagged 2026-08-19. The tooltip shows the running score ("FRES 7 – KU 21")
+but never the size of the jump that produced it -- reading a TD (+6, or +7
+with the PAT) vs. a FG (+3) vs. a safety (+2) means mentally diffing
+against whatever the previous hover showed. Earlier review mockups
+(https://claude.ai/code/artifact/e5f78efd-008e-4bab-af0c-423dfc85ff2b,
+options 1 and 2) showed a "(+7)" badge next to the score line; it didn't
+carry into the shipped option 3. Add it back in `moveTo()`
+(web/charts.js) -- for every scoring marker, not just merged TD+try
+groups, so a bare FG reads "+3" and a lone defensive/special-teams TD
+reads "+6" too.
+
+## Fox tooltip: OT mandatory two-point tries
+
+Flagged 2026-08-19, user referenced Oregon @ Penn State 2025 (game_id
+401752854, fox_event_id 41759) while asking about tooltip polish. Checked
+-- the try-result pipeline already gets this one right: Oregon's 2OT
+touchdown (step 15) correctly shows a FAILED two-point try (mandatory
+from the 2nd OT on, no PAT option in CFB rules), final score 30-24
+matches the box score. It's a rich edge case worth keeping as a reference
+-- that particular play was actually an interception returned toward a
+defensive 2-point score that also failed ("TWO-POINT ATTEMPT FAILS.
+DEFENSIVE CONVERSION RECOVERY FAILS." in Fox's own text), and
+`_classify_try()` (src/fox.py) still classified it correctly as a failed
+try for Oregon.
+
+Nothing broken, but the OT-mandatory-2pt rule itself isn't called out
+anywhere in the UI -- a viewer who doesn't know that rule could see a 2OT+
+"two-point conversion" tooltip and wonder why the team didn't just kick
+it. Possible future polish: a period-aware label distinguishing "2pt
+(choice)" from "2pt (mandatory, OT)" if this becomes a recurring point of
+confusion.
 
 ## Team rankings go stale after discovery, never refreshed
 
