@@ -41,7 +41,9 @@ def discover_games(conn, args):
         print(f"  {len(games)} regular season games.")
 
         print(f"Fetching postseason scoreboard for season {args.season}...")
-        postseason = espn.fetch_scoreboard(args.season, season_type=3)
+        # See the week=1 comment in the full-season branch below -- same
+        # unreliable week=None behavior on non-current seasons applies here.
+        postseason = espn.fetch_scoreboard(args.season, week=1, season_type=3)
         team_games = [g for g in postseason if g["home_team_id"] == team_id or g["away_team_id"] == team_id]
         for g in team_games:
             db.upsert_game(conn, g)
@@ -74,7 +76,13 @@ def discover_games(conn, args):
             total += len(games)
 
         print(f"  Fetching postseason (season_type=3), season {args.season}...", end=" ", flush=True)
-        games = espn.fetch_scoreboard(args.season, week=None, season_type=3)
+        # week=None is unreliable for seasontype=3 on non-current seasons -- ESPN's
+        # `dates` param alone resolves to whatever postseason it considers "current"
+        # rather than the requested season (confirmed: for season=2023 it silently
+        # returned Jan-2023 bowls, i.e. the *2022* season's postseason, while
+        # week=1 correctly returns the full 2023 postseason regardless of how old
+        # the season is). All of a season's bowls/CFP live under week=1.
+        games = espn.fetch_scoreboard(args.season, week=1, season_type=3)
         for g in games:
             db.upsert_game(conn, g)
             game_ids.append(g["game_id"])
