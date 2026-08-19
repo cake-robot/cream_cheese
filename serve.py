@@ -500,7 +500,7 @@ def _no_store(resp):
     return resp
 
 
-_SPOILER_NUMERIC_FIELDS = ("watchability_score", "rank", "percentile", "n_scored", "applicable_weight")
+_SPOILER_NUMERIC_FIELDS = ("watchability_score", "uw_loss_bonus", "rank", "percentile", "n_scored", "applicable_weight")
 
 
 def _walk_spoiler_leaks(node, path=""):
@@ -747,6 +747,10 @@ def shape_game(row, metrics_map, rank=None, n_scored=None, has_fox_correction=Fa
         "ot": (bool(is_ot) if is_ot is not None else None),
         "initial_home_wp": row["initial_home_wp"],
         "watchability_score": row["watchability_score"],
+        "uw_loss_bonus": (
+            scoring.uw_loss_bonus(row["home_team_id"], row["away_team_id"], row["home_score"], row["away_score"])
+            if scored else None
+        ),
         "rank": rank if scored else None,
         "percentile": pct,
         "n_scored": n_scored if scored else None,
@@ -1736,7 +1740,12 @@ def api_game_detail(game_id):
                 continue
             weighted_sum += v["weighted"]
             applicable_weight += m["weight"]
-        composite_recomputed = weighted_sum / applicable_weight if applicable_weight else None
+        uw_bonus = scoring.uw_loss_bonus(
+            row["home_team_id"], row["away_team_id"], row["home_score"], row["away_score"]
+        )
+        composite_recomputed = (
+            weighted_sum / applicable_weight + uw_bonus if applicable_weight else None
+        )
         composite_stored = row["watchability_score"]
         delta = (composite_recomputed - composite_stored) if composite_recomputed is not None else None
         score_integrity = {
@@ -1747,6 +1756,7 @@ def api_game_detail(game_id):
             "weighted_sum": weighted_sum,
             "applicable_weight": applicable_weight,
             "excluded_metrics": excluded,
+            "uw_loss_bonus": uw_bonus,
         }
 
         # Rank/percentile here (and the neighbor lookup below) are scoped

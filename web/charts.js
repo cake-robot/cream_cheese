@@ -567,7 +567,7 @@ function foxScoreSeries(fox) {
  * metric, sorted by weighted contribution descending. Missing (n/a) and
  * real-zero metrics are drawn differently in geometry, never in shade.
  * ------------------------------------------------------------------- */
-function contributionBars(mount, metricsMap, registry, applicableWeight) {
+function contributionBars(mount, metricsMap, registry, applicableWeight, uwLossBonus) {
   const rows = registry.map((m) => ({ ...m, v: metricsMap[m.name] }));
   const applicable = rows.filter((r) => r.v !== null);
   const naRows = rows.filter((r) => r.v === null);
@@ -600,11 +600,23 @@ function contributionBars(mount, metricsMap, registry, applicableWeight) {
     wrap.appendChild(row);
   });
 
+  if (uwLossBonus) {
+    const row = el("div", { class: "contrib-row" });
+    row.appendChild(el("div", { class: "label", text: "UW loss bonus" }));
+    row.appendChild(el("div", { class: "na", text: "rooting bias — flat, outside the weighted composite" }));
+    row.appendChild(el("div"));
+    row.appendChild(el("div", { class: "contrib-value", text: `+${uwLossBonus.toFixed(3)}` }));
+    row.title = "Flat +0.07 whenever Washington loses — deliberate rooting bias, added on top of the weighted composite rather than as one of its metrics.";
+    wrap.appendChild(row);
+  }
+
   const weightedSum = applicable.reduce((s, r) => s + r.v.weighted, 0);
   const excludedNames = naRows.map((r) => r.label).join(", ");
-  const footerText = naRows.length
-    ? `Σ ${weightedSum.toFixed(3)} ÷ applicable weight ${applicableWeight.toFixed(1)} = ${(weightedSum / applicableWeight).toFixed(3)} · ${excludedNames} excluded (overtime)`
-    : `Σ ${weightedSum.toFixed(3)} ÷ applicable weight ${applicableWeight.toFixed(1)} = ${(weightedSum / applicableWeight).toFixed(3)}`;
+  const base = applicableWeight ? weightedSum / applicableWeight : 0;
+  const total = base + (uwLossBonus || 0);
+  let footerText = `Σ ${weightedSum.toFixed(3)} ÷ applicable weight ${applicableWeight.toFixed(1)} = ${base.toFixed(3)}`;
+  if (uwLossBonus) footerText += ` + UW loss bonus ${uwLossBonus.toFixed(3)} = ${total.toFixed(3)}`;
+  if (naRows.length) footerText += ` · ${excludedNames} excluded (overtime)`;
   wrap.appendChild(el("div", { class: "contrib-footer", text: footerText }));
   mount.appendChild(wrap);
 

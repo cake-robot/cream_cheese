@@ -30,7 +30,7 @@ from src import users
 
 import serve
 
-SPOILER_NUMERIC_FIELDS = ("watchability_score", "rank", "percentile", "n_scored", "applicable_weight")
+SPOILER_NUMERIC_FIELDS = ("watchability_score", "uw_loss_bonus", "rank", "percentile", "n_scored", "applicable_weight")
 
 
 def _walk_and_check(node, path, failures):

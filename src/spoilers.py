@@ -393,6 +393,7 @@ def redact_game(shaped):
     the input and always present (just nulled) on the output."""
     out = dict(shaped)
     out["watchability_score"] = None
+    out["uw_loss_bonus"] = None
     out["rank"] = None
     out["percentile"] = None
     out["n_scored"] = None

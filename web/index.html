@@ -138,7 +138,7 @@ function renderMiniHistogram(mount, stats) {
 
 function renderExpandedMetrics(container, game) {
   const registry = REGISTRY;
-  contributionBars(container, game.metrics, registry, game.applicable_weight || 0.0001);
+  contributionBars(container, game.metrics, registry, game.applicable_weight || 0.0001, game.uw_loss_bonus);
 }
 
 let REGISTRY = [];

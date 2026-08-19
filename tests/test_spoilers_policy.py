@@ -152,7 +152,7 @@ class TestRedactGame(unittest.TestCase):
             "venue_name": "Beaver Stadium", "attendance": 111015,
             "conference_game": True, "neutral_site": False, "completed": True,
             "status_state": "post", "ot": True, "initial_home_wp": 0.5063,
-            "watchability_score": 0.672, "rank": 1, "percentile": 99, "n_scored": 1828,
+            "watchability_score": 0.672, "uw_loss_bonus": 0.0, "rank": 1, "percentile": 99, "n_scored": 1828,
             "has_fox_correction": False, "has_manual_correction": False,
             "metrics": {"wp_volatility": {"raw": 9.1, "norm": 0.9, "weighted": 0.9, "at_cap": False, "applicable": True}},
             "applicable_weight": 7.0,
@@ -161,7 +161,7 @@ class TestRedactGame(unittest.TestCase):
 
     def test_redacted_fields_are_null_not_missing(self):
         out = spoilers.redact_game(self._shaped())
-        for key in ("watchability_score", "rank", "percentile", "n_scored", "ot", "applicable_weight"):
+        for key in ("watchability_score", "uw_loss_bonus", "rank", "percentile", "n_scored", "ot", "applicable_weight"):
             self.assertIn(key, out)
             self.assertIsNone(out[key])
         self.assertIn("metrics", out)

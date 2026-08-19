@@ -262,8 +262,10 @@ function renderScored(mount, detail) {
   const integrityChip = si.matches
     ? el("span", { class: "ok", text: "✓ matches stored score" })
     : el("span", { class: "bad", text: `⚠ differs from stored score by ${si.delta.toFixed(4)} — caps may have changed since this game was scored` });
+  const integrityFormula = `Σ contributions ${si.weighted_sum.toFixed(3)} ÷ applicable weight ${si.applicable_weight.toFixed(1)} = ${(si.composite_recomputed - (si.uw_loss_bonus || 0)).toFixed(4)}`
+    + (si.uw_loss_bonus ? ` + UW loss bonus ${si.uw_loss_bonus.toFixed(3)} = ${si.composite_recomputed.toFixed(4)}` : "");
   mount.appendChild(el("div", { class: "integrity-strip" }, [
-    el("span", { text: `Σ contributions ${si.weighted_sum.toFixed(3)} ÷ applicable weight ${si.applicable_weight.toFixed(1)} = ${si.composite_recomputed.toFixed(4)}` }),
+    el("span", { text: integrityFormula }),
     integrityChip,
   ]));
 
@@ -282,7 +284,7 @@ function renderScored(mount, detail) {
     el("h2", { text: "What drove this score" }),
     el("div", { class: "card-sub", text: `Points contributed to the ${fmtScore(g.watchability_score)} composite.` }),
   ]);
-  contributionBars(contribCard, g.metrics, detail.registry, si.applicable_weight);
+  contributionBars(contribCard, g.metrics, detail.registry, si.applicable_weight, si.uw_loss_bonus);
   mount.appendChild(contribCard);
 
   const twoCol = el("div", { class: "two-col" });

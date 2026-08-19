@@ -49,6 +49,14 @@ CLUTCH_FINISH_OT_FLOOR = 0.7
 # Q1 lead. ---
 COMEBACK_EROSION_THRESHOLD = 0.84
 
+# --- UW rooting bias: flat bonus for a Washington Huskies loss. Deliberate,
+# not a general watchability signal (plans/personal_notes/personal_notes.md:
+# "extra credit for a UW loss (rooting bias, deliberate -- not a general
+# watchability principle)") -- kept as a flat add-on rather than a METRICS
+# entry so it isn't diluted by weighted-average normalization. ---
+UW_TEAM_ID = "264"
+UW_LOSS_BONUS = 0.07
+
 
 # --- Metric functions ---
 
@@ -424,6 +432,20 @@ def comeback_erosion(wp_rows):
     return best
 
 
+def uw_loss_bonus(home_team_id, away_team_id, home_score, away_score):
+    """UW_LOSS_BONUS if Washington played and lost, else 0.0. Deliberately
+    outside the METRICS/composite_from() weighted-average machinery -- see
+    UW_LOSS_BONUS above -- so it's a flat add rather than one term diluted
+    by every other metric's weight."""
+    if home_score is None or away_score is None:
+        return 0.0
+    if home_team_id == UW_TEAM_ID:
+        return UW_LOSS_BONUS if home_score < away_score else 0.0
+    if away_team_id == UW_TEAM_ID:
+        return UW_LOSS_BONUS if away_score < home_score else 0.0
+    return 0.0
+
+
 # --- Metric registry ---
 # Each fn takes a context dict: {"wp_rows": [...], "home_rank": int|None,
 # "away_rank": int|None, "initial_home_wp": float|None}
@@ -502,9 +524,14 @@ def score_game(context):
     retrospective METRICS registry.
 
     context: {"wp_rows": [...], "home_rank": int|None, "away_rank": int|None,
-              "initial_home_wp": float|None}
+              "initial_home_wp": float|None, "home_team_id": str|None,
+              "away_team_id": str|None, "home_score": int|None,
+              "away_score": int|None}
     Returns (composite: float, breakdown: dict). breakdown keys: metric name
-    -> {raw, normalized, weighted}.
+    -> {raw, normalized, weighted}. composite includes the flat UW_LOSS_BONUS
+    rooting-bias add-on (see uw_loss_bonus()) on top of the METRICS
+    weighted average -- not reflected in breakdown, which stays scoped to
+    the registry's own metrics.
 
     In practice every retrospective game has at least team_profile/upset_risk
     applicable (they need no WP data), so total_weight is never 0 here -- the
@@ -514,7 +541,12 @@ def score_game(context):
     that don't expect it (score_games(), apply_corrections()).
     """
     composite, breakdown = composite_from(METRICS, context)
-    return (composite if composite is not None else 0.0), breakdown
+    composite = composite if composite is not None else 0.0
+    composite += uw_loss_bonus(
+        context.get("home_team_id"), context.get("away_team_id"),
+        context.get("home_score"), context.get("away_score"),
+    )
+    return composite, breakdown
 
 
 def recompute_composite(conn, game_id):
@@ -525,6 +557,11 @@ def recompute_composite(conn, game_id):
     excluded from both the numerator and the weight total, matching
     score_game()'s "not applicable" handling. Used after manual corrections,
     where only one metric's value changed and the rest should be reused as-is.
+
+    Also re-applies the flat UW_LOSS_BONUS rooting-bias add-on (see
+    uw_loss_bonus()) by looking the game's teams/score back up from `games`
+    -- the bonus isn't stored as a game_metrics row, so it has to be
+    re-derived here rather than reused from a stored value.
     """
     total_weight = 0.0
     composite = 0.0
@@ -536,7 +573,17 @@ def recompute_composite(conn, game_id):
             continue
         composite += row["norm_value"] * m["weight"]
         total_weight += m["weight"]
-    return composite / total_weight if total_weight else 0.0
+    base = composite / total_weight if total_weight else 0.0
+
+    game = conn.execute(
+        "SELECT home_team_id, away_team_id, home_score, away_score FROM games WHERE game_id = ?",
+        (game_id,),
+    ).fetchone()
+    if game is None:
+        return base
+    return base + uw_loss_bonus(
+        game["home_team_id"], game["away_team_id"], game["home_score"], game["away_score"]
+    )
 
 
 def _apply_one_correction(conn, game_id, metric_name, raw):
@@ -618,7 +665,8 @@ def score_games(conn, game_ids=None, rescore=False):
     if game_ids:
         placeholders = ",".join("?" * len(game_ids))
         base = (
-            f"SELECT g.game_id, g.away_team_abbr, g.home_team_abbr, g.home_rank, g.away_rank, g.initial_home_wp "
+            f"SELECT g.game_id, g.away_team_abbr, g.home_team_abbr, g.home_rank, g.away_rank, g.initial_home_wp, "
+            f"g.home_team_id, g.away_team_id, g.home_score, g.away_score "
             f"FROM games g "
             f"WHERE g.completed = 1 AND g.detail_fetched = 1 "
             f"AND g.game_id IN ({placeholders})"
@@ -626,7 +674,8 @@ def score_games(conn, game_ids=None, rescore=False):
         params = list(game_ids)
     else:
         base = (
-            "SELECT g.game_id, g.away_team_abbr, g.home_team_abbr, g.home_rank, g.away_rank, g.initial_home_wp "
+            "SELECT g.game_id, g.away_team_abbr, g.home_team_abbr, g.home_rank, g.away_rank, g.initial_home_wp, "
+            "g.home_team_id, g.away_team_id, g.home_score, g.away_score "
             "FROM games g "
             "WHERE g.completed = 1 AND g.detail_fetched = 1"
         )
@@ -661,6 +710,10 @@ def score_games(conn, game_ids=None, rescore=False):
             "home_rank": row["home_rank"],
             "away_rank": row["away_rank"],
             "initial_home_wp": row["initial_home_wp"],
+            "home_team_id": row["home_team_id"],
+            "away_team_id": row["away_team_id"],
+            "home_score": row["home_score"],
+            "away_score": row["away_score"],
         }
         composite, breakdown = score_game(context)
         db.update_watchability_score(conn, game_id, composite)
