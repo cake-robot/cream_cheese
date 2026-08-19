@@ -566,58 +566,153 @@ function foxScoreSeries(fox) {
  * contributionBars -- the highest-value chart. One horizontal bar per
  * metric, sorted by weighted contribution descending. Missing (n/a) and
  * real-zero metrics are drawn differently in geometry, never in shade.
+ *
+ * `uwLossBonus` being present (even as 0) vs. undefined is what switches
+ * between two layouts:
+ *  - undefined (live so_far/from_here callers, which have no bonus concept)
+ *    keeps the original simple layout: one bar per metric + a text footer.
+ *  - a number (retrospective/completed-game callers) turns on the richer
+ *    layout: a second "contribution" bar per metric (its post-÷weight
+ *    share, plotted on one axis shared with the flat bonus so the two are
+ *    directly comparable), and -- only when the bonus is actually nonzero,
+ *    since otherwise it's just restating the same number twice -- a
+ *    subtotal/total pair spelling out the arithmetic.
  * ------------------------------------------------------------------- */
 function contributionBars(mount, metricsMap, registry, applicableWeight, uwLossBonus) {
+  const rich = uwLossBonus !== undefined;
+  const bonus = uwLossBonus || 0;
   const rows = registry.map((m) => ({ ...m, v: metricsMap[m.name] }));
   const applicable = rows.filter((r) => r.v !== null);
   const naRows = rows.filter((r) => r.v === null);
   applicable.sort((a, b) => b.v.weighted - a.v.weighted);
   const ordered = applicable.concat(naRows);
 
+  const weightedSum = applicable.reduce((s, r) => s + r.v.weighted, 0);
+  const base = applicableWeight ? weightedSum / applicableWeight : 0;
+  const total = base + bonus;
+  const excludedNames = naRows.map((r) => r.label).join(", ");
+
   const wrap = el("div", {});
+
+  if (rich) {
+    const head = el("div", { class: "contrib-row rich contrib-head" });
+    head.appendChild(el("div"));
+    head.appendChild(el("div", { class: "group-head", text: "score (saturation vs. cap)" }));
+    head.appendChild(el("div"));
+    head.appendChild(el("div"));
+    head.appendChild(el("div", { class: "group-head", text: `contribution (share of ${total.toFixed(3)})` }));
+    head.appendChild(el("div"));
+    wrap.appendChild(head);
+  }
+
   ordered.forEach((r) => {
-    const row = el("div", { class: "contrib-row" });
+    const row = el("div", { class: rich ? "contrib-row rich" : "contrib-row" });
     row.appendChild(el("div", { class: "label", text: r.label }));
     if (r.v === null) {
       row.appendChild(el("div", { class: "na", text: `not applicable — overtime game` }));
       row.appendChild(el("div"));
+      if (rich) { row.appendChild(el("div")); row.appendChild(el("div")); }
       row.appendChild(el("div", { class: "contrib-value", text: "—" }));
     } else {
       const trackPct = (r.weight / applicableWeight) * 100;
-      const fillPct = (r.v.weighted / applicableWeight) * 100;
       const meter = el("div", { class: "contrib-meter" });
       meter.style.width = `${trackPct}%`;
       const fill = el("i");
       fill.style.width = `${applicableWeight ? (r.v.weighted / (r.weight)) * 100 : 0}%`;
       meter.appendChild(fill);
-      const meterCell = el("div", {}, meter);
-      row.appendChild(meterCell);
       const chip = r.v.at_cap ? el("span", { class: "chip warn", text: "⚠ AT CAP" }) : null;
-      row.appendChild(el("div", {}, chip));
-      row.appendChild(el("div", { class: "contrib-value", text: `+${r.v.weighted.toFixed(3)}` }));
       row.title = `raw ${r.v.raw.toFixed(3)} / cap ${r.cap ?? "—"} → norm ${r.v.norm.toFixed(3)} × weight ${r.weight} = ${r.v.weighted.toFixed(3)}. ${r.description}`;
+
+      if (rich) {
+        row.appendChild(el("div", { class: "meter-cell" }, [meter, chip]));
+        row.appendChild(el("div", { class: "contrib-value", text: `+${r.v.weighted.toFixed(3)}` }));
+        row.appendChild(el("div", { class: "op", text: `÷${applicableWeight}` }));
+        const contribution = r.v.weighted / applicableWeight;
+        const cbar = el("div", { class: "contrib-bar" });
+        const cfill = el("i");
+        cfill.style.width = `${total > 0 ? (contribution / total) * 100 : 0}%`;
+        cbar.appendChild(cfill);
+        row.appendChild(cbar);
+        row.appendChild(el("div", { class: "contrib-value", text: contribution.toFixed(3) }));
+      } else {
+        row.appendChild(el("div", {}, meter));
+        row.appendChild(el("div", {}, chip));
+        row.appendChild(el("div", { class: "contrib-value", text: `+${r.v.weighted.toFixed(3)}` }));
+      }
     }
     wrap.appendChild(row);
   });
 
-  if (uwLossBonus) {
-    const row = el("div", { class: "contrib-row" });
+  if (rich && bonus > 0) {
+    const row = el("div", { class: "contrib-row rich bonus" });
     row.appendChild(el("div", { class: "label", text: "UW loss bonus" }));
-    row.appendChild(el("div", { class: "na", text: "rooting bias — flat, outside the weighted composite" }));
-    row.appendChild(el("div"));
-    row.appendChild(el("div", { class: "contrib-value", text: `+${uwLossBonus.toFixed(3)}` }));
+    row.appendChild(el("div", { class: "meter-cell" }, el("span", { class: "chip good", text: "FLAT" })));
+    row.appendChild(el("div", { class: "contrib-value", text: `+${bonus.toFixed(3)}` }));
+    row.appendChild(el("div", { class: "op", text: "—" }));
+    const cbar = el("div", { class: "contrib-bar" });
+    const cfill = el("i", { class: "bonus" });
+    cfill.style.width = `${total > 0 ? (bonus / total) * 100 : 0}%`;
+    cbar.appendChild(cfill);
+    row.appendChild(cbar);
+    row.appendChild(el("div", { class: "contrib-value", text: `+${bonus.toFixed(3)}` }));
     row.title = "Flat +0.07 whenever Washington loses — deliberate rooting bias, added on top of the weighted composite rather than as one of its metrics.";
     wrap.appendChild(row);
+
+    wrap.appendChild(el("div", { class: "divider" }));
+
+    const subRow = el("div", { class: "contrib-row rich subtotal" });
+    subRow.appendChild(el("div", { class: "label", text: "Metrics subtotal" }));
+    subRow.appendChild(el("div"));
+    subRow.appendChild(el("div"));
+    subRow.appendChild(el("div"));
+    const subBar = el("div", { class: "contrib-bar" });
+    const subFill = el("i");
+    subFill.style.width = `${total > 0 ? (base / total) * 100 : 0}%`;
+    subBar.appendChild(subFill);
+    subRow.appendChild(subBar);
+    subRow.appendChild(el("div", { class: "contrib-value", text: base.toFixed(3) }));
+    wrap.appendChild(subRow);
+
+    const totalRow = el("div", { class: "contrib-row rich total" });
+    totalRow.appendChild(el("div", { class: "label", text: "Total" }));
+    totalRow.appendChild(el("div"));
+    totalRow.appendChild(el("div"));
+    totalRow.appendChild(el("div"));
+    const totalBar = el("div", { class: "contrib-bar" });
+    const aPct = total > 0 ? (base / total) * 100 : 0;
+    const bPct = total > 0 ? (bonus / total) * 100 : 0;
+    const segA = el("i", { class: "split-a" });
+    segA.style.width = `${aPct}%`;
+    const segB = el("i", { class: "split-b" });
+    segB.style.width = `${bPct}%`;
+    segB.style.left = `${aPct}%`;
+    totalBar.appendChild(segA);
+    totalBar.appendChild(segB);
+    totalRow.appendChild(totalBar);
+    totalRow.appendChild(el("div", { class: "contrib-value", text: total.toFixed(3) }));
+    wrap.appendChild(totalRow);
   }
 
-  const weightedSum = applicable.reduce((s, r) => s + r.v.weighted, 0);
-  const excludedNames = naRows.map((r) => r.label).join(", ");
-  const base = applicableWeight ? weightedSum / applicableWeight : 0;
-  const total = base + (uwLossBonus || 0);
-  let footerText = `Σ ${weightedSum.toFixed(3)} ÷ applicable weight ${applicableWeight.toFixed(1)} = ${base.toFixed(3)}`;
-  if (uwLossBonus) footerText += ` + UW loss bonus ${uwLossBonus.toFixed(3)} = ${total.toFixed(3)}`;
-  if (naRows.length) footerText += ` · ${excludedNames} excluded (overtime)`;
-  wrap.appendChild(el("div", { class: "contrib-footer", text: footerText }));
+  if (rich) {
+    if (bonus <= 0) {
+      let footerText = `Σ ${weightedSum.toFixed(3)} ÷ applicable weight ${applicableWeight.toFixed(1)} = ${base.toFixed(3)}`;
+      if (naRows.length) footerText += ` · ${excludedNames} excluded (overtime)`;
+      wrap.appendChild(el("div", { class: "contrib-footer", text: footerText }));
+    } else if (naRows.length) {
+      wrap.appendChild(el("div", { class: "contrib-footer", text: `${excludedNames} excluded (overtime)` }));
+    }
+    const legend = el("div", { class: "legend" });
+    legend.appendChild(el("span", {}, [el("i", { style: "background:var(--track)" }), "max possible (weight share)"]));
+    legend.appendChild(el("span", {}, [el("i", { style: "background:var(--series-1)" }), "actual (saturation)"]));
+    if (bonus > 0) legend.appendChild(el("span", {}, [el("i", { style: "background:var(--good)" }), "UW loss bonus (flat)"]));
+    legend.appendChild(el("span", {}, [el("i", { style: "background:var(--warning)" }), "at cap"]));
+    wrap.appendChild(legend);
+  } else {
+    const footerText = `Σ ${weightedSum.toFixed(3)} ÷ applicable weight ${applicableWeight.toFixed(1)} = ${base.toFixed(3)}`
+      + (naRows.length ? ` · ${excludedNames} excluded (overtime)` : "");
+    wrap.appendChild(el("div", { class: "contrib-footer", text: footerText }));
+  }
+
   mount.appendChild(wrap);
 
   const twinRows = registry.map((r) => {
