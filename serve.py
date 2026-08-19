@@ -2079,21 +2079,31 @@ def api_top_teams():
         FROM games WHERE {where_sql}
     """
 
-    agg_rows = conn.execute(f"""
-        SELECT abbr, MAX(name) AS name, COUNT(*) AS n, AVG(watchability_score) AS avg_score
+    # Leaderboard is "average of a team's top 5 games", not a mean across all
+    # appearances -- otherwise it mostly measures schedule volume/consistency
+    # rather than how good the team's best watchability moments were.
+    ranked_sql = f"""
+        SELECT abbr, name, game_id, watchability_score,
+               ROW_NUMBER() OVER (PARTITION BY abbr ORDER BY watchability_score DESC) AS rn,
+               COUNT(*) OVER (PARTITION BY abbr) AS n
         FROM ({appearances_sql})
-        GROUP BY abbr HAVING COUNT(*) >= ?
+    """
+
+    agg_rows = conn.execute(f"""
+        SELECT abbr, MAX(name) AS name, MAX(n) AS n,
+               AVG(CASE WHEN rn <= 5 THEN watchability_score END) AS avg_score
+        FROM ({ranked_sql})
+        GROUP BY abbr HAVING MAX(n) >= ?
         ORDER BY avg_score DESC LIMIT ?
     """, params + params + [min_games, limit]).fetchall()
 
     best_rows = conn.execute(f"""
-        SELECT abbr, game_id, watchability_score,
-               RANK() OVER (PARTITION BY abbr ORDER BY watchability_score DESC) AS rnk
-        FROM ({appearances_sql})
+        SELECT abbr, game_id, watchability_score, rn
+        FROM ({ranked_sql})
     """, params + params).fetchall()
     best_by_abbr = {}
     for r in best_rows:
-        if r["rnk"] == 1 and r["abbr"] not in best_by_abbr:
+        if r["rn"] == 1 and r["abbr"] not in best_by_abbr:
             best_by_abbr[r["abbr"]] = {"game_id": r["game_id"], "watchability_score": r["watchability_score"]}
 
     results = [{
