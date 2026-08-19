@@ -142,16 +142,19 @@ CREATE TABLE IF NOT EXISTS fox_plays (
 );
 
 CREATE TABLE IF NOT EXISTS fox_score_sequence (
-    fox_event_id  INTEGER NOT NULL REFERENCES fox_events(fox_event_id),
-    step_number   INTEGER NOT NULL,
-    team          TEXT NOT NULL,       -- 'home' | 'away'
-    new_value     INTEGER NOT NULL,
-    delta         INTEGER NOT NULL,
-    exact         INTEGER NOT NULL,    -- 1 = pinned to a flagged play; 0 = range-localized
-    seq_lo        INTEGER,
-    seq_hi        INTEGER,
-    period_number INTEGER,
-    evidence      TEXT,
+    fox_event_id     INTEGER NOT NULL REFERENCES fox_events(fox_event_id),
+    step_number      INTEGER NOT NULL,
+    team             TEXT NOT NULL,       -- 'home' | 'away'
+    new_value        INTEGER NOT NULL,
+    delta            INTEGER NOT NULL,
+    exact            INTEGER NOT NULL,    -- 1 = pinned to a flagged play; 0 = range-localized
+    seq_lo           INTEGER,
+    seq_hi           INTEGER,
+    period_number    INTEGER,
+    evidence         TEXT,
+    elapsed_seconds  INTEGER,             -- x-axis position for the time-aligned score chart;
+                                           -- synthetic in OT (see fox._assign_elapsed_seconds)
+    clock_pinned     INTEGER NOT NULL DEFAULT 0, -- 1 = a PAT/2pt try pinned to its TD's clock
     PRIMARY KEY (fox_event_id, step_number)
 );
 
@@ -298,6 +301,12 @@ def init_db(path=None):
     fox_play_cols = {row[1] for row in conn.execute("PRAGMA table_info(fox_plays)")}
     if "time_of_play" not in fox_play_cols:
         conn.execute("ALTER TABLE fox_plays ADD COLUMN time_of_play TEXT")
+
+    fox_seq_cols = {row[1] for row in conn.execute("PRAGMA table_info(fox_score_sequence)")}
+    if "elapsed_seconds" not in fox_seq_cols:
+        conn.execute("ALTER TABLE fox_score_sequence ADD COLUMN elapsed_seconds INTEGER")
+    if "clock_pinned" not in fox_seq_cols:
+        conn.execute("ALTER TABLE fox_score_sequence ADD COLUMN clock_pinned INTEGER NOT NULL DEFAULT 0")
 
     game_cols = {row[1] for row in conn.execute("PRAGMA table_info(games)")}
     if "event_note" not in game_cols:
@@ -631,10 +640,12 @@ def replace_fox_score_sequence(conn, fox_event_id, steps):
     conn.executemany("""
         INSERT INTO fox_score_sequence (
             fox_event_id, step_number, team, new_value, delta,
-            exact, seq_lo, seq_hi, period_number, evidence
+            exact, seq_lo, seq_hi, period_number, evidence,
+            elapsed_seconds, clock_pinned
         ) VALUES (
             :fox_event_id, :step_number, :team, :new_value, :delta,
-            :exact, :seq_lo, :seq_hi, :period_number, :evidence
+            :exact, :seq_lo, :seq_hi, :period_number, :evidence,
+            :elapsed_seconds, :clock_pinned
         )
     """, [{**s, "fox_event_id": fox_event_id} for s in steps])
 

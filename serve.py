@@ -851,6 +851,18 @@ def period_label(p):
     return f"OT{p - 4}"
 
 
+def _fox_clock_display(period, elapsed_seconds):
+    """Inverse of fox._regulation_elapsed_seconds -- 'MM:SS' remaining in
+    the period. None for OT/pregame, where Fox's elapsed_seconds is
+    synthetic rather than a real clock reading (see fox.py)."""
+    if period is None or period <= 0 or period > 4 or elapsed_seconds is None:
+        return None
+    remaining = 900 - (elapsed_seconds - (period - 1) * 900)
+    if remaining < 0 or remaining > 900:
+        return None
+    return f"{remaining // 60}:{remaining % 60:02d}"
+
+
 def build_wp_payload(wp_rows, game_row):
     """Parallel-array WP series for the game-detail chart. See serve.py's
     module docstring notes / the design plan for why: play-ordinal x-axis
@@ -973,7 +985,8 @@ def build_fox_score_payload(conn, game_id, game_row):
         return "away" if side == "home" else "home"
 
     steps = conn.execute(
-        "SELECT step_number, team, new_value, delta, exact, period_number, evidence "
+        "SELECT step_number, team, new_value, delta, exact, period_number, evidence, "
+        "elapsed_seconds, clock_pinned "
         "FROM fox_score_sequence WHERE fox_event_id=? ORDER BY step_number",
         (fox_event_id,),
     ).fetchall()
@@ -981,6 +994,7 @@ def build_fox_score_payload(conn, game_id, game_row):
 
     home_score, away_score = [0], [0]
     period_filled, evidence, exact_flags = [0], [None], [True]
+    elapsed_seconds, clock_pinned = [0], [False]
     score_changes = []
     h, a = 0, 0
     for s in steps:
@@ -994,6 +1008,10 @@ def build_fox_score_payload(conn, game_id, game_row):
         period_filled.append(s["period_number"] if s["period_number"] is not None else period_filled[-1])
         evidence.append(s["evidence"])
         exact_flags.append(bool(s["exact"]))
+        elapsed_seconds.append(
+            s["elapsed_seconds"] if s["elapsed_seconds"] is not None else elapsed_seconds[-1]
+        )
+        clock_pinned.append(bool(s["clock_pinned"]))
         score_changes.append({
             "i": len(home_score) - 1, "home": h, "away": a,
             "delta": s["delta"], "team": espn_team, "exact": bool(s["exact"]),
@@ -1006,6 +1024,8 @@ def build_fox_score_payload(conn, game_id, game_row):
             period_starts.append({"i": idx, "period": p, "label": period_label(p)})
             prev = p
 
+    clock_display = [_fox_clock_display(p, e) for p, e in zip(period_filled, elapsed_seconds)]
+
     return {
         "n": n,
         "i": list(range(n)),
@@ -1013,6 +1033,9 @@ def build_fox_score_payload(conn, game_id, game_row):
         "away_score_clean": away_score,
         "evidence": evidence,
         "exact": exact_flags,
+        "elapsed_seconds": elapsed_seconds,
+        "clock_display": clock_display,
+        "clock_pinned": clock_pinned,
         "meta": {
             "period_starts": period_starts,
             "score_changes": score_changes,

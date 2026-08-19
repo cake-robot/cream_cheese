@@ -204,9 +204,13 @@ function wpChart(mount, wp, game) {
 }
 
 /* ---------------------------------------------------------------------
- * scoreChart -- the running score, away vs. home, as a step function over
- * some event ordinal (play index for ESPN, scoring-step index for Fox --
- * never elapsed clock, which is non-monotonic in OT/replay-review games).
+ * scoreChart -- the running score, away vs. home, as a step function.
+ * x defaults to event ordinal (play index for ESPN -- 356 games have
+ * non-monotonic clocks, so ESPN never gets a time axis), but an adapter
+ * can supply `data.x`, an elapsed-seconds position per event index, for a
+ * genuinely time-aligned axis -- see foxScoreSeries()'s use of Fox's
+ * per-play clock (PATs/two-point tries pinned to their touchdown's time,
+ * since the game clock is frozen for the whole try attempt).
  * One shared y-axis (both lines are the same unit, points), stairsteps
  * rather than a smooth line because the value is genuinely constant
  * between scoring plays, markers only where the score actually changed.
@@ -214,7 +218,7 @@ function wpChart(mount, wp, game) {
  * Takes a source-agnostic `data` shape rather than the raw API payload,
  * so the same renderer draws both the ESPN and Fox score progressions --
  * see espnScoreSeries()/foxScoreSeries() below for the two adapters.
- * data = { n, home, away, period_starts, score_changes, subtitle(idx),
+ * data = { n, home, away, x?, period_starts, score_changes, subtitle(idx),
  *          ariaLabel, unitLabel, tableColumns: [{header, cell(idx)}] }
  * ------------------------------------------------------------------- */
 function scoreChart(mount, data, game) {
@@ -226,10 +230,18 @@ function scoreChart(mount, data, game) {
   const home = data.home, away = data.away;
   const homeAbbr = game.home.abbr, awayAbbr = game.away.abbr;
 
+  // x-position per event index: real elapsed seconds when the source
+  // supplies one (Fox -- time-aligned, PATs pinned to their TD's clock),
+  // otherwise the event ordinal (ESPN -- 356 games have non-monotonic
+  // clocks, so ordinal stays the only safe axis there).
+  const xVals = data.x || Array.from({ length: n }, (_, i) => i);
+  const xMin = xVals[0];
+  const xMax = Math.max(xVals[n - 1], xMin + 1);
+
   const rawMax = Math.max(1, ...home, ...away);
   const maxY = Math.ceil((rawMax * 1.15) / 5) * 5;
 
-  const x = linScale([0, Math.max(n - 1, 1)], [margin.left, margin.left + plotW]);
+  const x = linScale([xMin, xMax], [margin.left, margin.left + plotW]);
   const y = linScale([0, maxY], [margin.top + plotH, margin.top]);
 
   const root = svg("svg", {
@@ -243,7 +255,7 @@ function scoreChart(mount, data, game) {
     const nextI = data.period_starts[i + 1] ? data.period_starts[i + 1].i : n - 1;
     if (i % 2 === 1) {
       root.appendChild(svg("rect", {
-        x: x(p.i).toFixed(1), y: margin.top, width: Math.max(x(nextI) - x(p.i), 0).toFixed(1), height: plotH,
+        x: x(xVals[p.i]).toFixed(1), y: margin.top, width: Math.max(x(xVals[nextI]) - x(xVals[p.i]), 0).toFixed(1), height: plotH,
         fill: "var(--page)",
       }));
     }
@@ -265,21 +277,21 @@ function scoreChart(mount, data, game) {
   data.period_starts.forEach((p, i) => {
     if (i > 0) {
       root.appendChild(svg("line", {
-        x1: x(p.i).toFixed(1), x2: x(p.i).toFixed(1), y1: margin.top, y2: margin.top + plotH,
+        x1: x(xVals[p.i]).toFixed(1), x2: x(xVals[p.i]).toFixed(1), y1: margin.top, y2: margin.top + plotH,
         stroke: "var(--grid)", "stroke-width": "1", "vector-effect": "non-scaling-stroke",
       }));
     }
     const nextI = data.period_starts[i + 1] ? data.period_starts[i + 1].i : n - 1;
-    const midX = (x(p.i) + x(nextI)) / 2;
+    const midX = (x(xVals[p.i]) + x(xVals[nextI])) / 2;
     root.appendChild(svgText(midX, H - 6, p.label, {
       "font-size": "9.5", fill: "var(--ink-muted)", "text-anchor": "middle",
     }));
   });
 
   function stepPath(values) {
-    let d = `M${x(0).toFixed(1)},${y(values[0]).toFixed(1)}`;
+    let d = `M${x(xVals[0]).toFixed(1)},${y(values[0]).toFixed(1)}`;
     for (let i = 1; i < n; i++) {
-      d += ` H${x(i).toFixed(1)} V${y(values[i]).toFixed(1)}`;
+      d += ` H${x(xVals[i]).toFixed(1)} V${y(values[i]).toFixed(1)}`;
     }
     return d;
   }
@@ -300,7 +312,7 @@ function scoreChart(mount, data, game) {
   data.score_changes.forEach((sc) => {
     const s = sc.team === "home" ? series[1] : series[0];
     root.appendChild(svg("circle", {
-      cx: x(sc.i).toFixed(1), cy: y(sc.team === "home" ? sc.home : sc.away).toFixed(1), r: "4",
+      cx: x(xVals[sc.i]).toFixed(1), cy: y(sc.team === "home" ? sc.home : sc.away).toFixed(1), r: "4",
       fill: s.color, stroke: "var(--surface-1)", "stroke-width": "2",
     }));
   });
@@ -317,10 +329,10 @@ function scoreChart(mount, data, game) {
   }
   series.forEach((s, i) => {
     root.appendChild(svg("circle", {
-      cx: x(lastI).toFixed(1), cy: dotYs[i].toFixed(1), r: "4",
+      cx: x(xVals[lastI]).toFixed(1), cy: dotYs[i].toFixed(1), r: "4",
       fill: s.color, stroke: "var(--surface-1)", "stroke-width": "2",
     }));
-    root.appendChild(svgText(x(lastI) - 6, labelYs[i], `${s.abbr} ${s.values[lastI]}`, {
+    root.appendChild(svgText(x(xVals[lastI]) - 6, labelYs[i], `${s.abbr} ${s.values[lastI]}`, {
       "font-size": "11", fill: s.color, "text-anchor": "end", "font-weight": "600",
     }));
   });
@@ -337,7 +349,7 @@ function scoreChart(mount, data, game) {
 
   function moveTo(idx, clientX, clientY) {
     idx = Math.max(0, Math.min(n - 1, idx));
-    const px = x(idx);
+    const px = x(xVals[idx]);
     crosshair.setAttribute("x1", px.toFixed(1));
     crosshair.setAttribute("x2", px.toFixed(1));
     crosshair.setAttribute("visibility", "visible");
@@ -353,6 +365,18 @@ function scoreChart(mount, data, game) {
     if (clientX !== undefined) showTooltip(html, clientX, clientY);
   }
 
+  // nearest event to a pixel position -- not a uniform division, since
+  // points are spaced by elapsed time (Fox) rather than always by index
+  function nearestIdx(localX) {
+    const value = xMin + (localX - margin.left) / plotW * (xMax - xMin);
+    let best = 0, bestDist = Infinity;
+    for (let i = 0; i < n; i++) {
+      const d = Math.abs(xVals[i] - value);
+      if (d < bestDist) { bestDist = d; best = i; }
+    }
+    return best;
+  }
+
   const hitRect = svg("rect", {
     x: margin.left, y: margin.top, width: plotW, height: plotH, fill: "transparent",
   });
@@ -360,8 +384,7 @@ function scoreChart(mount, data, game) {
     const rect = root.getBoundingClientRect();
     const scale = W / rect.width;
     const localX = (ev.clientX - rect.left) * scale;
-    const idx = Math.round((localX - margin.left) / plotW * (n - 1));
-    moveTo(idx, ev.clientX, ev.clientY);
+    moveTo(nearestIdx(localX), ev.clientX, ev.clientY);
   });
   hitRect.addEventListener("pointerleave", () => {
     crosshair.setAttribute("visibility", "hidden");
@@ -381,7 +404,8 @@ function scoreChart(mount, data, game) {
     else if (ev.key === "End") focusIdx = n - 1;
     else return;
     const rect = root.getBoundingClientRect();
-    const px = x(Math.max(0, Math.min(n - 1, focusIdx))) / W * rect.width + rect.left;
+    const clamped = Math.max(0, Math.min(n - 1, focusIdx));
+    const px = x(xVals[clamped]) / W * rect.width + rect.left;
     const py = rect.top + rect.height / 2;
     moveTo(focusIdx, px, py);
   });
@@ -435,17 +459,32 @@ function espnScoreSeries(wp) {
 function foxScoreSeries(fox) {
   const mismatch = fox.meta.final.home !== fox.meta.box_score_final.home
     || fox.meta.final.away !== fox.meta.box_score_final.away;
+  const clockCell = (i) => {
+    const clock = fox.clock_display[i];
+    if (!clock) return i === 0 ? "" : "OT";
+    return fox.clock_pinned[i] ? `${clock} (PAT, same as TD)` : clock;
+  };
   return {
     n: fox.n,
     home: fox.home_score_clean,
     away: fox.away_score_clean,
+    x: fox.elapsed_seconds,
     period_starts: fox.meta.period_starts,
     score_changes: fox.meta.score_changes,
-    subtitle: (i) => fox.evidence[i] || (i === 0 ? "Pregame" : ""),
-    ariaLabel: `Fox score progression, ${fox.n} scoring events`,
+    subtitle: (i) => {
+      const clock = fox.clock_display[i];
+      const evidence = fox.evidence[i] || (i === 0 ? "Pregame" : "");
+      if (!clock) return evidence;
+      const pinned = fox.clock_pinned[i] ? " (same clock as TD)" : "";
+      return `${clock}${pinned} · ${evidence}`;
+    },
+    ariaLabel: `Fox score progression, ${fox.n} scoring events, time-aligned`,
     unitLabel: `${fox.n} scoring events`,
     indexLabel: "Step #",
-    tableColumns: [{ header: "Play", cell: (i) => fox.evidence[i] || "" }],
+    tableColumns: [
+      { header: "Clock", cell: clockCell },
+      { header: "Play", cell: (i) => fox.evidence[i] || "" },
+    ],
     note: mismatch
       ? `Note: Fox's own final score (${fox.meta.final.away}–${fox.meta.final.home}) disagrees with ` +
         `the box score (${fox.meta.box_score_final.away}–${fox.meta.box_score_final.home}) -- ` +

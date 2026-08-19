@@ -109,6 +109,68 @@ def parse_header(payload):
     }
 
 
+def _clock_remaining_seconds(time_of_play):
+    """'11:06' -> 666 (seconds left in the period). None if unparsable."""
+    if not time_of_play:
+        return None
+    m = re.match(r"^(\d+):(\d{2})$", time_of_play.strip())
+    if not m:
+        return None
+    return int(m.group(1)) * 60 + int(m.group(2))
+
+
+def _regulation_elapsed_seconds(period, time_of_play):
+    """Elapsed seconds since kickoff, periods 1-4 only (15:00 quarters).
+    Returns None for OT (period >= 5, where Fox's clock is always '0:00' --
+    real CFB overtime has no game clock) or an unparsable/missing period."""
+    if period is None or period < 1 or period > 4:
+        return None
+    remaining = _clock_remaining_seconds(time_of_play)
+    if remaining is None:
+        return None
+    return (period - 1) * 900 + (900 - remaining)
+
+
+def _assign_elapsed_seconds(steps):
+    """
+    Attach elapsed_seconds (x-axis position for the time-aligned score chart)
+    to each step, in place.
+
+    Regulation: derived from the play's own period/time_of_play. OT: Fox
+    logs '0:00' for every OT play (there's no real game clock in CFB
+    overtime), so OT steps get a synthetic 3600 + (period-5)*100 + counter
+    position instead -- same convention the ESPN/win-probability side uses
+    for its own synthetic OT clock.
+
+    PAT/two-point tries are pinned to their touchdown's elapsed_seconds
+    rather than using their own (later-logged) time_of_play: the real game
+    clock is stopped for the whole try attempt, so the few seconds of drift
+    Fox logs between the TD's play and the try's play is a logging artifact,
+    not a clock change. Detected as: this step's delta is 1 or 2 (PAT or
+    two-point try) and the immediately preceding step is a touchdown (delta
+    6) by the same team -- a real safety (also delta 2) never immediately
+    follows that same team's own touchdown, so this doesn't collide with it.
+    """
+    ot_counters = {}
+    for step in steps:
+        period = step["period_number"]
+        elapsed = _regulation_elapsed_seconds(period, step.get("time_of_play"))
+        if elapsed is None:
+            ot_period = period if period is not None and period >= 5 else 5
+            ot_counters[ot_period] = ot_counters.get(ot_period, 0) + 1
+            elapsed = 3600 + (ot_period - 5) * 100 + ot_counters[ot_period]
+        step["elapsed_seconds"] = elapsed
+        step["clock_pinned"] = False
+
+    for i, step in enumerate(steps):
+        if i == 0 or step["delta"] not in (1, 2):
+            continue
+        prev = steps[i - 1]
+        if prev["team"] == step["team"] and prev["delta"] == 6:
+            step["elapsed_seconds"] = prev["elapsed_seconds"]
+            step["clock_pinned"] = True
+
+
 def _period_from_section_title(title):
     """
     '1ST QUARTER'..'4TH QUARTER' -> 1..4. 'OVERTIME' -> 5, 'nTH OVERTIME' ->
@@ -204,7 +266,7 @@ def build_score_sequence(play_rows):
     running = {"away": 0, "home": 0}
     last_seq = {"away": 0, "home": 0}
 
-    def observe(side, value, seq, exact, period, evidence):
+    def observe(side, value, seq, exact, period, evidence, time_of_play):
         if value is None:
             return
         if value < running[side]:
@@ -224,6 +286,7 @@ def build_score_sequence(play_rows):
             "seq_hi": seq,
             "period_number": period,
             "evidence": evidence,
+            "time_of_play": time_of_play,
         })
         running[side] = value
         last_seq[side] = seq
@@ -237,11 +300,11 @@ def build_score_sequence(play_rows):
         last = group_rows[-1]
         observe(
             "away", last["group_away_score"], last["play_sequence"], False,
-            last["period_number"], f"[drive end] {last['group_title']}",
+            last["period_number"], f"[drive end] {last['group_title']}", last["time_of_play"],
         )
         observe(
             "home", last["group_home_score"], last["play_sequence"], False,
-            last["period_number"], f"[drive end] {last['group_title']}",
+            last["period_number"], f"[drive end] {last['group_title']}", last["time_of_play"],
         )
 
     for row in play_rows:
@@ -253,12 +316,13 @@ def build_score_sequence(play_rows):
 
         observe(
             "away", row["away_score"], row["play_sequence"], bool(row["away_score_change"]),
-            row["period_number"], row["play_description"],
+            row["period_number"], row["play_description"], row["time_of_play"],
         )
         observe(
             "home", row["home_score"], row["play_sequence"], bool(row["home_score_change"]),
-            row["period_number"], row["play_description"],
+            row["period_number"], row["play_description"], row["time_of_play"],
         )
     flush_group()
 
+    _assign_elapsed_seconds(steps)
     return steps

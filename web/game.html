@@ -134,7 +134,7 @@ function renderScoreCard(detail, g) {
     chartMount.innerHTML = "";
     sub.textContent = key === "espn"
       ? `Running score across ${detail.wp.n} plays, from ESPN's play-by-play.`
-      : `Running score across ${detail.fox_score.n} scoring events, from Fox's play-by-play.`;
+      : `Running score across ${detail.fox_score.n} scoring events, from Fox's play-by-play -- time-aligned by game clock.`;
     scoreChart(chartMount, sources[key](), g);
   }
 
