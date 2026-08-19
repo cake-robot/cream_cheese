@@ -90,7 +90,7 @@ LOCK_PATH = "data/live.lock"
 # before the next scheduled kickoff. See _schedule_interval.
 
 # How early before a scheduled kickoff to switch to the fast cadence.
-LIVE_KICKOFF_LEAD_SECONDS = 15 * 60
+LIVE_KICKOFF_LEAD_SECONDS = 1 * 60
 
 # How long past a scheduled kickoff a game the scoreboard still calls 'pre'
 # is treated as possibly underway. ESPN routinely lags the real kickoff by a
@@ -109,7 +109,7 @@ LIVE_IDLE_INTERVAL_SECONDS = 30 * 60
 
 # `caffeinate` is asserted on a deliberately wider window than the fast poll
 # cadence: an assertion can only *keep* the machine awake, never wake it, so
-# by the time a kickoff is 15 minutes out it is already too late if the Mac
+# by the time a kickoff is a minute out it is already too late if the Mac
 # idle-slept that afternoon. Three hours ahead of the day's first kickoff
 # reproduces roughly what the old unconditional `caffeinate -i` under a
 # 09:00 StartCalendarInterval did on a gameday, without holding the machine

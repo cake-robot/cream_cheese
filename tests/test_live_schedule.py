@@ -81,7 +81,7 @@ class TestScheduleInterval(unittest.TestCase):
         kick = self.now + timedelta(minutes=25)
         _insert_game(self.conn, "g1", _fmt(kick), "pre")
         seconds, hold_awake, _ = live._schedule_interval(self.conn, now=self.now)
-        self.assertEqual(seconds, 600.0)  # 25min - 15min lead
+        self.assertEqual(seconds, timedelta(minutes=25).total_seconds() - live.LIVE_KICKOFF_LEAD_SECONDS)
         self.assertTrue(hold_awake)  # inside the 3h caffeinate lead
 
     def test_kickoff_two_hours_out_hits_the_idle_cap(self):
