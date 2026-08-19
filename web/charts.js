@@ -591,6 +591,12 @@ function contributionBars(mount, metricsMap, registry, applicableWeight, uwLossB
   const base = applicableWeight ? weightedSum / applicableWeight : 0;
   const total = base + bonus;
   const excludedNames = naRows.map((r) => r.label).join(", ");
+  // Track width is scaled to the heaviest metric's weight, not to
+  // applicableWeight (7+ metrics) -- a weight-1.0 metric's box should read
+  // as "this is the biggest a bar gets," not a sliver 1/7th of the row.
+  // A weight-0.5 metric still renders at half that box, so relative
+  // proportion between metrics survives; only the absolute scale changes.
+  const maxWeight = Math.max(...registry.map((m) => m.weight));
 
   const wrap = el("div", {});
 
@@ -614,7 +620,7 @@ function contributionBars(mount, metricsMap, registry, applicableWeight, uwLossB
       if (rich) { row.appendChild(el("div")); row.appendChild(el("div")); }
       row.appendChild(el("div", { class: "contrib-value", text: "—" }));
     } else {
-      const trackPct = (r.weight / applicableWeight) * 100;
+      const trackPct = (r.weight / maxWeight) * 100;
       const meter = el("div", { class: "contrib-meter" });
       meter.style.width = `${trackPct}%`;
       const fill = el("i");
