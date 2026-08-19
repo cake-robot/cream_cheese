@@ -402,18 +402,26 @@ function scoreChart(mount, data, game) {
     const period = data.period_starts.slice().reverse().find((p) => p.i <= tdIdx);
     const sub = data.subtitle(tdIdx);
 
+    // the try is a quiet footnote under the touchdown, not a second
+    // headline -- dimmed like any other secondary line, except the word
+    // that actually decided good/failed, which stays at full strength
     let extra = "";
     const tryInfo = data.tryInfo && data.tryInfo(tdIdx);
-    if (tryInfo && tryInfo.result) {
+    if (tryInfo && tryInfo.result && tryInfo.evidence) {
       const color = tryInfo.result === "good" ? "#1f8f4d" : "var(--critical)";
-      let line = tryInfo.evidence || "";
-      if (tryInfo.decisive && line.includes(tryInfo.decisive)) {
-        line = line.replace(
-          tryInfo.decisive,
-          `<span style="color:${color};font-weight:600">${tryInfo.decisive}</span>`,
-        );
+      const text = tryInfo.evidence;
+      let line;
+      const di = tryInfo.decisive ? text.indexOf(tryInfo.decisive) : -1;
+      if (di !== -1) {
+        const before = text.slice(0, di);
+        const after = text.slice(di + tryInfo.decisive.length);
+        line = `<span class="dim">+ ${before}</span>` +
+          `<span style="color:${color};font-weight:600">${tryInfo.decisive}</span>` +
+          `<span class="dim">${after}</span>`;
+      } else {
+        line = `<span class="dim">+ ${text}</span>`;
       }
-      if (line) extra = `<div class="tt-sub">${line}</div>`;
+      extra = `<div class="tt-sub">${line}</div>`;
     }
 
     const html = `<div class="tt-value">${awayAbbr} ${away[idx]} – ${homeAbbr} ${home[idx]}</div>` +

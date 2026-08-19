@@ -389,6 +389,9 @@ table.stats-table th { color: var(--ink-muted); font-weight: 600; font-size: 11.
 }
 #viz-tooltip .tt-value { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
 #viz-tooltip .tt-sub { opacity: .8; }
+/* wraps just the plain-text part of a footnote line -- never the colored
+   good/failed span inside it, which should stay at full strength */
+#viz-tooltip .tt-sub .dim { opacity: .55; }
 
 .viz { color-scheme: inherit; }
 .viz svg { display: block; width: 100%; height: auto; overflow: visible; }
