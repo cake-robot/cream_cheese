@@ -255,6 +255,12 @@ def _games_in_scope(conn, season, week, season_type=2):
             WHERE season_year = ? AND week = ? AND season_type = ?
               AND game_id IN (SELECT game_id FROM fox_games)
         """, (season, week, season_type))]
+    if season is not None:
+        return [r[0] for r in conn.execute("""
+            SELECT game_id FROM games
+            WHERE season_year = ? AND season_type = ?
+              AND game_id IN (SELECT game_id FROM fox_games)
+        """, (season, season_type))]
     return [r[0] for r in conn.execute("SELECT game_id FROM fox_games")]
 
 

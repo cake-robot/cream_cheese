@@ -73,6 +73,12 @@ def sync_team_crosswalk(conn, season=None, week=None, season_type=2):
         rows = conn.execute("SELECT team_id, abbreviation, school, name FROM teams").fetchall()
 
     for r in rows:
+        if not r["school"]:
+            # All-star/exhibition constructs (Senior Bowl East/West, HBCU
+            # all-star Gaither/Robinson, etc.) and the synthetic -1 TBD
+            # placeholder have no real school -- nothing for Fox to match
+            # against, and espn_school is NOT NULL.
+            continue
         db.seed_team_crosswalk(conn, r["team_id"], r["abbreviation"], r["school"], r["name"])
     conn.commit()
 
@@ -217,6 +223,11 @@ def match_all_games(conn, season=None, week=None, season_type=2):
         rows = conn.execute(
             "SELECT game_id FROM games WHERE season_year = ? AND week = ? AND season_type = ?",
             (season, week, season_type),
+        ).fetchall()
+    elif season is not None:
+        rows = conn.execute(
+            "SELECT game_id FROM games WHERE season_year = ? AND season_type = ?",
+            (season, season_type),
         ).fetchall()
     else:
         rows = conn.execute("SELECT game_id FROM games").fetchall()
