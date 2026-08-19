@@ -2287,8 +2287,21 @@ def api_spoilers_search():
     if game_id:
         where_sql, params = "game_id = ?", [game_id]
     elif q:
-        like = f"%{q}%"
-        where_sql, params = "(home_team_name LIKE ? OR away_team_name LIKE ? OR venue_name LIKE ?)", [like, like, like]
+        # Split on whitespace and AND the terms together (each term OR'd
+        # across all searchable fields) so "PSU OSU" requires both
+        # acronyms present -- one per team, in either home/away slot --
+        # rather than matching either team alone. A single-term query
+        # (the common case) degenerates to the old OR-only behavior.
+        terms = q.split()
+        clauses, params = [], []
+        for term in terms:
+            like = f"%{term}%"
+            clauses.append(
+                "(home_team_abbr LIKE ? OR away_team_abbr LIKE ? OR "
+                "home_team_name LIKE ? OR away_team_name LIKE ? OR venue_name LIKE ?)"
+            )
+            params.extend([like, like, like, like, like])
+        where_sql = " AND ".join(clauses)
     else:
         return jsonify({"results": []})
 
