@@ -623,14 +623,17 @@ function contributionBars(mount, metricsMap, registry, applicableWeight, uwLossB
       const trackPct = (r.weight / maxWeight) * 100;
       const meter = el("div", { class: "contrib-meter" });
       meter.style.width = `${trackPct}%`;
-      const fill = el("i");
+      const fill = el("i", { class: rich && r.v.at_cap ? "cap" : "" });
       fill.style.width = `${applicableWeight ? (r.v.weighted / (r.weight)) * 100 : 0}%`;
       meter.appendChild(fill);
-      const chip = r.v.at_cap ? el("span", { class: "chip warn", text: "⚠ AT CAP" }) : null;
       row.title = `raw ${r.v.raw.toFixed(3)} / cap ${r.cap ?? "—"} → norm ${r.v.norm.toFixed(3)} × weight ${r.weight} = ${r.v.weighted.toFixed(3)}. ${r.description}`;
 
       if (rich) {
-        row.appendChild(el("div", { class: "meter-cell" }, [meter, chip]));
+        // Rich layout drops the "⚠ AT CAP" chip -- it used to share a flex
+        // row with the meter, shrinking the bar to make room for it. A
+        // capped bar's fill turns var(--warning) instead (set above), so
+        // width stays purely a function of the score.
+        row.appendChild(el("div", { class: "meter-cell" }, meter));
         row.appendChild(el("div", { class: "contrib-value", text: `+${r.v.weighted.toFixed(3)}` }));
         row.appendChild(el("div", { class: "op", text: `÷${applicableWeight}` }));
         const contribution = r.v.weighted / applicableWeight;
@@ -641,6 +644,7 @@ function contributionBars(mount, metricsMap, registry, applicableWeight, uwLossB
         row.appendChild(cbar);
         row.appendChild(el("div", { class: "contrib-value", text: contribution.toFixed(3) }));
       } else {
+        const chip = r.v.at_cap ? el("span", { class: "chip warn", text: "⚠ AT CAP" }) : null;
         row.appendChild(el("div", {}, meter));
         row.appendChild(el("div", {}, chip));
         row.appendChild(el("div", { class: "contrib-value", text: `+${r.v.weighted.toFixed(3)}` }));
