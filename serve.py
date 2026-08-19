@@ -1470,9 +1470,17 @@ def api_games():
 
     q = args.get("q", "").strip()
     if q:
-        like = f"%{q}%"
-        where_schedule.append("(g.home_team_name LIKE ? OR g.away_team_name LIKE ? OR g.venue_name LIKE ?)")
-        params_schedule.extend([like, like, like])
+        # Split on whitespace so each term is AND'd in (OR'd across fields
+        # per term) -- "PSU OSU" then requires both acronyms present, one
+        # per team, rather than matching either team alone. Same fix as
+        # api_spoilers_search().
+        for term in q.split():
+            like = f"%{term}%"
+            where_schedule.append(
+                "(g.home_team_abbr LIKE ? OR g.away_team_abbr LIKE ? OR "
+                "g.home_team_name LIKE ? OR g.away_team_name LIKE ? OR g.venue_name LIKE ?)"
+            )
+            params_schedule.extend([like, like, like, like, like])
 
     where_outcome = []
     params_outcome = []
