@@ -219,16 +219,22 @@ function wpChart(mount, wp, game) {
  * markers stacked on the same pixel -- the latter both looked redundant
  * and made the second one permanently unreachable by mouse, since the
  * nearest-point hover test always resolved the tie to whichever index
- * came first.
+ * came first. The tooltip for a merged marker always describes the
+ * touchdown first (never the try, even though hover ties resolve to the
+ * try's own index) -- see tdIdx in moveTo().
  *
  * Takes a source-agnostic `data` shape rather than the raw API payload,
  * so the same renderer draws both the ESPN and Fox score progressions --
  * see espnScoreSeries()/foxScoreSeries() below for the two adapters.
  * data = { n, home, away, x?, period_starts, score_changes, subtitle(idx),
- *          evidenceText?(idx), ariaLabel, unitLabel,
+ *          tryInfo?(idx), ariaLabel, unitLabel,
  *          tableColumns: [{header, cell(idx)}] }
- * evidenceText is optional, used only to caption a merged marker's
- * tooltip with what each grouped step actually was.
+ * tryInfo is optional (Fox only) -- for a touchdown index, describes its
+ * PAT/two-point try's outcome even when the try FAILED and so never
+ * produced its own score_changes entry: { result: 'good'|'failed'|null,
+ * evidence: string, decisive: string|null }. `decisive` is the exact
+ * substring of `evidence` that decided the result, highlighted alone
+ * rather than coloring the whole line.
  * ------------------------------------------------------------------- */
 function scoreChart(mount, data, game) {
   const W = 760, H = 220;
@@ -388,15 +394,28 @@ function scoreChart(mount, data, game) {
       crossDots[i].setAttribute("cy", y(s.values[idx]).toFixed(1));
       crossDots[i].setAttribute("visibility", "visible");
     });
-    const period = data.period_starts.slice().reverse().find((p) => p.i <= idx);
-    const sub = data.subtitle(idx);
-    let extra = "";
+    // Describe the touchdown, never the try, as the primary line -- for a
+    // merged group that's the group's FIRST member regardless of which
+    // (tie-broken-to-last) index the crosshair actually landed on.
     const group = groupByRepIdx.get(idx);
-    if (group && data.evidenceText) {
-      const totalDelta = group.members.reduce((sum, m) => sum + m.delta, 0);
-      const evid = group.members.map((m) => data.evidenceText(m.i)).filter(Boolean).join(" + ");
-      if (evid) extra = `<div class="tt-sub">+${totalDelta} (${evid})</div>`;
+    const tdIdx = group ? group.members[0].i : idx;
+    const period = data.period_starts.slice().reverse().find((p) => p.i <= tdIdx);
+    const sub = data.subtitle(tdIdx);
+
+    let extra = "";
+    const tryInfo = data.tryInfo && data.tryInfo(tdIdx);
+    if (tryInfo && tryInfo.result) {
+      const color = tryInfo.result === "good" ? "#1f8f4d" : "var(--critical)";
+      let line = tryInfo.evidence || "";
+      if (tryInfo.decisive && line.includes(tryInfo.decisive)) {
+        line = line.replace(
+          tryInfo.decisive,
+          `<span style="color:${color};font-weight:600">${tryInfo.decisive}</span>`,
+        );
+      }
+      if (line) extra = `<div class="tt-sub">${line}</div>`;
     }
+
     const html = `<div class="tt-value">${awayAbbr} ${away[idx]} – ${homeAbbr} ${home[idx]}</div>` +
       `<div class="tt-sub">${period ? period.label : ""}${sub ? " · " + sub : ""}</div>` + extra;
     if (clientX !== undefined) showTooltip(html, clientX, clientY);
@@ -511,13 +530,15 @@ function foxScoreSeries(fox) {
     period_starts: fox.meta.period_starts,
     score_changes: fox.meta.score_changes,
     subtitle: (i) => {
+      // scoreChart() only ever calls this with a touchdown's (or other
+      // ungrouped play's) own index, never a merged-in try's -- so there's
+      // no "(same clock as TD)" case to annotate here; see tryInfo below
+      // for the try itself.
       const clock = fox.clock_display[i];
       const evidence = fox.evidence[i] || (i === 0 ? "Pregame" : "");
-      if (!clock) return evidence;
-      const pinned = fox.clock_pinned[i] ? " (same clock as TD)" : "";
-      return `${clock}${pinned} · ${evidence}`;
+      return clock ? `${clock} · ${evidence}` : evidence;
     },
-    evidenceText: (i) => fox.evidence[i] || "",
+    tryInfo: (i) => fox.try_info[i] || null,
     ariaLabel: `Fox score progression, ${fox.n} scoring events, time-aligned`,
     unitLabel: `${fox.n} scoring events`,
     indexLabel: "Step #",

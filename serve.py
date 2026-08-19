@@ -986,7 +986,7 @@ def build_fox_score_payload(conn, game_id, game_row):
 
     steps = conn.execute(
         "SELECT step_number, team, new_value, delta, exact, period_number, evidence, "
-        "elapsed_seconds, clock_pinned "
+        "elapsed_seconds, clock_pinned, try_type, try_result, try_evidence, try_decisive "
         "FROM fox_score_sequence WHERE fox_event_id=? ORDER BY step_number",
         (fox_event_id,),
     ).fetchall()
@@ -995,6 +995,7 @@ def build_fox_score_payload(conn, game_id, game_row):
     home_score, away_score = [0], [0]
     period_filled, evidence, exact_flags = [0], [None], [True]
     elapsed_seconds, clock_pinned = [0], [False]
+    try_info = [None]
     score_changes = []
     h, a = 0, 0
     for s in steps:
@@ -1012,6 +1013,16 @@ def build_fox_score_payload(conn, game_id, game_row):
             s["elapsed_seconds"] if s["elapsed_seconds"] is not None else elapsed_seconds[-1]
         )
         clock_pinned.append(bool(s["clock_pinned"]))
+        try_info.append(
+            {
+                "type": s["try_type"],
+                "result": s["try_result"],
+                "evidence": s["try_evidence"],
+                "decisive": s["try_decisive"],
+            }
+            if s["try_type"] is not None
+            else None
+        )
         score_changes.append({
             "i": len(home_score) - 1, "home": h, "away": a,
             "delta": s["delta"], "team": espn_team, "exact": bool(s["exact"]),
@@ -1036,6 +1047,7 @@ def build_fox_score_payload(conn, game_id, game_row):
         "elapsed_seconds": elapsed_seconds,
         "clock_display": clock_display,
         "clock_pinned": clock_pinned,
+        "try_info": try_info,
         "meta": {
             "period_starts": period_starts,
             "score_changes": score_changes,

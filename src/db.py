@@ -155,6 +155,12 @@ CREATE TABLE IF NOT EXISTS fox_score_sequence (
     elapsed_seconds  INTEGER,             -- x-axis position for the time-aligned score chart;
                                            -- synthetic in OT (see fox._assign_elapsed_seconds)
     clock_pinned     INTEGER NOT NULL DEFAULT 0, -- 1 = a PAT/2pt try pinned to its TD's clock
+    try_type         TEXT,                -- TD steps only: 'pat' | 'two_point' | NULL (no try found)
+    try_result       TEXT,                -- 'good' | 'failed' | NULL (found but Fox's text is ambiguous)
+    try_evidence     TEXT,                -- the try's own play_description, incl. missed/blocked tries,
+                                           -- which never get their own step (see fox._attach_try_results)
+    try_decisive     TEXT,                -- exact substring of try_evidence that decided try_result,
+                                           -- for highlighting just that part rather than the whole line
     PRIMARY KEY (fox_event_id, step_number)
 );
 
@@ -307,6 +313,14 @@ def init_db(path=None):
         conn.execute("ALTER TABLE fox_score_sequence ADD COLUMN elapsed_seconds INTEGER")
     if "clock_pinned" not in fox_seq_cols:
         conn.execute("ALTER TABLE fox_score_sequence ADD COLUMN clock_pinned INTEGER NOT NULL DEFAULT 0")
+    if "try_type" not in fox_seq_cols:
+        conn.execute("ALTER TABLE fox_score_sequence ADD COLUMN try_type TEXT")
+    if "try_result" not in fox_seq_cols:
+        conn.execute("ALTER TABLE fox_score_sequence ADD COLUMN try_result TEXT")
+    if "try_evidence" not in fox_seq_cols:
+        conn.execute("ALTER TABLE fox_score_sequence ADD COLUMN try_evidence TEXT")
+    if "try_decisive" not in fox_seq_cols:
+        conn.execute("ALTER TABLE fox_score_sequence ADD COLUMN try_decisive TEXT")
 
     game_cols = {row[1] for row in conn.execute("PRAGMA table_info(games)")}
     if "event_note" not in game_cols:
@@ -641,11 +655,11 @@ def replace_fox_score_sequence(conn, fox_event_id, steps):
         INSERT INTO fox_score_sequence (
             fox_event_id, step_number, team, new_value, delta,
             exact, seq_lo, seq_hi, period_number, evidence,
-            elapsed_seconds, clock_pinned
+            elapsed_seconds, clock_pinned, try_type, try_result, try_evidence, try_decisive
         ) VALUES (
             :fox_event_id, :step_number, :team, :new_value, :delta,
             :exact, :seq_lo, :seq_hi, :period_number, :evidence,
-            :elapsed_seconds, :clock_pinned
+            :elapsed_seconds, :clock_pinned, :try_type, :try_result, :try_evidence, :try_decisive
         )
     """, [{**s, "fox_event_id": fox_event_id} for s in steps])
 

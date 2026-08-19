@@ -171,6 +171,82 @@ def _assign_elapsed_seconds(steps):
             step["clock_pinned"] = True
 
 
+def _is_kickoff(text):
+    return "kicks" in text and "yards from" in text
+
+
+def _classify_try(text):
+    """
+    Classify a single play's own text as a PAT/two-point try, or not one at
+    all. Returns (try_type, try_result, decisive_phrase):
+      try_type   -- 'pat' | 'two_point' | None (not a try attempt)
+      try_result -- 'good' | 'failed' | None (a try attempt, but Fox's text
+                    doesn't contain a phrase this recognizes -- rare, e.g. a
+                    penalty truncating the sentence before the outcome word)
+      decisive_phrase -- the exact substring in `text` that decided
+                    try_result, so a caller can highlight just that part
+                    instead of the whole sentence. None when try_result is.
+
+    'and it is good' covers a defense returning an intercepted two-point
+    try the length of the field -- Fox doesn't tag that with the usual
+    SUCCEEDS/FAILS. 'is missed'/'is blocked' cover both apply to PATs;
+    two-point tries only ever use SUCCEEDS/FAILS in this data.
+    """
+    if text.startswith("TWO-POINT CONVERSION ATTEMPT"):
+        for phrase in ("SUCCEEDS", "and it is good"):
+            if phrase in text:
+                return "two_point", "good", phrase
+        if "FAILS" in text:
+            return "two_point", "failed", "FAILS"
+        return "two_point", None, None
+    if "extra point" in text:
+        if "is good" in text:
+            return "pat", "good", "is good"
+        for phrase in ("is no good", "is blocked", "is missed"):
+            if phrase in text:
+                return "pat", "failed", phrase
+        return "pat", None, None
+    return None, None, None
+
+
+def _attach_try_results(steps, play_rows):
+    """
+    After each touchdown, look ahead in the raw play stream for its
+    PAT/two-point try and record the result on the TD step -- including a
+    FAILED try, which never produces its own score step (build_score_
+    sequence only records plays that changed the score, and a missed try
+    doesn't).
+
+    Bounded by the next kickoff (a try always happens before the ensuing
+    kickoff) or another touchdown, so a TD with no try logged by Fox at all
+    -- a real gap in Fox's feed, not rare (~1150 cases dataset-wide) -- is
+    correctly left unattributed instead of borrowing a later drive's PAT.
+    play_rows is 1:1 with play_sequence (play_rows[i]['play_sequence'] ==
+    i + 1), so a TD's own play_sequence is a direct list index into the
+    plays right after it.
+    """
+    n_plays = len(play_rows)
+    for step in steps:
+        step["try_type"] = None
+        step["try_result"] = None
+        step["try_evidence"] = None
+        step["try_decisive"] = None
+        if step["delta"] != 6:
+            continue
+        td_seq = step["seq_hi"]
+        for idx in range(td_seq, min(td_seq + 25, n_plays)):
+            desc = play_rows[idx]["play_description"] or ""
+            if "TOUCHDOWN" in desc or _is_kickoff(desc):
+                break
+            try_type, try_result, decisive = _classify_try(desc)
+            if try_type:
+                step["try_type"] = try_type
+                step["try_result"] = try_result
+                step["try_evidence"] = desc
+                step["try_decisive"] = decisive
+                break
+
+
 def _period_from_section_title(title):
     """
     '1ST QUARTER'..'4TH QUARTER' -> 1..4. 'OVERTIME' -> 5, 'nTH OVERTIME' ->
@@ -325,4 +401,5 @@ def build_score_sequence(play_rows):
     flush_group()
 
     _assign_elapsed_seconds(steps)
+    _attach_try_results(steps, play_rows)
     return steps
