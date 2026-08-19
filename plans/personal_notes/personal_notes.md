@@ -17,15 +17,21 @@
    - **Multiple swings**, not just one -- a final minute with two or three
      lead changes should probably score higher than one with a single
      go-ahead score, even if both technically "qualify" today.
-   - **Speed of the swing** -- how *late* within the window the decisive
-     score lands (e.g. Clemson/SMU, ACCCG 2024 -- decided on a play with
-     almost no time left), as distinct from magnitude. A go-ahead score
-     with 55 seconds left and one with 3 seconds left both currently count
-     the same.
+   - ~~**Speed of the swing**~~ -- done 2026-08-19: window widened from the
+     final 1 minute to the final 5 minutes (`CLUTCH_FINISH_WINDOW_SECONDS`),
+     with credit scaling linearly by how late in the window the decisive
+     score lands -- `CLUTCH_FINISH_MIN_FRACTION` (0.20) of the tier value at
+     5:00 left, ramping to the full value at 0:00 left. Still open: the
+     scaling itself is a flat linear ramp as a first pass -- worth
+     revisiting with non-linearity (e.g. an exponential/convex curve so a
+     3-second-left score is disproportionately more valuable than a
+     55-second-left one) or a piecewise slope (steeper in the final minute
+     than in minutes 2-5). No benchmark-game validation done yet on the
+     curve shape itself.
    Open question: are these two different metrics, or two terms folded
    into one? Needs the same kind of benchmark-game validation the
-   comeback_erosion work used before wiring anything into `scoring.py`'s
-   `METRICS`.
+   comeback_erosion work used before wiring anything else into
+   `scoring.py`'s `METRICS`.
 
 
  ## Things I don't think I care about

@@ -23,15 +23,21 @@ UPSET_RISK_POWER = 2.5
 # --- late_volatility: period_number >= LATE_PERIOD_THRESHOLD counts as "late game" (4 = Q4 and any OT) ---
 LATE_PERIOD_THRESHOLD = 4
 
-# --- clutch_finish: decisive score within the final minute of regulation ---
+# --- clutch_finish: decisive score within the final minutes of regulation ---
 REGULATION_SECONDS = 3600
-CLUTCH_FINISH_WINDOW_SECONDS = 60
+CLUTCH_FINISH_WINDOW_SECONDS = 300
 MAX_CLUTCH_FINISH = 1.5
 CLUTCH_FINISH_FIELD_GOAL_VALUE = 1.0
 CLUTCH_FINISH_NON_FIELD_GOAL_VALUE = 1.5
+# Credit scales linearly across the window: CLUTCH_FINISH_MIN_FRACTION at the
+# window's start (5:00 left) up to 1.0 at the window's end (0:00 left). Chosen
+# as a first pass -- worth revisiting with a non-linear curve or a piecewise
+# slope (e.g. steeper in the final minute than in minutes 2-5) if a flat
+# linear ramp under- or over-credits scores that land mid-window.
+CLUTCH_FINISH_MIN_FRACTION = 0.20
 # Any game that reaches overtime carries some late tension even without a
-# final-minute swing -- below both real-event tiers above (0.7/1.5 = 0.47
-# normalized), but above a flat zero.
+# qualifying swing in the window -- below both real-event tiers above
+# (0.7/1.5 = 0.47 normalized), but above a flat zero.
 CLUTCH_FINISH_OT_FLOOR = 0.7
 
 # --- comeback_erosion: how far a side's coin-flip-normalized WP must have
@@ -71,11 +77,14 @@ def late_volatility(wp_rows):
 
 def clutch_finish(wp_rows):
     """
-    Credit for the final minute of regulation being genuinely live: a team
-    taking the lead (breaking a tie or overcoming a prior deficit), OR the
-    trailing/tied team tying the game *and that tie holding through the end
-    of regulation* (i.e. it forces overtime). Both are worth more if the
-    decisive score isn't a field goal.
+    Credit for the final CLUTCH_FINISH_WINDOW_SECONDS of regulation being
+    genuinely live: a team taking the lead (breaking a tie or overcoming a
+    prior deficit), OR the trailing/tied team tying the game *and that tie
+    holding through the end of regulation* (i.e. it forces overtime). Both
+    are worth more if the decisive score isn't a field goal, and both scale
+    linearly by how late in the window the score landed -- a swing right at
+    the window's start (5:00 left) earns CLUTCH_FINISH_MIN_FRACTION of the
+    tier value, ramping up to the full value at 0:00 left.
 
     A score that pads a lead the scoring team already held doesn't count,
     and neither does a tie that gets broken again before regulation ends --
@@ -84,9 +93,9 @@ def clutch_finish(wp_rows):
     on its own merits as it's encountered).
 
     Every game that reaches overtime gets at least CLUTCH_FINISH_OT_FLOOR,
-    even with no qualifying swing in the final minute -- going to overtime
-    at all means regulation ended unresolved, which is real tension even
-    when the tying score happened earlier than the final minute.
+    even with no qualifying swing in the window -- going to overtime at all
+    means regulation ended unresolved, which is real tension even when the
+    tying score happened earlier than the window.
 
     Field-goal detection uses the score delta alone (a made FG is exactly 3
     points; nothing else scores exactly 3) rather than fetching play-type
@@ -97,7 +106,9 @@ def clutch_finish(wp_rows):
     home_score, away_score = 0, 0
     last_state = 0
     last_qualifying_delta = None
+    last_qualifying_elapsed = None
     is_ot = any(r["period_number"] is not None and r["period_number"] > 4 for r in wp_rows)
+    window_start = REGULATION_SECONDS - CLUTCH_FINISH_WINDOW_SECONDS
 
     for r in wp_rows:
         h, a = r["home_score"], r["away_score"]
@@ -122,7 +133,7 @@ def clutch_finish(wp_rows):
             period, elapsed = r["period_number"], r["clock_seconds_elapsed"]
             in_window = (
                 period == 4 and elapsed is not None
-                and elapsed >= REGULATION_SECONDS - CLUTCH_FINISH_WINDOW_SECONDS
+                and elapsed >= window_start
             )
             # A lead-take always qualifies if it's in the window. A
             # tie-transition only qualifies if the game actually went to
@@ -131,10 +142,15 @@ def clutch_finish(wp_rows):
             # win or tie, gets its own chance to qualify as it's reached).
             if in_window and (state != 0 or is_ot):
                 last_qualifying_delta = delta
+                last_qualifying_elapsed = elapsed
         last_state = state
 
     if last_qualifying_delta is not None:
-        return CLUTCH_FINISH_FIELD_GOAL_VALUE if last_qualifying_delta == 3 else CLUTCH_FINISH_NON_FIELD_GOAL_VALUE
+        base = CLUTCH_FINISH_FIELD_GOAL_VALUE if last_qualifying_delta == 3 else CLUTCH_FINISH_NON_FIELD_GOAL_VALUE
+        t = (last_qualifying_elapsed - window_start) / CLUTCH_FINISH_WINDOW_SECONDS
+        t = max(0.0, min(1.0, t))
+        fraction = CLUTCH_FINISH_MIN_FRACTION + (1.0 - CLUTCH_FINISH_MIN_FRACTION) * t
+        return base * fraction
     if is_ot:
         return CLUTCH_FINISH_OT_FLOOR
     return 0.0
