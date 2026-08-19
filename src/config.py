@@ -12,5 +12,5 @@ FOX_RATE_LIMIT_SECONDS = 2.0  # double ESPN's -- each call pulls the full ~200KB
 # Pass --fox-anchor explicitly for the first --fox-pull of 2026 (find a real
 # event ID from foxsports.com and confirm it resolves before trusting it as
 # a seed), then add the verified id here.
-FOX_SEASON_ANCHORS = {2025: 41258, 2024: 39500}
+FOX_SEASON_ANCHORS = {2025: 41258, 2024: 39500, 2023: 38022, 2022: 36349}  # 36349 verified 2022-09-03 (from a foxsports.com boxscore URL)
 FOX_SCAN_OVERRUN = 25  # consecutive out-of-window/missing IDs before the walk stops
