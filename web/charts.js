@@ -214,12 +214,21 @@ function wpChart(mount, wp, game) {
  * One shared y-axis (both lines are the same unit, points), stairsteps
  * rather than a smooth line because the value is genuinely constant
  * between scoring plays, markers only where the score actually changed.
+ * Consecutive same-team score_changes sharing an x (a PAT/2pt pinned to
+ * its touchdown) draw as ONE marker at the final value rather than two
+ * markers stacked on the same pixel -- the latter both looked redundant
+ * and made the second one permanently unreachable by mouse, since the
+ * nearest-point hover test always resolved the tie to whichever index
+ * came first.
  *
  * Takes a source-agnostic `data` shape rather than the raw API payload,
  * so the same renderer draws both the ESPN and Fox score progressions --
  * see espnScoreSeries()/foxScoreSeries() below for the two adapters.
  * data = { n, home, away, x?, period_starts, score_changes, subtitle(idx),
- *          ariaLabel, unitLabel, tableColumns: [{header, cell(idx)}] }
+ *          evidenceText?(idx), ariaLabel, unitLabel,
+ *          tableColumns: [{header, cell(idx)}] }
+ * evidenceText is optional, used only to caption a merged marker's
+ * tooltip with what each grouped step actually was.
  * ------------------------------------------------------------------- */
 function scoreChart(mount, data, game) {
   const W = 760, H = 220;
@@ -308,8 +317,29 @@ function scoreChart(mount, data, game) {
     }));
   });
 
-  // score-change markers, colored by the team that scored
+  // Group consecutive same-team score_changes that share an x (a PAT/2pt
+  // pinned to its touchdown's clock -- see foxScoreSeries) into one
+  // "scoring instant". A no-op for ESPN, whose x is always distinct
+  // ordinals: two markers on the same pixel were both visually redundant
+  // and, worse, made the second one unreachable by mouse (nearestIdx below
+  // always resolved the tie to whichever came first).
+  const scoreGroups = [];
   data.score_changes.forEach((sc) => {
+    const g = scoreGroups[scoreGroups.length - 1];
+    if (g && g.team === sc.team && xVals[g.members[g.members.length - 1].i] === xVals[sc.i]) {
+      g.members.push(sc);
+    } else {
+      scoreGroups.push({ team: sc.team, members: [sc] });
+    }
+  });
+  const groupByRepIdx = new Map();
+  scoreGroups.forEach((g) => {
+    if (g.members.length > 1) groupByRepIdx.set(g.members[g.members.length - 1].i, g);
+  });
+
+  // one marker per group, at its final (post-try) value
+  scoreGroups.forEach((g) => {
+    const sc = g.members[g.members.length - 1];
     const s = sc.team === "home" ? series[1] : series[0];
     root.appendChild(svg("circle", {
       cx: x(xVals[sc.i]).toFixed(1), cy: y(sc.team === "home" ? sc.home : sc.away).toFixed(1), r: "4",
@@ -360,19 +390,28 @@ function scoreChart(mount, data, game) {
     });
     const period = data.period_starts.slice().reverse().find((p) => p.i <= idx);
     const sub = data.subtitle(idx);
+    let extra = "";
+    const group = groupByRepIdx.get(idx);
+    if (group && data.evidenceText) {
+      const totalDelta = group.members.reduce((sum, m) => sum + m.delta, 0);
+      const evid = group.members.map((m) => data.evidenceText(m.i)).filter(Boolean).join(" + ");
+      if (evid) extra = `<div class="tt-sub">+${totalDelta} (${evid})</div>`;
+    }
     const html = `<div class="tt-value">${awayAbbr} ${away[idx]} – ${homeAbbr} ${home[idx]}</div>` +
-      `<div class="tt-sub">${period ? period.label : ""}${sub ? " · " + sub : ""}</div>`;
+      `<div class="tt-sub">${period ? period.label : ""}${sub ? " · " + sub : ""}</div>` + extra;
     if (clientX !== undefined) showTooltip(html, clientX, clientY);
   }
 
   // nearest event to a pixel position -- not a uniform division, since
-  // points are spaced by elapsed time (Fox) rather than always by index
+  // points are spaced by elapsed time (Fox) rather than always by index.
+  // Ties (a PAT pinned to its TD's exact x) resolve to the LATER index --
+  // the group's representative marker drawn above -- via <=.
   function nearestIdx(localX) {
     const value = xMin + (localX - margin.left) / plotW * (xMax - xMin);
     let best = 0, bestDist = Infinity;
     for (let i = 0; i < n; i++) {
       const d = Math.abs(xVals[i] - value);
-      if (d < bestDist) { bestDist = d; best = i; }
+      if (d <= bestDist) { bestDist = d; best = i; }
     }
     return best;
   }
@@ -478,6 +517,7 @@ function foxScoreSeries(fox) {
       const pinned = fox.clock_pinned[i] ? " (same clock as TD)" : "";
       return `${clock}${pinned} · ${evidence}`;
     },
+    evidenceText: (i) => fox.evidence[i] || "",
     ariaLabel: `Fox score progression, ${fox.n} scoring events, time-aligned`,
     unitLabel: `${fox.n} scoring events`,
     indexLabel: "Step #",
