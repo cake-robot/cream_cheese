@@ -477,6 +477,24 @@ and recomputes the game's overall `watchability_score` via the new
 `--rescore` printed `"Applied 2 manual correction(s)"` and both `UTEP@NMSU`/`USF@FLA`
 landed on the corrected values automatically, with no manual step required.
 
+## 15. Missing win-probability data confirmed as an ESPN-side gap (not a pipeline bug) — `401628511`
+
+`401628511` (Illinois @ Purdue, 2024-10-12, week 7, final 50-49 Illinois) is in `games`
+with the correct final score, but has 0 `win_probability` rows and no `game_metrics` /
+`watchability_score` — one of the 21 no-WP-data 2024 games already noted above ("Data
+note: 2024 season pulled"), called out individually here because it's a real, notable
+game (a 50-49 shootout) someone would specifically expect to see scored.
+
+Confirmed directly against ESPN's summary API (`?event=401628511`) rather than assuming
+our pipeline missed it: the response has a `winprobability` key, but it's an empty
+array — ESPN's own backend has nothing here, which also matches the win-probability
+chart being absent on espn.com's live page for this game. Same conclusion as `GT@UGA`
+(fix/entry `401628439` above): not fixable from our side without a different
+win-probability data source (e.g. Fox reconstruction, if Fox covered this game).
+
+**No action taken** — left unscored by design, consistent with how the other 20 games
+in this category are handled.
+
 ## Possible future refinement (not implemented)
 
 `header.competitions[0].competitors[].linescores` gives independent per-quarter
