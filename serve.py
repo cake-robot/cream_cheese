@@ -409,7 +409,12 @@ def current_user():
     (password changed, or an admin forced a logout) is treated as if there
     were no session at all, rather than raising -- the cookie itself is
     still well-formed, it's just stale, and the right behavior for a stale
-    cookie is the same as no cookie: fall through to logged-out."""
+    cookie is the same as no cookie: fall through to logged-out.
+
+    When CC_DISABLE_AUTH=1 (see _require_auth), routes past the gate still
+    assume a real user row -- e.g. spoiler_ctx()'s policy lookup. Falls back
+    to user_id 1 (the only account that exists) instead of None so that
+    invariant holds for anonymous requests too while the wall is down."""
     if "user" not in g:
         g.user = None
         user_id = session.get("user_id")
@@ -417,6 +422,8 @@ def current_user():
             row = users.get_user_by_id(get_users_db(), user_id)
             if row is not None and row["session_epoch"] == session.get("session_epoch"):
                 g.user = row
+        if g.user is None and os.environ.get("CC_DISABLE_AUTH") == "1":
+            g.user = users.get_user_by_id(get_users_db(), 1)
     return g.user
 
 
@@ -426,6 +433,13 @@ def _is_loopback(addr):
 
 @app.before_request
 def _require_auth():
+    # Temporary escape hatch: CC_DISABLE_AUTH=1 in the launchd plist's env
+    # drops the login wall entirely. Manual, deploy-time-only toggle -- flip
+    # the plist back and reinstall the service to restore the wall, there is
+    # no in-app way to turn it off. TODO(cream_cheese): remove once no
+    # longer needed for the requested temporary pause.
+    if os.environ.get("CC_DISABLE_AUTH") == "1":
+        return None
     path = request.path
     if path in _UNAUTH_PATHS:
         return None
