@@ -401,6 +401,12 @@ def close_db(exc):
 # ---------------------------------------------------------------------------
 
 _UNAUTH_PATHS = {"/login.html", "/signup.html", "/style.css", "/api/login", "/api/signup"}
+# style.css's @font-face rules point at these -- without the prefix here,
+# an unauthenticated request for one 302s to /login.html (the font-file
+# request, not the page) and the browser silently falls back to a system
+# font, so login.html/signup.html -- the only pages reachable pre-auth --
+# would never actually render in the intended type.
+_UNAUTH_PREFIXES = ("/fonts/",)
 
 
 def current_user():
@@ -441,7 +447,7 @@ def _require_auth():
     if os.environ.get("CC_DISABLE_AUTH") == "1":
         return None
     path = request.path
-    if path in _UNAUTH_PATHS:
+    if path in _UNAUTH_PATHS or path.startswith(_UNAUTH_PREFIXES):
         return None
     if path == "/api/healthz":
         # cloudflared sets CF-Connecting-IP on every request it proxies;
