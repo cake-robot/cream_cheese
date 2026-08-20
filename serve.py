@@ -1208,12 +1208,18 @@ def api_metrics():
 
 @app.route("/api/slate/registry")
 def api_slate_registry():
+    # short_label is live.py's LIVE_METRIC_LABELS -- the casual "why watch"
+    # wording also used to generate a live game's headline (see
+    # live.headline_for) -- distinct from `label`/`description` above,
+    # which are the more technical copy the rich game-detail breakdown uses.
     so_far = [{
         "name": m["name"], "half": "so_far", "label": LIVE_METRIC_COPY[m["name"]]["label"],
+        "short_label": live.LIVE_METRIC_LABELS[m["name"]],
         "description": LIVE_METRIC_COPY[m["name"]]["description"], "weight": m["weight"], "cap": m["cap"],
     } for m in live.LIVE_SO_FAR_METRICS]
     from_here = [{
         "name": m["name"], "half": "from_here", "label": LIVE_METRIC_COPY[m["name"]]["label"],
+        "short_label": live.LIVE_METRIC_LABELS[m["name"]],
         "description": LIVE_METRIC_COPY[m["name"]]["description"], "weight": m["weight"], "cap": m["cap"],
     } for m in live.LIVE_FROM_HERE_METRICS]
     return jsonify({

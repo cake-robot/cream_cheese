@@ -8,6 +8,7 @@
 </head>
 <body data-page="slate">
 
+<div class="slate-frame">
 <header class="chrome">
   <nav>
     <a href="/slate.html" aria-current="page">Slate</a>
@@ -19,36 +20,48 @@
 </header>
 
 <main>
-  <div class="page-title">Slate — what to watch right now</div>
-
   <div class="filters" id="filters">
-    <label>Scope <select id="f-scope">
-      <option value="day">Day</option>
-      <option value="week">Week</option>
-    </select></label>
-    <label>Date <input type="date" id="f-date"></label>
+    <div class="scope-toggle" id="scope-toggle">
+      <button type="button" data-scope="day">Day</button>
+      <button type="button" data-scope="week">Week</button>
+    </div>
+    <input type="date" id="f-date">
+    <span class="date-label" id="date-label"></span>
     <div class="spacer"></div>
     <span class="feed-pill" id="feed-pill"></span>
   </div>
 
   <div id="slate-error" class="diverge-note"></div>
 
-  <div class="section-title">Live now</div>
+  <div class="section-title live">
+    <span>Live now</span><span class="rule"></span><span class="meta" id="live-meta"></span>
+  </div>
   <div id="live-section"></div>
 
-  <div class="section-title">Final today</div>
+  <div class="section-title">
+    <span>Final today</span><span class="rule"></span>
+  </div>
   <div id="completed-section"></div>
 
-  <div class="section-title">Kickoff soon</div>
+  <div class="section-title">
+    <span>Kickoff soon</span><span class="rule"></span><span class="meta">NOT SCORED</span>
+  </div>
   <div id="upcoming-section"></div>
+
+  <div class="slate-footer">
+    <span>Watchability // slate</span>
+    <span>The owls are not what they seem</span>
+  </div>
 </main>
+</div>
 
 <script src="/app.js"></script>
 <script src="/charts.js"></script>
 <script>
 let SLATE_REGISTRY = { so_far: [], from_here: [] };
-let RETRO_REGISTRY = [];
+let LIVE_LABELS = {};
 let CURRENT_SLATE = null;
+let CURRENT_SCOPE = "day";
 const EXPANDED = new Set();
 const PREV_LIVE_SCORES = {};
 let IN_FLIGHT = false;
@@ -56,22 +69,50 @@ let POLL_TIMER = null;
 
 const POLL_MS = 30000; // half the live writer's ~60s cadence
 
+// Proposed friendly wording for the retrospective (completed-game) metric
+// registry (src/scoring.py's METRICS), matching the casual tone of
+// LIVE_LABELS below -- unlike that one, this has no backend home yet
+// (no shared friendly-label registry exists for retrospective metrics),
+// so it's kept local to this page pending sign-off rather than added as
+// new API surface.
+const RETRO_METRIC_LABELS = {
+  wp_volatility: "back-and-forth action",
+  lead_changes: "frequent lead changes",
+  time_spent_close: "time spent close",
+  team_profile: "a ranked matchup",
+  upset_risk: "upset risk",
+  late_volatility: "late-game swings",
+  clutch_finish: "a clutch finish",
+  comeback_erosion: "comeback erosion",
+};
+
 function currentFilters() {
   return {
-    scope: document.getElementById("f-scope").value,
+    scope: CURRENT_SCOPE,
     date: document.getElementById("f-date").value,
   };
 }
 
 function applyFiltersToForm(params) {
-  document.getElementById("f-scope").value = params.scope || "day";
+  setScope(params.scope || "day", { silent: true });
   // Leave blank if the URL didn't pin a date -- the request then omits
   // `date` and the server picks the nearest day with something still to
   // watch (see api_slate's default), rather than always landing on today.
   document.getElementById("f-date").value = params.date || "";
 }
 
-// ---- feed pill --------------------------------------------------------------
+function setScope(scope, { silent = false } = {}) {
+  CURRENT_SCOPE = scope;
+  document.querySelectorAll("#scope-toggle button").forEach((b) => {
+    b.classList.toggle("active", b.dataset.scope === scope);
+  });
+  if (!silent) {
+    EXPANDED.clear();
+    loadSlate({ push: true });
+  }
+}
+
+// ---- filter-row meta (feed pill + date label) --------------------------------
 
 function renderFeedPill(data) {
   const pill = document.getElementById("feed-pill");
@@ -84,18 +125,68 @@ function renderFeedPill(data) {
     return;
   }
   const stale = s === null || s > 150;
-  pill.className = "feed-pill" + (stale ? " stale" : "");
+  pill.className = "feed-pill" + (stale ? " stale" : " tracked");
   pill.appendChild(el("span", { text: s === null ? "feed not running" : `updated ${Math.round(s)}s ago` }));
+}
+
+function renderDateLabel(data) {
+  const label = document.getElementById("date-label");
+  const anySpoilerHidden = ["live", "completed", "upcoming"].some((k) => data.sections[k].some((g) => g.spoiler_hidden));
+  const tz = Intl.DateTimeFormat(undefined, { timeZoneName: "short" }).formatToParts(new Date())
+    .find((p) => p.type === "timeZoneName").value;
+  if (data.scope === "week") {
+    const w = (data.weeks || [])[0];
+    const kind = w && w.season_type === 3 ? "postseason" : "regular season";
+    label.textContent = w ? `Week ${w.week} · ${w.season_year} ${kind} · ${tz}` : `Week of ${data.date} · ${tz}`;
+  } else {
+    const weekday = new Date(`${data.date}T00:00:00`).toLocaleDateString(undefined, { weekday: "short" }).toUpperCase();
+    label.textContent = `${weekday} · ${tz}` + (anySpoilerHidden ? " · spoiler shield on" : "");
+  }
+}
+
+// ---- shared: metric breakdown rows (no value text -- bar length is the signal) --
+
+function metricBarRow(labelText, pct, dramaTone) {
+  return el("div", { class: "metric-bar-row" }, [
+    el("span", { class: "m-label", text: labelText }),
+    el("span", { class: "m-track" }, el("i", { class: dramaTone ? "drama" : "", style: `width:${pct}%` })),
+  ]);
+}
+
+function liveMetricGroup(container, labelText, metricsObj, spaced) {
+  const applicable = Object.entries(metricsObj || {}).filter(([, v]) => v.applicable);
+  if (!applicable.length) return;
+  container.appendChild(el("div", { class: "metric-group-label" + (spaced ? " spaced" : ""), text: labelText }));
+  applicable
+    .sort((a, b) => b[1].normalized - a[1].normalized)
+    .forEach(([name, v]) => {
+      container.appendChild(metricBarRow(LIVE_LABELS[name] || name, Math.round(v.normalized * 100), labelText === "Drama from here"));
+    });
+}
+
+function renderLiveExpand(container, g) {
+  liveMetricGroup(container, "Quality so far", g.live.so_far.metrics, false);
+  liveMetricGroup(container, "Drama from here", g.live.from_here.metrics, true);
+}
+
+function renderRetroExpand(container, g) {
+  const applicable = Object.entries(g.metrics || {}).filter(([, v]) => v.applicable);
+  container.appendChild(el("div", { class: "metric-group-label", text: "Score breakdown" }));
+  applicable
+    .sort((a, b) => b[1].norm - a[1].norm)
+    .forEach(([name, v]) => {
+      container.appendChild(metricBarRow(RETRO_METRIC_LABELS[name] || name, Math.round(v.norm * 100), false));
+    });
 }
 
 // ---- live section -------------------------------------------------------------
 
 function halvesBars(quality, drama) {
-  const wrap = el("div", {});
-  [["Quality so far", quality], ["Drama from here", drama]].forEach(([label, value]) => {
+  const wrap = el("div", { class: "halves-grid" });
+  [["Quality so far", quality, ""], ["Drama from here", drama, "drama"]].forEach(([label, value, cls]) => {
     wrap.appendChild(el("div", { class: "halves-row" }, [
-      el("div", { class: "half-label" }, [label, " ", el("span", { class: "tabular-nums", text: fmtScore(value) })]),
-      el("div", { class: "score-meter" }, el("i", { style: `width:${value === null || value === undefined ? 0 : Math.min(100, value * 100)}%` })),
+      el("div", { class: "half-label" }, [label, el("span", { class: "tabular-nums", text: fmtScore(value) })]),
+      el("div", { class: `half-meter ${cls}` }, el("i", { style: `width:${value === null || value === undefined ? 0 : Math.min(100, value * 100)}%` })),
     ]));
   });
   return wrap;
@@ -109,13 +200,6 @@ function divergeNote(live) {
     : "Quiet so far, but heating up";
 }
 
-function renderLiveExpand(container, g) {
-  container.appendChild(el("div", { class: "card-sub", text: "Quality so far" }));
-  contributionBars(container, adaptLiveMetrics(g.live.so_far.metrics), SLATE_REGISTRY.so_far, g.live.so_far.applicable_weight || 0.0001);
-  container.appendChild(el("div", { class: "card-sub", style: "margin-top:10px", text: "Drama from here" }));
-  contributionBars(container, adaptLiveMetrics(g.live.from_here.metrics), SLATE_REGISTRY.from_here, g.live.from_here.applicable_weight || 0.0001);
-}
-
 function renderLiveSection(games) {
   const wrap = document.getElementById("live-section");
   wrap.innerHTML = "";
@@ -125,87 +209,80 @@ function renderLiveSection(games) {
   }
 
   const [top, ...rest] = games;
-  const hero = el("div", { class: "card" });
-  hero.appendChild(el("div", { class: "matchup-header" }, [
+  const hero = el("div", { class: "card hero-card" });
+  hero.appendChild(el("div", { style: "display:flex; justify-content:space-between; gap:28px; align-items:flex-start" }, [
     el("div", {}, [
       el("h2", {}, [fmtMatchup(top) + " ", ...renderChips(top)]),
       el("div", { class: "sub", text: top.live.status.detail || (top.spoiler_hidden ? "In progress" : "") }),
     ]),
+    top.spoiler_hidden
+      ? el("div", { class: "spoiler-hidden-tag", text: "SPOILER HIDDEN" })
+      : el("div", { style: "text-align:right" }, [
+          el("div", { class: "hero-score tabular-nums", text: fmtScore(top.live.live_score) }),
+          el("div", { style: "font-family:var(--font-mono); font-size:10px; letter-spacing:.18em; color:var(--ink-muted); margin-top:8px", text: "LIVE SCORE" }),
+        ]),
   ]));
   if (top.spoiler_hidden) {
     // Ranked (this IS the top-ranked live game), but every number that
     // would say *how* it's going -- composite score, headline, quality/
     // drama bars -- is withheld.
     hero.appendChild(el("div", {
-      class: "hero-context", style: "margin-top:10px",
+      class: "hero-context", style: "margin-top:20px",
       text: "Ranked #1 among live games right now, but watchability is hidden for this game.",
     }));
   } else {
-    hero.appendChild(el("div", { class: "hero-row" }, [
-      el("div", { class: "hero-score tabular-nums", text: fmtScore(top.live.live_score) }),
-      el("div", { class: "hero-context" }, [el("div", { text: top.live.headline })]),
-    ]));
+    hero.appendChild(el("div", { class: "hero-context", style: "margin-top:20px; max-width:62ch", text: top.live.headline }));
     hero.appendChild(halvesBars(top.live.quality_so_far, top.live.drama_from_here));
     const note = divergeNote(top.live);
     if (note) hero.appendChild(el("div", { class: "diverge-note", text: note }));
   }
-  hero.style.cursor = "pointer";
   hero.addEventListener("click", () => (location.href = `/game.html?id=${top.game_id}`));
   wrap.appendChild(hero);
   PREV_LIVE_SCORES[top.game_id] = top.live.live_score;
 
   if (!rest.length) return;
 
-  const list = el("div", { class: "card" });
+  const list = el("div", { class: "slate-list" });
   rest.forEach((g) => {
     const flash = !g.spoiler_hidden && PREV_LIVE_SCORES[g.game_id] !== undefined
       && Math.abs(PREV_LIVE_SCORES[g.game_id] - g.live.live_score) > 0.05;
     PREV_LIVE_SCORES[g.game_id] = g.live.live_score;
 
-    const toggle = el("span", { text: "⌄", style: "color:var(--ink-muted);cursor:pointer;padding:0 6px" });
-    const valCell = g.spoiler_hidden
-      ? el("div", { class: "val", text: "—" })
-      : el("div", { class: "val tabular-nums", text: fmtScore(g.live.live_score) });
+    const expanded = EXPANDED.has(g.game_id);
+    const chevron = el("div", { class: "chevron" + (expanded ? " open" : ""), text: expanded ? "︿" : "⌄" });
+    if (g.spoiler_hidden) chevron.style.visibility = "hidden";
     const whyText = g.spoiler_hidden
       ? (g.live.status.detail || "In progress")
       : `${g.live.status.detail || ""}${g.live.headline ? " · " + g.live.headline : ""}`;
-    const row = el("div", { class: "top-list-item" + (flash ? " updated-flash" : "") }, [
-      valCell,
-      el("div", { class: "info" }, [
-        el("div", {}, [fmtMatchup(g), ...renderChips(g)]),
-        el("div", { class: "why", text: whyText }),
+    const row = el("div", { class: "slate-row row-live" + (flash ? " updated-flash" : "") }, [
+      el("div", { class: "score-big", text: g.spoiler_hidden ? "—" : fmtScore(g.live.live_score) }),
+      el("div", {}, [
+        el("div", { class: "matchup-line" }, [el("span", { class: "name", text: fmtMatchup(g) }), ...renderChips(g)]),
+        el("div", { class: "row-sub", text: whyText }),
       ]),
-      toggle,
+      chevron,
     ]);
-    row.style.cursor = "pointer";
-    row.addEventListener("click", (ev) => {
-      if (ev.target === toggle) return;
-      location.href = `/game.html?id=${g.game_id}`;
-    });
 
-    const expandWrap = el("div", { style: "display:none;padding:6px 0 14px 4px" });
-    if (g.spoiler_hidden) {
-      // No live metric breakdown exists to expand into when the game is
-      // spoiler-hidden (live.so_far/from_here.metrics come back empty) --
-      // drop the expand affordance entirely rather than show a dead toggle.
-      toggle.style.visibility = "hidden";
-    } else {
-      toggle.addEventListener("click", (ev) => {
+    const expandWrap = el("div", { class: "expand-panel", style: expanded ? "" : "display:none" });
+    if (!g.spoiler_hidden) {
+      chevron.addEventListener("click", (ev) => {
         ev.stopPropagation();
         const showing = expandWrap.style.display !== "none";
         expandWrap.style.display = showing ? "none" : "block";
+        chevron.classList.toggle("open", !showing);
+        chevron.textContent = showing ? "⌄" : "︿";
         if (showing) { EXPANDED.delete(g.game_id); return; }
         EXPANDED.add(g.game_id);
         if (expandWrap.children.length === 0) renderLiveExpand(expandWrap, g);
       });
-      if (EXPANDED.has(g.game_id)) {
-        expandWrap.style.display = "block";
-        renderLiveExpand(expandWrap, g);
-      }
+      if (expanded) renderLiveExpand(expandWrap, g);
     }
+    row.addEventListener("click", (ev) => {
+      if (chevron.contains(ev.target)) return;
+      location.href = `/game.html?id=${g.game_id}`;
+    });
 
-    list.appendChild(row);
-    list.appendChild(expandWrap);
+    list.appendChild(el("div", {}, [row, expandWrap]));
   });
   wrap.appendChild(list);
 }
@@ -219,33 +296,59 @@ function renderCompletedSection(games) {
     wrap.appendChild(el("div", { class: "empty-state", text: "No games finished in this window yet." }));
     return;
   }
-  const card = el("div", { class: "card" });
   if (games.some((g) => g.spoiler_hidden)) {
-    card.appendChild(el("div", {
-      class: "card-sub",
-      text: "Ranked most to least watchable -- scores hidden for spoiler-protected games.",
+    wrap.appendChild(el("div", {
+      class: "slate-note",
+      text: "Ranked most to least watchable — scores hidden for spoiler-protected games.",
     }));
   }
+  const list = el("div", { class: "slate-list" });
   games.forEach((g) => {
+    const expanded = EXPANDED.has("c" + g.game_id);
+    const hasMetrics = Object.values(g.metrics || {}).some((v) => v.applicable);
+    const chevron = el("div", { class: "chevron" + (expanded ? " open" : ""), text: expanded ? "︿" : "⌄" });
+    if (!hasMetrics) chevron.style.visibility = "hidden";
+    // A composite rank implies an outcome (e.g. "#1 this week"), so it's
+    // withheld right alongside the score itself on a spoiler-hidden game.
+    const rankText = !g.spoiler_hidden && g.rank ? `#${g.rank} overall` : null;
     const scoreCell = g.watchability_score === null
-      ? el("span", { text: "—" })
-      : el("div", { class: "score-cell" }, [
-          el("span", { class: "score-val tabular-nums", text: fmtScore(g.watchability_score) }),
-          el("div", { class: "score-meter" }, el("i", { style: `width:${Math.min(100, (g.watchability_score / 0.70) * 100)}%` })),
+      ? el("div", { class: "score-big", text: "—" })
+      : el("div", { class: "score-with-meter" }, [
+          el("span", { class: "val", text: fmtScore(g.watchability_score) }),
+          el("div", { class: "meter" }, el("i", { style: `width:${Math.min(100, (g.watchability_score / 0.70) * 100)}%` })),
           el("span", { class: "pctile", text: g.percentile !== null ? fmtPct(g.percentile) : "" }),
         ]);
-    const row = el("div", { class: "top-list-item" }, [
-      el("div", { class: "val tabular-nums", style: "min-width:80px" }, scoreCell),
-      el("div", { class: "info" }, [
-        el("div", {}, [fmtMatchup(g), ...renderChips(g)]),
-        el("div", { class: "why", text: seasonWeekLabel(g) }),
+    const row = el("div", { class: "slate-row row-completed" }, [
+      scoreCell,
+      el("div", {}, [
+        el("div", { class: "matchup-line" }, [el("span", { class: "name", text: fmtMatchup(g) }), ...renderChips(g)]),
+        rankText ? el("div", { class: "row-sub", text: rankText }) : null,
       ]),
+      chevron,
     ]);
-    row.style.cursor = "pointer";
-    row.addEventListener("click", () => (location.href = `/game.html?id=${g.game_id}`));
-    card.appendChild(row);
+
+    const expandWrap = el("div", { class: "expand-panel", style: expanded ? "" : "display:none" });
+    if (hasMetrics) {
+      chevron.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        const showing = expandWrap.style.display !== "none";
+        expandWrap.style.display = showing ? "none" : "block";
+        chevron.classList.toggle("open", !showing);
+        chevron.textContent = showing ? "⌄" : "︿";
+        if (showing) { EXPANDED.delete("c" + g.game_id); return; }
+        EXPANDED.add("c" + g.game_id);
+        if (expandWrap.children.length === 0) renderRetroExpand(expandWrap, g);
+      });
+      if (expanded) renderRetroExpand(expandWrap, g);
+    }
+    row.addEventListener("click", (ev) => {
+      if (chevron.contains(ev.target)) return;
+      location.href = `/game.html?id=${g.game_id}`;
+    });
+
+    list.appendChild(el("div", {}, [row, expandWrap]));
   });
-  wrap.appendChild(card);
+  wrap.appendChild(list);
 }
 
 // ---- upcoming section ----------------------------------------------------------
@@ -257,19 +360,22 @@ function renderUpcomingSection(games) {
     wrap.appendChild(el("div", { class: "empty-state", text: "Nothing left to kick off in this window." }));
     return;
   }
-  const card = el("div", { class: "card" }, [
-    el("div", { class: "card-sub", text: "Not scored -- these haven't kicked off yet, so judge them yourself." }),
-  ]);
+  const list = el("div", { class: "slate-list" });
   games.forEach((g) => {
-    const row = el("div", { class: "kickoff-row" }, [
+    const row = el("div", { class: "slate-row row-upcoming" }, [
       el("span", { class: "kickoff-time", text: fmtKickoff(g.game_date) }),
-      el("div", { class: "info", style: "flex:1" }, [fmtMatchup(g), ...renderChips(g)]),
+      el("div", { class: "matchup-line" }, [
+        el("span", { class: "name", text: fmtMatchup(g) }),
+        // Pre-kickoff games never have a score to spoil yet, so the HIDDEN
+        // chip (meaningful once something's actually being withheld) is
+        // suppressed here even though spoiler_hidden may already be true.
+        ...renderChips(g).filter((c) => !c.textContent.includes("HIDDEN")),
+      ]),
     ]);
-    row.style.cursor = "pointer";
     row.addEventListener("click", () => (location.href = `/game.html?id=${g.game_id}`));
-    card.appendChild(row);
+    list.appendChild(row);
   });
-  wrap.appendChild(card);
+  wrap.appendChild(list);
 }
 
 // ---- load / poll ----------------------------------------------------------------
@@ -291,6 +397,8 @@ async function loadSlate({ push = false } = {}) {
     const dateInput = document.getElementById("f-date");
     if (!dateInput.value) dateInput.value = data.date;
     renderFeedPill(data);
+    renderDateLabel(data);
+    document.getElementById("live-meta").textContent = `${data.live_feed.tracked_games} TRACKED`;
     renderLiveSection(data.sections.live);
     renderCompletedSection(data.sections.completed);
     renderUpcomingSection(data.sections.upcoming);
@@ -313,15 +421,17 @@ document.addEventListener("visibilitychange", () => {
 });
 
 function wireFilters() {
-  document.querySelectorAll(".filters select, .filters input").forEach((elm) => {
-    elm.addEventListener("change", () => loadSlate({ push: true }));
+  document.querySelectorAll("#scope-toggle button").forEach((b) => {
+    b.addEventListener("click", () => setScope(b.dataset.scope));
   });
+  document.getElementById("f-date").addEventListener("change", () => loadSlate({ push: true }));
 }
 
 (async function init() {
-  const [registry, metricsResp] = await Promise.all([api("/slate/registry"), api("/metrics")]);
+  const registry = await api("/slate/registry");
   SLATE_REGISTRY = registry;
-  RETRO_REGISTRY = metricsResp.metrics;
+  LIVE_LABELS = {};
+  [...registry.so_far, ...registry.from_here].forEach((m) => { LIVE_LABELS[m.name] = m.short_label || m.label; });
   const params = getParams();
   applyFiltersToForm(params);
   wireFilters();
