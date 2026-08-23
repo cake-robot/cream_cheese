@@ -333,6 +333,15 @@ body[data-page="slate"] .hero-card {
 body[data-page="slate"] .hero-card:hover { background: var(--row-selected); }
 body[data-page="slate"] .hero-card h2 { font-size: 32px; letter-spacing: .03em; }
 body[data-page="slate"] .hero-score { font-size: 78px; }
+/* Live-hero layout classes -- previously inline styles on the elements
+   renderLiveSection() builds, pulled out to real classes so the phone
+   media query at the end of this file can override them (a media query
+   can never beat an inline style attribute, only another stylesheet
+   rule). Values here are exactly what the inline styles used to carry. */
+.hero-toprow { display: flex; justify-content: space-between; gap: 28px; align-items: flex-start; }
+.hero-score-block { text-align: right; }
+.hero-score-label { font-family: var(--font-mono); font-size: 10px; letter-spacing: .18em; color: var(--ink-muted); margin-top: 8px; }
+.hero-headline { margin-top: 20px; max-width: 62ch; }
 .spoiler-hidden-tag {
   font-family: var(--font-mono); font-size: 10px; letter-spacing: .18em; color: var(--ink-2);
   border: 1px solid var(--grid-2); padding: 5px 9px; white-space: nowrap;
@@ -1476,3 +1485,346 @@ body[data-page="settings"] .settings-frame main {
   color: var(--g-ink-body); border-bottom: 1px solid var(--g-row-hairline);
 }
 .s-search-row:hover { color: var(--g-ink-bright); }
+
+/* =========================================================================
+   Mobile (~390-430px phones) -- Mobile Slate/Game Detail/Games/Top games
+   handoffs, "a" option on all four (each explicitly the recommended/winning
+   variant in its file). Additive: every rule below only fires under the
+   phone breakpoint and only changes reflow/density on top of the desktop
+   rules already declared above, never the desktop rules themselves. This
+   whole block is appended at the END of the file on purpose -- several
+   selectors here (.g-body, .t-body-grid, .g-drivers-row, ...) are already
+   touched by the existing 760px/1100px tablet-degradation media queries
+   above, and CSS resolves same-specificity conflicts by source order, not
+   by which max-width is smaller. Putting phone rules last is what lets a
+   390px viewport (which matches BOTH an earlier max-width and this one)
+   still land on the phone-specific values.
+
+   Breakpoint: 680px. Surveyed against where the four existing dense desktop
+   grids actually start clipping/crowding (the Games table's 7-column row,
+   Top games' 4-column row, Game Detail's 320px rail, Slate's 3-column live
+   row) -- all still read fine down to ~700px and start fighting for space
+   below that, comfortably inside the 600-680px range the design brief
+   flagged, with headroom above the ~390-430px phones the mock actually
+   targets. Existing 640px/760px rules (halves-grid, two-col) sit BELOW this
+   breakpoint and keep firing inside it too -- not fought, just joined.
+   ========================================================================= */
+
+/* ---- shared mobile nav: bar + drawer -----------------------------------
+   One markup+JS pattern (id="mnav-bar"/"mnav-trig"/"mnav-chev"/"mnav-drawer"
+   in each page's HTML, initMobileNav()+initAccountMenu() in app.js) reused
+   verbatim across Slate/Game Detail/Games/Top games rather than four
+   copies -- designed once on the Slate mobile handoff ("1a drawer wins"),
+   carried unchanged (same bar height, trigger, drawer markup and tokens)
+   to the other three per that file's own nav-decision note. Hidden above
+   the phone breakpoint; swaps in for header.chrome below it. */
+.mnav-bar {
+  display: none;
+  position: relative;
+  align-items: center;
+  justify-content: space-between;
+  height: 54px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--grid);
+  background: var(--surface-1);
+}
+.mnav-word {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 14px;
+  letter-spacing: .2em;
+  color: var(--ink-1);
+  text-transform: uppercase;
+}
+.mnav-trig {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 44px;
+  padding: 0 4px 0 10px;
+  margin-right: -10px;
+  cursor: pointer;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+}
+.mnav-trig .t {
+  font-family: var(--font-display);
+  font-size: 11px;
+  letter-spacing: .2em;
+  color: #9aa39d;
+  text-transform: uppercase;
+}
+.mnav-trig .c {
+  font-size: 11px;
+  color: var(--grid-2);
+  display: inline-block;
+  transition: transform .15s;
+}
+.mnav-trig .c.up { transform: rotate(180deg); }
+.mnav-drawer {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--grid);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+}
+/* The native `hidden` attribute only wins the cascade via a low-specificity
+   UA rule ([hidden]{display:none}) -- the `.mnav-drawer{display:flex}`
+   rule above has equal specificity and comes later (author styles always
+   follow UA styles), so without this it silently overrides `hidden` and
+   the drawer renders open by default. This wins on specificity instead. */
+.mnav-drawer[hidden] { display: none; }
+.mnav-item {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 20px;
+  font-family: var(--font-display);
+  font-size: 13px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: #8f9a94;
+  border-bottom: 1px solid var(--grid-3);
+  border-left: 3px solid transparent;
+  box-sizing: border-box;
+}
+.mnav-item.on {
+  color: var(--ink-1);
+  border-left-color: var(--series-1);
+  padding-left: 17px;
+  background: var(--surface-2);
+}
+.mnav-acct {
+  display: flex;
+  align-items: center;
+  min-height: 38px;
+  padding: 12px 20px 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: .12em;
+  color: var(--ink-muted);
+}
+.mnav-out {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  margin: 10px 20px 16px;
+  border: 1px solid var(--axis);
+  font-family: var(--font-display);
+  font-size: 11px;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  background: none;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+.mnav-out:hover { border-color: var(--series-1); color: var(--ink-2); }
+
+/* Rail layouts that don't yet collapse below the existing 1100px tablet
+   rule -- Top games never had one (Game Detail's .g-body did). Needed so
+   the phone rules below actually get a single stacked column to work
+   with, in the handoff's own reading order (list -> team leaderboard ->
+   "how to read this" -> weekly peaks, all full width). */
+@media (max-width: 1100px) {
+  .t-body-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Desktop-default state for the Games mobile-filters wrapper, declared
+   BEFORE the phone media query on purpose: `display: contents` promotes
+   its children to be direct flex items of .gm-filter-bar so desktop's
+   existing flex-row layout is unaffected by the wrapper's existence, and
+   it must lose the cascade to the phone-only override below (same
+   selector specificity either way -- later source wins), not the other
+   way around. */
+.gm-filter-groups { display: contents; }
+.gm-mobile-toggle { display: none; }
+
+@media (max-width: 680px) {
+  header.chrome { display: none; }
+  .mnav-bar { display: flex; }
+
+  /* shared: page shell padding, footers -------------------------------- */
+  body[data-page="slate"] .slate-frame main,
+  body[data-page="game"] .game-frame main,
+  body[data-page="games"] .games-frame main,
+  body[data-page="top"] .top-frame main {
+    padding: 16px 16px 30px;
+  }
+  .slate-footer, .g-footer, .gm-footer, .t-footer {
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 26px;
+  }
+
+  /* ---- Slate ("1a") --------------------------------------------------- */
+  #filters {
+    padding: 0 0 16px;
+    border-top: none;
+    margin-bottom: 0;
+    row-gap: 10px;
+  }
+  #scope-toggle { flex: 1 1 100%; }
+  #scope-toggle button { flex: 1; min-height: 44px; }
+  .filters .spacer { display: none; }
+  #f-date { flex: 1 1 auto; }
+  .date-label { flex: 1 1 100%; order: 3; }
+  #feed-pill { flex: 0 0 auto; margin-left: auto; }
+
+  .section-title { margin: 26px 0 14px; }
+
+  body[data-page="slate"] .hero-card { padding: 20px 16px; }
+  body[data-page="slate"] .hero-toprow { flex-direction: column; gap: 10px; }
+  body[data-page="slate"] .hero-card h2 { font-size: 22px; }
+  body[data-page="slate"] .hero-score { font-size: 52px; }
+  .hero-score-block { text-align: left; }
+  .hero-score-label {
+    font-family: var(--font-mono); font-size: 10px; letter-spacing: .18em; color: var(--ink-muted); margin-top: 6px;
+  }
+  .hero-headline { margin-top: 14px; max-width: none; }
+  .halves-grid { gap: 16px; margin-top: 16px; }
+
+  .slate-row.row-live, .slate-row.row-completed {
+    grid-template-columns: 1fr auto;
+    grid-template-areas: "score chev" "info info";
+    gap: 8px;
+    padding: 14px 16px;
+  }
+  .slate-row.row-live .score-big, .slate-row.row-completed .score-big { grid-area: score; font-size: 24px; }
+  .slate-row .score-with-meter { grid-area: score; }
+  .slate-row .row-info { grid-area: info; }
+  .slate-row .chevron {
+    grid-area: chev;
+    width: 44px; height: 44px; margin: -12px -12px -12px 0;
+    display: flex; align-items: center; justify-content: flex-end;
+  }
+  .slate-row.row-upcoming { grid-template-columns: 1fr; padding: 14px 16px; gap: 6px; }
+  .expand-panel { padding: 14px 16px 18px; }
+
+  /* ---- Game Detail ("2a") ----------------------------------------------
+     .g-body already collapses to one column at 1100px; the rest is the
+     hero, drivers-row and uw-row reflow the mock's own grid (1fr 40px,
+     label+weight on top, bar full-width below, value full-width below)
+     asks for -- pure grid-template-areas on the classes those rows
+     already carry, no markup change needed. */
+  .g-hero { grid-template-columns: 1fr; gap: 20px; align-items: stretch; margin-top: 18px; padding-bottom: 20px; }
+  .g-matchup { font-size: 27px; }
+  .g-hero-right { flex-direction: column; align-items: flex-start; gap: 16px; }
+  .g-hero-rule { display: none; }
+  .g-composite-wrap { text-align: left; }
+  .g-composite { font-size: 84px; }
+  .g-rank-rails { width: 100%; }
+  .g-body { margin-top: 20px; gap: 20px; }
+  .g-main-col, .g-rail-col { gap: 20px; }
+  .g-card-pad { padding: 18px 16px 20px; }
+  .g-card-pad-rail { padding: 18px 16px 20px; }
+  .g-wp-head { padding: 16px 16px 0; }
+  .g-wp-body { padding: 12px 16px 18px; }
+
+  .g-drivers-row {
+    grid-template-columns: 1fr 40px;
+    grid-template-areas: "label weight" "bar bar" "value value";
+    row-gap: 4px;
+  }
+  .g-drivers-row .label { grid-area: label; }
+  .g-drivers-row .weight { grid-area: weight; text-align: right; }
+  .g-drivers-bar { grid-area: bar; }
+  .g-drivers-row .value { grid-area: value; text-align: right; }
+
+  .g-uw-row {
+    grid-template-columns: 1fr 40px;
+    grid-template-areas: "label flat" "note note" "value value";
+    row-gap: 4px;
+  }
+  .g-uw-row .label { grid-area: label; }
+  .g-uw-row .flat { grid-area: flat; text-align: right; }
+  .g-uw-row .note { grid-area: note; }
+  .g-uw-row .value { grid-area: value; text-align: right; }
+
+  .g-utility-row { flex-wrap: wrap; row-gap: 8px; }
+
+  /* ---- Games ("3a") ------------------------------------------------------
+     Filters collapse behind one toggle next to Search, which stays put --
+     .gm-filter-groups is `display: contents` above this breakpoint (see
+     the shared block below), so it's invisible to desktop's flex row and
+     these rules only take effect here. */
+  .gm-title { font-size: 30px; }
+  .gm-filter-bar { flex-direction: column; align-items: stretch; gap: 14px; margin-top: 16px; padding-bottom: 16px; }
+  .gm-search-group { order: -1; }
+  .gm-search-row { gap: 8px; }
+  .gm-mobile-toggle {
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    min-width: 44px; min-height: 44px; padding: 0 12px; flex: none;
+    border: 1px solid var(--g-border-strong2); background: var(--g-track);
+    color: var(--g-ink-bright); font-family: var(--font-display); font-size: 11px;
+    letter-spacing: .14em; text-transform: uppercase; cursor: pointer; box-sizing: border-box;
+  }
+  .gm-mobile-toggle .n { color: var(--g-accent); }
+  .gm-filter-groups { display: none; }
+  .gm-filter-groups.open { display: flex; flex-direction: column; gap: 16px; width: 100%; }
+  .gm-chip-row, .gm-sort-group { max-width: none; }
+
+  .gm-summary-strip { padding: 12px 0; gap: 12px 16px; }
+
+  .gm-header-row { display: none; }
+  .gm-row {
+    grid-template-columns: auto 1fr;
+    grid-template-areas: "rank matchup" "wk date" "score chev";
+    row-gap: 6px;
+    padding: 14px 16px;
+  }
+  .gm-rank { grid-area: rank; align-self: start; }
+  .gm-wk { grid-area: wk; }
+  .gm-matchup { grid-area: matchup; }
+  .gm-date { grid-area: date; text-align: right; }
+  .gm-score-block { grid-area: score; }
+  .gm-chevron {
+    grid-area: chev; justify-self: end;
+    width: 44px; height: 44px; display: flex; align-items: center; justify-content: flex-end;
+  }
+  .gm-expand { padding: 14px 16px 18px; }
+  .gm-expand-row {
+    grid-template-columns: 1fr auto;
+    grid-template-areas: "label detail" "bar bar";
+    row-gap: 4px;
+  }
+  .gm-expand-label { grid-area: label; }
+  .gm-expand-detail { grid-area: detail; }
+  .gm-expand-bar { grid-area: bar; }
+  .gm-pagination { flex-wrap: wrap; gap: 10px; padding: 14px 16px; }
+
+  /* ---- Top games ("4a") --------------------------------------------------
+     Straight stack: list -> team leaderboard -> how to read this -> weekly
+     peaks, all full width -- .t-body-grid collapses to one column above
+     (see the shared 1100px rule). Ranked-list rows already stack in DOM
+     order (rank, score, info, when) that matches the mock's plain block
+     layout, so no grid-area juggling is needed there, just a column flow. */
+  .t-title-row { flex-direction: column; align-items: stretch; gap: 16px; padding-bottom: 18px; }
+  .t-title { font-size: 30px; }
+  .t-filters { gap: 18px; }
+  .t-body-grid, .t-rail { gap: 20px; }
+  .t-body-grid { margin-top: 20px; }
+  .t-rail-card-pad { padding: 18px 16px 18px; }
+  .t-list-head { padding: 16px 16px 14px; flex-direction: column; align-items: flex-start; gap: 8px; }
+  .t-list-rule-note { text-align: left; }
+  .t-row {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    padding: 14px 16px;
+  }
+  .t-score { font-size: 24px; }
+  .t-when { text-align: left; }
+  .t-show-more { padding: 14px 16px; }
+  .t-list-footer { padding: 12px 16px; }
+  .t-peaks-head { padding: 16px 16px 0; }
+  .t-peaks-body { padding: 14px 16px 20px; }
+}
