@@ -1521,7 +1521,9 @@ def api_games():
     if ranked not in ("any", "one", "both"):
         abort(400, description="ranked must be any, one, or both")
     if ranked == "one":
-        where_schedule.append("(g.home_rank IS NOT NULL OR g.away_rank IS NOT NULL)")
+        # Exactly one side ranked (XOR) -- IS NULL evaluates to 0/1 in
+        # SQLite, so != between the two is a real XOR, not "one or more".
+        where_schedule.append("((g.home_rank IS NULL) != (g.away_rank IS NULL))")
     elif ranked == "both":
         where_schedule.append("(g.home_rank IS NOT NULL AND g.away_rank IS NOT NULL)")
 
@@ -2573,6 +2575,18 @@ def web_static(filename):
         abort(404)
     if not target.exists() or not target.is_file():
         abort(404)
+    # Font files never change without a filename change and are requested on
+    # every page's <head> -- Flask's send_from_directory default of
+    # Cache-Control: no-cache forces a revalidation round-trip for each one
+    # on every full-page navigation (this is a multi-page app, no client-side
+    # routing), which is exactly what was producing a visible flash of
+    # fallback-font text before the real font swapped in on every click.
+    # Everything else (style.css/app.js/charts.js/html) keeps the no-cache
+    # default so edits during development show up immediately.
+    if filename.startswith("fonts/"):
+        resp = send_from_directory(WEB_DIR, filename, max_age=31536000)
+        resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return resp
     return send_from_directory(WEB_DIR, filename)
 
 

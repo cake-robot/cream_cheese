@@ -8,6 +8,16 @@
    for Archivo, the wdth axis); Space Mono ships no variable build, so
    400/700 are two separate static files. Latin-subset only -- covers
    every team/place name on this site (e.g. "San José").
+
+   font-display: swap, deliberately not `optional` -- optional's ~100ms
+   block period with NO later swap meant any load slightly slower than that
+   (a cold cache, or real network latency over the tunnel) got permanently
+   stuck on the fallback font for that entire pageview, which read as "the
+   font is just wrong" rather than a brief flicker. swap always eventually
+   corrects to the real font. The actual flicker fix is the long-lived
+   Cache-Control on /fonts/ below (serve.py) -- once cached, the font loads
+   near-instantly with no network round-trip, so swap's fallback window
+   collapses to nothing on every navigation after the first.
    --------------------------------------------------------------------- */
 
 @font-face {
@@ -281,48 +291,7 @@ button.reset {
 button.reset:hover { border-color: var(--series-1); color: var(--ink-1); }
 button.reset:disabled { opacity: .4; cursor: default; }
 
-.summary-strip {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 8px 4px 14px;
-  color: var(--ink-2);
-  font-size: 13px;
-  flex-wrap: wrap;
-}
-.summary-strip .hist-strip { flex: 1 1 260px; max-width: 420px; }
-
-/* ---- table ---- */
-
-table.games-table {
-  width: 100%;
-  border-collapse: collapse;
-  background: var(--surface-1);
-  border: 1px solid var(--grid);
-}
-table.games-table th, table.games-table td {
-  text-align: left;
-  padding: 9px 12px;
-  border-bottom: 1px solid var(--grid);
-  font-size: 13.5px;
-  vertical-align: middle;
-}
-table.games-table th {
-  color: var(--ink-muted);
-  font-family: var(--font-display);
-  font-weight: 400;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: .1em;
-}
-table.games-table tbody tr { cursor: pointer; }
-table.games-table tbody tr:hover { background: var(--page); }
-table.games-table tbody tr:last-child td { border-bottom: none; }
-
 .rank-prefix { color: var(--ink-muted); font-size: 12px; font-family: var(--font-mono); }
-.matchup { font-family: var(--font-display); letter-spacing: .04em; text-transform: uppercase; }
-.score-cell { display: flex; align-items: center; gap: 8px; }
-.score-cell .score-val { min-width: 52px; }
 .score-meter {
   width: 56px; height: 2px; background: var(--track); overflow: hidden;
   flex: none;
@@ -344,18 +313,7 @@ table.games-table tbody tr:last-child td { border-bottom: none; }
 .chip.muted { color: var(--ink-muted); border-color: var(--axis); }
 .chip.accent { color: var(--ink-2); border-color: var(--axis); }
 .chip.good { color: var(--good); border-color: currentColor; }
-
-.pagination {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 10px 4px; color: var(--ink-2); font-size: 13px;
-}
-.pagination button {
-  font-family: var(--font-mono); font-size: 12px; background: var(--surface-1);
-  border: 1px solid var(--axis); border-radius: 0; padding: 5px 10px; cursor: pointer;
-  color: var(--ink-2);
-}
-.pagination button:hover:not(:disabled) { border-color: var(--series-1); }
-.pagination button:disabled { opacity: .4; cursor: default; }
+.chip.uw { color: #e0ddd2; border-color: var(--series-1); background: #2a1210; }
 
 .empty-state {
   text-align: center; padding: 48px 16px; color: var(--ink-muted);
@@ -364,8 +322,6 @@ table.games-table tbody tr:last-child td { border-bottom: none; }
 }
 
 .loading-frame { opacity: .55; pointer-events: none; transition: opacity .1s; }
-
-.expand-row td { background: var(--page); padding: 14px 20px; }
 
 /* ---- game detail ---- */
 
@@ -1069,6 +1025,204 @@ body[data-page="top"] .top-frame main {
   margin-top: 34px; padding-top: 18px; border-top: 1px solid var(--g-border);
   font-family: var(--font-mono); font-size: 10px; letter-spacing: .18em; color: var(--g-ink-dimmest);
   text-transform: uppercase; display: flex; justify-content: space-between;
+}
+
+/* ---- games list (Games handoff) ----------------------------------------
+   Same --g-* token grammar as Game Detail/Top games (values identical --
+   the handoff calls fidelity out as exact), plus a handful of page-only
+   tokens for the expand-row ground and the two clay/bonus tones this page
+   alone needs. Class vocabulary is prefixed gm- (this page's own, like
+   g- for Game Detail's unscoped grammar and t- for Top games) rather than
+   reusing either of those, since the grid geometry here (a 7-column
+   header+row pair) is unique to this layout. */
+body[data-page="games"] {
+  --g-ink-dimmest: #3f4a47;
+  --g-ink-dim: #4a5551;
+  --g-ink-muted: #5f6b66;
+  --g-ink-sec: #6e7b75;
+  --g-ink-sec2: #7d8a84;
+  --g-ink-body: #9aa39d;
+  --g-ink-body2: #c6c9c4;
+  --g-ink-strong: #c9c4b6;
+  --g-ink-bright: #e6e3d8;
+  --g-border: #1b2220;
+  --g-border-strong: #232b29;
+  --g-border-strong2: #2b3532;
+  --g-muted-graphic: #3a4441;
+  --g-card: #0b0f0e;
+  --g-card-inset: #0e1211;
+  --g-hairline: #161c1a;
+  --g-accent: #9a2b24;
+  --g-accent-tint: #c96b60;
+  --g-accent-ground: #2a1210;
+  --g-row-hairline: #101514;
+  --g-track: #141a18;
+  --g-chip-border: #3a4441;
+  --g-expand-ground: #080b0a;
+  --g-spoiler-clay: #9a7a6b;
+  --g-uw-bonus-clay: #c9a596;
+}
+
+body[data-page="games"] .games-frame {
+  position: relative;
+  background: var(--surface-0);
+  overflow: hidden;
+}
+body[data-page="games"] .games-frame::before {
+  content: "";
+  position: absolute; inset: 0; pointer-events: none; opacity: .055;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+body[data-page="games"] .games-frame::after {
+  content: "";
+  position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(120% 80% at 50% -10%, rgba(148, 180, 168, .07), rgba(0, 0, 0, 0) 60%);
+}
+body[data-page="games"] .games-frame header.chrome {
+  background: transparent; padding: 0 34px; position: relative;
+}
+body[data-page="games"] .games-frame main {
+  max-width: none; margin: 0; padding: 26px 34px 44px; position: relative;
+}
+
+.gm-title {
+  font-family: var(--font-display); font-weight: 300; font-size: 40px; line-height: 1;
+  letter-spacing: .03em; text-transform: uppercase; color: var(--g-ink-bright);
+}
+
+/* filter bar */
+.gm-filter-bar {
+  display: flex; align-items: flex-end; gap: 22px; flex-wrap: wrap;
+  margin-top: 22px; padding-bottom: 20px; border-bottom: 1px solid var(--g-border);
+}
+.gm-filter-label {
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: .18em; text-transform: uppercase;
+  color: var(--g-ink-dimmest); margin-bottom: 8px;
+}
+.gm-chip-row { display: flex; gap: 6px; flex-wrap: wrap; max-width: 340px; }
+.gm-chip {
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: .08em; padding: 5px 11px; cursor: pointer;
+  border: 1px solid var(--g-border-strong); background: transparent; color: var(--g-ink-sec);
+}
+.gm-chip.active { color: var(--g-ink-bright); background: var(--g-track); border-color: var(--g-chip-border); }
+.gm-search-group { flex: 1; min-width: 180px; }
+.gm-search-row { display: flex; align-items: center; gap: 8px; }
+.gm-search {
+  width: 100%; box-sizing: border-box; background: var(--g-card); border: 1px solid var(--g-border-strong);
+  color: var(--g-ink-bright); font-family: var(--font-mono); font-size: 12px; padding: 6px 10px; outline: none;
+}
+.gm-search:focus { border-color: var(--g-chip-border); }
+.gm-team-chip {
+  display: inline-flex; align-items: center; gap: 6px; flex: none;
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: .06em; padding: 5px 9px;
+  color: var(--g-ink-bright); background: var(--g-track); border: 1px solid var(--g-chip-border); white-space: nowrap;
+}
+.gm-team-chip .x { color: var(--g-ink-sec); cursor: pointer; }
+.gm-team-chip .x:hover { color: var(--g-ink-bright); }
+.gm-sort-group { display: flex; gap: 6px; flex-wrap: wrap; max-width: 340px; align-items: center; }
+.gm-dir {
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: .08em; padding: 5px 11px; cursor: pointer;
+  color: var(--g-accent); border: 1px solid var(--g-border-strong2); background: transparent;
+}
+.gm-reset {
+  font-family: var(--font-display); font-size: 11px; letter-spacing: .18em; text-transform: uppercase;
+  padding: 6px 14px; cursor: pointer; color: var(--g-ink-sec); background: transparent; border: 1px solid var(--g-border-strong);
+}
+.gm-reset:hover { color: var(--g-ink-bright); border-color: var(--g-chip-border); }
+
+/* single-select dropdown (Season / Week / Ranked) */
+.gm-select { position: relative; }
+.gm-select-trigger {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 104px;
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: .08em; padding: 5px 11px; cursor: pointer;
+  color: var(--g-ink-sec); background: transparent; border: 1px solid var(--g-border-strong);
+}
+.gm-select-trigger.set { color: var(--g-ink-bright); background: var(--g-track); border-color: var(--g-chip-border); }
+.gm-select-trigger .chev { color: var(--g-ink-dim); font-size: 12px; line-height: 1; display: inline-block; transition: transform .1s; }
+.gm-select-trigger.open .chev { transform: rotate(180deg); }
+.gm-select-menu {
+  position: absolute; top: 100%; left: 0; z-index: 20; margin-top: 4px; min-width: 104px;
+  max-height: 236px; overflow-y: auto; background: var(--g-card); border: 1px solid var(--g-chip-border);
+}
+.gm-select-option {
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: .08em; padding: 6px 11px; cursor: pointer;
+  color: var(--g-ink-body);
+}
+.gm-select-option:hover { background: var(--g-track); color: var(--g-ink-bright); }
+.gm-select-option.selected { background: var(--g-track); color: var(--g-ink-bright); }
+
+/* summary strip */
+.gm-summary-strip {
+  display: flex; align-items: center; gap: 20px; flex-wrap: wrap; padding: 14px 0;
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: .04em; color: var(--g-ink-sec);
+}
+.gm-summary-strip .spoiler { color: var(--g-spoiler-clay); }
+.gm-summary-strip .spoiler a { color: inherit; border-bottom: 1px solid var(--g-border-strong2); text-decoration: none; }
+.gm-summary-strip .spoiler a:hover { color: var(--g-ink-bright); }
+.gm-hist { display: flex; align-items: flex-end; gap: 1px; height: 22px; margin-left: 6px; }
+.gm-hist i { display: block; width: 6px; background: var(--g-muted-graphic); }
+
+/* table card */
+.gm-table-card { border: 1px solid var(--g-border); background: var(--g-card); }
+.gm-header-row {
+  display: grid; grid-template-columns: 44px 90px minmax(0, 1fr) 100px 70px 160px 26px; gap: 14px;
+  align-items: center; padding: 11px 24px; border-bottom: 1px solid var(--g-border);
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: .16em; text-transform: uppercase; color: var(--g-ink-dimmest);
+}
+.gm-row {
+  display: grid; grid-template-columns: 44px 90px minmax(0, 1fr) 100px 70px 160px 26px; gap: 14px;
+  align-items: center; padding: 13px 24px; border-bottom: 1px solid var(--g-row-hairline); cursor: pointer; position: relative;
+}
+.gm-row:hover { background: var(--g-card-inset); }
+.gm-rank { font-family: var(--font-mono); font-size: 12px; font-variant-numeric: tabular-nums; color: var(--g-ink-dim); }
+.gm-rank.top3 { color: var(--g-ink-strong); }
+.gm-wk { font-family: var(--font-mono); font-size: 11px; color: var(--g-ink-muted); }
+.gm-matchup { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.gm-matchup-text { font-family: var(--font-body); font-size: 14px; color: var(--g-ink-body2); white-space: nowrap; }
+.gm-date { font-family: var(--font-mono); font-size: 11px; color: var(--g-ink-muted); white-space: nowrap; }
+.gm-score-block { display: flex; align-items: center; gap: 8px; }
+.gm-score-val { font-family: var(--font-display); font-weight: 300; font-size: 18px; min-width: 44px; color: var(--g-ink-bright); font-variant-numeric: tabular-nums; }
+.gm-score-val.null { color: var(--g-ink-dim); }
+.gm-score-meter { width: 56px; height: 3px; background: var(--g-track); flex: none; position: relative; }
+.gm-score-meter > i { position: absolute; left: 0; top: 0; bottom: 0; }
+.gm-pctile { font-family: var(--font-mono); font-size: 9.5px; color: var(--g-ink-dimmest); }
+.gm-chevron { font-family: var(--font-mono); font-size: 12px; color: var(--g-ink-dim); display: inline-block; transition: transform .15s; }
+.gm-chevron.open { transform: rotate(180deg); }
+
+.gm-chip-tag {
+  font-family: var(--font-mono); font-size: 9px; letter-spacing: .14em; padding: 2px 5px;
+  color: var(--g-ink-sec2); border: 1px solid var(--g-border-strong2);
+}
+.gm-chip-tag.uw { color: #e0ddd2; border-color: var(--g-accent); background: var(--g-accent-ground); }
+
+.gm-expand { padding: 16px 24px 20px; background: var(--g-expand-ground); border-bottom: 1px solid var(--g-row-hairline); }
+.gm-expand-caption { font-family: var(--font-mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--g-ink-dimmest); margin-bottom: 10px; }
+.gm-expand-rows { display: flex; flex-direction: column; gap: 8px; }
+.gm-expand-row { display: grid; grid-template-columns: 150px 1fr 100px; gap: 12px; align-items: center; }
+.gm-expand-label { font-family: var(--font-mono); font-size: 11px; color: var(--g-ink-body); }
+.gm-expand-bar { height: 6px; background: var(--g-track); position: relative; }
+.gm-expand-bar > i { position: absolute; left: 0; top: 0; bottom: 0; }
+.gm-expand-detail { font-family: var(--font-mono); font-size: 10.5px; color: var(--g-ink-muted); text-align: right; white-space: nowrap; }
+.gm-expand-bonus { margin-top: 12px; font-family: var(--font-mono); font-size: 10.5px; color: var(--g-uw-bonus-clay); }
+
+.gm-empty { padding: 40px 24px; text-align: center; font-family: var(--font-mono); font-size: 12px; color: var(--g-ink-sec); }
+.gm-empty button {
+  display: inline-block; margin-top: 12px; padding: 6px 14px; cursor: pointer;
+  font-family: var(--font-mono); font-size: 12px; color: var(--g-ink-strong); background: transparent; border: 1px solid var(--g-border-strong);
+}
+.gm-empty button:hover { border-color: var(--g-accent); }
+
+.gm-pagination { display: flex; align-items: center; justify-content: space-between; padding: 14px 24px; }
+.gm-page-btn {
+  font-family: var(--font-display); font-size: 11px; letter-spacing: .16em; text-transform: uppercase;
+  padding: 6px 14px; cursor: pointer; background: transparent; border: 1px solid var(--g-border-strong); color: var(--g-ink-strong);
+}
+.gm-page-btn:disabled { color: var(--g-ink-dimmest); cursor: default; }
+.gm-page-range { font-family: var(--font-mono); font-size: 11px; color: var(--g-ink-sec); }
+
+.gm-footer {
+  display: flex; justify-content: space-between; margin-top: 34px; padding-top: 18px; border-top: 1px solid var(--g-border);
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: .18em; color: var(--g-ink-dimmest); text-transform: uppercase;
 }
 
 /* ---- login / signup ---- */

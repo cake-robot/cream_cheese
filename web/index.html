@@ -8,6 +8,7 @@
 </head>
 <body data-page="games">
 
+<div class="games-frame">
 <header class="chrome">
   <nav>
     <a href="/slate.html">Slate</a>
@@ -19,252 +20,468 @@
 </header>
 
 <main>
-  <div class="page-title">Games</div>
+  <div class="gm-title">Games</div>
 
-  <div class="filters" id="filters">
-    <label>Season <select id="f-season"></select></label>
-    <label>Type <select id="f-season_type">
-      <option value="all">All</option>
-      <option value="2">Regular</option>
-      <option value="3">Postseason</option>
-    </select></label>
-    <label>Week <select id="f-week"><option value="">All</option></select></label>
-    <label>Team <select id="f-team"><option value="">All</option></select></label>
-    <label>Ranked <select id="f-ranked">
-      <option value="any">Any</option>
-      <option value="one">One+ ranked</option>
-      <option value="both">Both ranked</option>
-    </select></label>
-    <label><input type="checkbox" id="f-conference"> Conference</label>
-    <label><input type="checkbox" id="f-neutral"> Neutral site</label>
-    <label><input type="checkbox" id="f-ot"> Overtime</label>
-    <label><input type="checkbox" id="f-scored" checked> Scored only</label>
-    <label>Search <input type="text" id="f-q" placeholder="team or venue" style="width:140px"></label>
-    <label>Sort
-      <select id="f-sort">
-        <option value="score">Score</option>
-        <option value="date">Date</option>
-        <option value="week">Week</option>
-        <option value="margin">Margin</option>
-        <option value="metric:wp_volatility">WP volatility</option>
-        <option value="metric:lead_changes">Lead changes</option>
-        <option value="metric:time_spent_close">Time spent close</option>
-        <option value="metric:team_profile">Team profile</option>
-        <option value="metric:upset_risk">Upset risk</option>
-        <option value="metric:late_volatility">Late volatility</option>
-        <option value="metric:clutch_finish">Clutch finish</option>
-      </select>
-    </label>
-    <label><select id="f-dir"><option value="desc">↓ desc</option><option value="asc">↑ asc</option></select></label>
-    <div class="spacer"></div>
-    <button class="reset" id="f-reset">Reset</button>
+  <div class="gm-filter-bar" id="gm-filter-bar"></div>
+
+  <div class="gm-summary-strip" id="gm-summary-strip"></div>
+
+  <div class="gm-table-card" id="gm-table-card">
+    <div class="gm-header-row">
+      <span>#</span><span>Wk</span><span>Matchup</span><span>Date</span><span></span><span>Score</span><span></span>
+    </div>
+    <div id="gm-rows"></div>
+    <div class="gm-pagination" id="gm-pagination"></div>
   </div>
 
-  <div class="summary-strip" id="summary-strip"></div>
-
-  <div id="table-frame">
-    <table class="games-table">
-      <thead>
-        <tr><th>#</th><th>Matchup</th><th>Date</th><th>Wk</th><th>Score</th><th></th></tr>
-      </thead>
-      <tbody id="games-tbody"></tbody>
-    </table>
-    <div class="pagination" id="pagination"></div>
+  <div class="gm-footer">
+    <span>Watchability // games</span>
+    <span>Every game, filtered and sorted</span>
   </div>
 </main>
+</div>
 
 <script src="/app.js"></script>
 <script src="/charts.js"></script>
 <script>
+// Positional falloff ramp shared with the Top games handoff (identical 12
+// values) -- defined locally here too rather than in charts.js, matching
+// that page's precedent, since neither page's ramp is a chart primitive.
+const RAMP12 = ["#e6e3d8", "#ddd5c7", "#d3c7b6", "#c9b9a5", "#bfab95", "#b59d85", "#ab8f76", "#a18268", "#97755b", "#8d6950", "#845e47", "#7b543f"];
+function rampColor(i) { return RAMP12[Math.min(i, RAMP12.length - 1)]; }
+
+const DEFAULTS = {
+  season: "", season_type: "all", week: "", team: "", ranked: "any",
+  conference: "all", neutral: "all", ot: "all", scored: "1", q: "",
+  sort: "score", dir: "desc", limit: 50, offset: 0,
+};
+
+let STATE = { ...DEFAULTS };
 let META = null;
-let CURRENT = null;
+let REGISTRY = [];
+let SCORED_SEASONS = [];
+let openDropdown = null; // 'season' | 'week' | 'ranked' | null
+let qTimer = null;
 
 async function loadMeta() {
   META = await api("/meta");
-  const seasonSel = document.getElementById("f-season");
-  seasonSel.innerHTML = '<option value="">All</option>' + META.seasons.slice().reverse()
-    .map((s) => `<option value="${s}">${s}</option>`).join("");
-  const teamSel = document.getElementById("f-team");
-  teamSel.innerHTML = '<option value="">All</option>' + META.teams
-    .map((t) => `<option value="${t.abbr}">${t.name}</option>`).join("");
+  // meta.seasons can include a schedule-only future season with zero scored
+  // games -- probe each one and keep only those with real data, same
+  // pattern as the Top games page.
+  for (const s of META.seasons.slice().reverse()) {
+    const probe = await api("/games", { season: s, scored: 1, limit: 1 });
+    if (probe.total > 0) SCORED_SEASONS.push(s);
+  }
+  SCORED_SEASONS.sort((a, b) => a - b);
 }
 
-function refreshWeekOptions() {
-  const season = document.getElementById("f-season").value;
-  const seasonType = document.getElementById("f-season_type").value;
-  const weekSel = document.getElementById("f-week");
-  const current = weekSel.value;
-  const sorted = weeksForSeason(META, season, seasonType);
-  weekSel.innerHTML = '<option value="">All</option>' + sorted.map((w) => `<option value="${w}">${w}</option>`).join("");
-  if (sorted.includes(Number(current))) weekSel.value = current;
+// This page's own chip grammar (9px, UW-first via gameChips()) rather than
+// app.js's shared renderChips(), which draws the site-wide 10px .chip used
+// by Game Detail and Slate -- a visibly different size than this handoff's
+// row grammar calls for. Same underlying gameChips() data, just re-rendered
+// against the .gm-chip-tag classes.
+function gmChips(g) {
+  return gameChips(g).map(([label, cls]) => el("span", { class: `gm-chip-tag${cls === "uw" ? " uw" : ""}`, text: label }));
 }
 
-function readFilters() {
+// ---- filter state -----------------------------------------------------
+
+function stateFromParams(params) {
+  const s = { ...DEFAULTS };
+  for (const k of Object.keys(DEFAULTS)) {
+    if (params[k] !== undefined) s[k] = params[k];
+  }
+  s.limit = Number(params.limit) || DEFAULTS.limit;
+  s.offset = Number(params.offset) || DEFAULTS.offset;
+  return s;
+}
+
+function syncUrl() {
+  setParams({ ...STATE });
+}
+
+function buildWeekOptions() {
+  const opts = [{ label: "All weeks", value: "" }];
+  if (STATE.season_type !== "3") {
+    weeksForSeason(META, STATE.season, STATE.season_type).forEach((w) => {
+      opts.push({ label: `Week ${w}`, value: String(w) });
+    });
+  }
+  if (STATE.season_type !== "2") {
+    opts.push({ label: "Postseason", value: "post" });
+  }
+  return opts;
+}
+
+// A selection the new Season/Type makes impossible resets to All weeks --
+// reset the state, don't just ignore the value, or the trigger shows a
+// selection its own menu no longer contains.
+function reconcileWeek() {
+  const opts = buildWeekOptions();
+  if (!opts.some((o) => o.value === STATE.week)) STATE.week = "";
+}
+
+function currentGamesParams() {
+  // Week='post' expresses "postseason" independently of the Type chip (the
+  // option only ever appears when Type already allows postseason), so it
+  // forces season_type=3 on the actual request rather than sending a
+  // week= param -- postseason games are all stored with week=1, which
+  // would wrongly restrict rather than select "postseason."
+  const seasonType = STATE.week === "post" ? "3" : STATE.season_type;
+  const week = STATE.week && STATE.week !== "post" ? STATE.week : undefined;
   return {
-    season: document.getElementById("f-season").value,
-    season_type: document.getElementById("f-season_type").value,
-    week: document.getElementById("f-week").value,
-    team: document.getElementById("f-team").value,
-    ranked: document.getElementById("f-ranked").value,
-    conference: document.getElementById("f-conference").checked ? "1" : "all",
-    neutral: document.getElementById("f-neutral").checked ? "1" : "all",
-    ot: document.getElementById("f-ot").checked ? "1" : "all",
-    scored: document.getElementById("f-scored").checked ? "1" : "all",
-    q: document.getElementById("f-q").value,
-    sort: document.getElementById("f-sort").value,
-    dir: document.getElementById("f-dir").value,
+    season: STATE.season || undefined,
+    season_type: seasonType,
+    week,
+    team: STATE.team || undefined,
+    ranked: STATE.ranked,
+    conference: STATE.conference,
+    neutral: STATE.neutral,
+    ot: STATE.ot,
+    scored: STATE.scored,
+    q: STATE.q || undefined,
+    sort: STATE.sort,
+    dir: STATE.dir,
+    limit: STATE.limit,
+    offset: STATE.offset,
   };
 }
 
-function applyFiltersToForm(params) {
-  document.getElementById("f-season").value = params.season || "";
-  document.getElementById("f-season_type").value = params.season_type || "all";
-  document.getElementById("f-week").value = params.week || "";
-  document.getElementById("f-team").value = params.team || "";
-  document.getElementById("f-ranked").value = params.ranked || "any";
-  document.getElementById("f-conference").checked = params.conference === "1";
-  document.getElementById("f-neutral").checked = params.neutral === "1";
-  document.getElementById("f-ot").checked = params.ot === "1";
-  document.getElementById("f-scored").checked = params.scored !== "0" && params.scored !== "all";
-  document.getElementById("f-q").value = params.q || "";
-  document.getElementById("f-sort").value = params.sort || "score";
-  document.getElementById("f-dir").value = params.dir || "desc";
+function onSelectChange(key, value) {
+  openDropdown = null;
+  if (STATE[key] === value) { renderFilterBar(); return; }
+  STATE[key] = value;
+  STATE.offset = 0;
+  if (key === "season") reconcileWeek();
+  syncUrl();
+  renderFilterBar();
+  refreshAll();
 }
 
-function renderMiniHistogram(mount, stats) {
-  mount.innerHTML = "";
-  histogram(mount, stats.histogram, { width: 260, height: 40 });
+function setChipState(key, value) {
+  if (STATE[key] === value) return;
+  STATE[key] = value;
+  STATE.offset = 0;
+  if (key === "season_type") reconcileWeek();
+  syncUrl();
+  renderFilterBar();
+  refreshAll();
 }
 
-function renderExpandedMetrics(container, game) {
-  const registry = REGISTRY;
-  contributionBars(container, game.metrics, registry, game.applicable_weight || 0.0001, game.uw_loss_bonus);
+function toggleFlag(key) {
+  STATE[key] = STATE[key] === "1" ? "all" : "1";
+  STATE.offset = 0;
+  syncUrl();
+  renderFilterBar();
+  refreshAll();
 }
 
-let REGISTRY = [];
-
-async function loadAndRender(page = 0, limit = 50) {
-  const frame = document.getElementById("table-frame");
-  frame.classList.add("loading-frame");
-  const filters = readFilters();
-  setParams({ ...filters, limit, offset: page * limit });
-  const data = await api("/games", { ...filters, limit, offset: page * limit });
-  CURRENT = { data, page, limit };
-  renderTable(data);
-  frame.classList.remove("loading-frame");
+function toggleDir() {
+  STATE.dir = STATE.dir === "desc" ? "asc" : "desc";
+  STATE.offset = 0;
+  syncUrl();
+  renderFilterBar();
+  refreshAll();
 }
 
-function renderTable(data) {
-  const tbody = document.getElementById("games-tbody");
-  tbody.innerHTML = "";
-  if (data.games.length === 0) {
-    tbody.appendChild(el("tr", {}, el("td", { colspan: "6" }, el("div", { class: "empty-state" }, [
-      "No games match these filters.", el("br"), el("button", { class: "reset", onclick: resetFilters, text: "Reset filters" }),
-    ]))));
-  }
-  data.games.forEach((g) => {
-    const scoreCell = g.watchability_score === null
-      ? el("span", { text: "—" })
-      : el("div", { class: "score-cell" }, [
-          el("span", { class: "score-val tabular-nums", text: fmtScore(g.watchability_score) }),
-          el("div", { class: "score-meter" }, el("i", { style: `width:${Math.min(100, (g.watchability_score / 0.70) * 100)}%` })),
-          el("span", { class: "pctile", text: g.percentile !== null ? fmtPct(g.percentile) : "" }),
-        ]);
-    const pi = postseasonInfo(g);
-    const wkCell = pi
-      ? el("span", { title: pi.label, text: pi.short })
-      : el("span", { text: g.season_type === 3 ? "Postseason" : (g.week !== null ? String(g.week) : "—") });
-    const row = el("tr", {}, [
-      el("td", { class: "tabular-nums", text: g.rank ? String(g.rank) : "—" }),
-      el("td", {}, [el("span", { class: "matchup", text: fmtMatchup(g) }), ...renderChips(g)]),
-      el("td", { text: fmtDate(g.game_date) }),
-      el("td", {}, wkCell),
-      el("td", {}, scoreCell),
-      el("td", { text: g.watchability_score !== null ? "⌄" : "" , style: "color:var(--ink-muted);cursor:pointer" }),
-    ]);
-    row.addEventListener("click", (ev) => {
-      if (ev.target.closest("button")) return;
-      sessionStorage.removeItem("top-return-search");
-      sessionStorage.setItem("games-return-search", location.search);
-      location.href = `/game.html?id=${g.game_id}`;
+function toggleDropdown(key) {
+  openDropdown = openDropdown === key ? null : key;
+  renderFilterBar();
+}
+
+function onSearchInput(value) {
+  STATE.q = value;
+  STATE.offset = 0;
+  clearTimeout(qTimer);
+  // Deliberately doesn't call renderFilterBar() here (unlike every other
+  // state change) -- that would tear down and recreate the focused <input>
+  // mid-keystroke. Only the table/summary/pagination refetch.
+  qTimer = setTimeout(() => { syncUrl(); refreshAll(); }, 250);
+}
+
+function resetAll() {
+  STATE = { ...DEFAULTS };
+  openDropdown = null;
+  history.replaceState(null, "", location.pathname);
+  renderFilterBar();
+  refreshAll();
+}
+
+// ---- filter bar ---------------------------------------------------------
+
+function buildDropdown(key, opts, neutralValue) {
+  const current = STATE[key];
+  const currentOpt = opts.find((o) => o.value === current) || opts[0];
+  const isOpen = openDropdown === key;
+  const trigger = el("div", {
+    class: `gm-select-trigger${current !== neutralValue ? " set" : ""}${isOpen ? " open" : ""}`,
+  }, [
+    el("span", { text: currentOpt.label }),
+    el("span", { class: "chev", text: "⌄" }),
+  ]);
+  trigger.addEventListener("click", (ev) => { ev.stopPropagation(); toggleDropdown(key); });
+  const children = [trigger];
+  if (isOpen) {
+    const menu = el("div", { class: "gm-select-menu" });
+    opts.forEach((o) => {
+      const optEl = el("div", { class: `gm-select-option${o.value === current ? " selected" : ""}`, text: o.label });
+      optEl.addEventListener("click", (ev) => { ev.stopPropagation(); onSelectChange(key, o.value); });
+      menu.appendChild(optEl);
     });
-    tbody.appendChild(row);
+    children.push(menu);
+  }
+  return el("div", { class: "gm-select" }, children);
+}
 
-    if (g.watchability_score !== null) {
-      const expandRow = el("tr", { class: "expand-row", style: "display:none" });
-      const td = el("td", { colspan: "6" });
-      expandRow.appendChild(td);
-      tbody.appendChild(expandRow);
-      row.lastChild.addEventListener("click", (ev) => {
-        ev.stopPropagation();
-        const showing = expandRow.style.display !== "none";
-        expandRow.style.display = showing ? "none" : "table-row";
-        if (!showing && td.children.length === 0) renderExpandedMetrics(td, g);
-      });
-    }
+function buildDropdownGroup(label, key, opts, neutralValue) {
+  return el("div", {}, [
+    el("div", { class: "gm-filter-label", text: label }),
+    buildDropdown(key, opts, neutralValue),
+  ]);
+}
+
+function buildChipRow(options, activeTest, onPick) {
+  return el("div", { class: "gm-chip-row" }, options.map((o) => {
+    const btn = el("span", { class: `gm-chip${activeTest(o.value) ? " active" : ""}`, text: o.label });
+    btn.addEventListener("click", () => onPick(o.value));
+    return btn;
+  }));
+}
+
+function buildSeasonOptions() {
+  return [{ label: "All seasons", value: "" }].concat(
+    SCORED_SEASONS.slice().sort((a, b) => b - a).map((s) => ({ label: String(s), value: String(s) })),
+  );
+}
+
+const RANKED_OPTIONS = [
+  { label: "Any", value: "any" },
+  { label: "One", value: "one" },
+  { label: "Both", value: "both" },
+];
+
+function buildTeamChip() {
+  const team = (META.teams || []).find((t) => t.abbr === STATE.team);
+  const chip = el("span", { class: "gm-team-chip" }, [
+    el("span", { text: team ? team.name : STATE.team }),
+  ]);
+  const x = el("span", { class: "x", text: "×" });
+  x.addEventListener("click", () => {
+    STATE.team = "";
+    STATE.offset = 0;
+    syncUrl();
+    renderFilterBar();
+    refreshAll();
   });
+  chip.appendChild(x);
+  return chip;
+}
 
-  const strip = document.getElementById("summary-strip");
+function renderFilterBar() {
+  const bar = document.getElementById("gm-filter-bar");
+  bar.innerHTML = "";
+
+  bar.appendChild(buildDropdownGroup("Season", "season", buildSeasonOptions(), ""));
+
+  bar.appendChild(el("div", {}, [
+    el("div", { class: "gm-filter-label", text: "Type" }),
+    buildChipRow(
+      [{ label: "All", value: "all" }, { label: "Reg", value: "2" }, { label: "Post", value: "3" }],
+      (v) => STATE.season_type === v,
+      (v) => setChipState("season_type", v),
+    ),
+  ]));
+
+  bar.appendChild(buildDropdownGroup("Week", "week", buildWeekOptions(), ""));
+  bar.appendChild(buildDropdownGroup("Ranked", "ranked", RANKED_OPTIONS, "any"));
+
+  bar.appendChild(el("div", {}, [
+    el("div", { class: "gm-filter-label", text: "Flags" }),
+    el("div", { class: "gm-chip-row" }, [
+      ["conference", "Conf"], ["neutral", "Neutral"], ["ot", "OT"], ["scored", "Scored only"],
+    ].map(([key, label]) => {
+      const btn = el("span", { class: `gm-chip${STATE[key] === "1" ? " active" : ""}`, text: label });
+      btn.addEventListener("click", () => toggleFlag(key));
+      return btn;
+    })),
+  ]));
+
+  const searchInput = el("input", { class: "gm-search", type: "text", placeholder: "team or venue", value: STATE.q });
+  searchInput.addEventListener("input", (ev) => onSearchInput(ev.target.value));
+  bar.appendChild(el("div", { class: "gm-search-group" }, [
+    el("div", { class: "gm-filter-label", text: "Search" }),
+    el("div", { class: "gm-search-row" }, [
+      ...(STATE.team ? [buildTeamChip()] : []),
+      searchInput,
+    ]),
+  ]));
+
+  const sortChips = [
+    { label: "Score", value: "score" }, { label: "Date", value: "date" },
+    { label: "Week", value: "week" }, { label: "Margin", value: "margin" },
+  ].map((o) => {
+    const btn = el("span", { class: `gm-chip${STATE.sort === o.value ? " active" : ""}`, text: o.label });
+    btn.addEventListener("click", () => setChipState("sort", o.value));
+    return btn;
+  });
+  const dirBtn = el("span", { class: "gm-dir", text: STATE.dir === "desc" ? "↓ desc" : "↑ asc" });
+  dirBtn.addEventListener("click", toggleDir);
+  bar.appendChild(el("div", {}, [
+    el("div", { class: "gm-filter-label", text: "Sort" }),
+    el("div", { class: "gm-sort-group" }, [...sortChips, dirBtn]),
+  ]));
+
+  const resetBtn = el("span", { class: "gm-reset", text: "Reset" });
+  resetBtn.addEventListener("click", resetAll);
+  bar.appendChild(resetBtn);
+}
+
+// ---- summary strip --------------------------------------------------------
+
+function renderSummaryStrip(data) {
+  const strip = document.getElementById("gm-summary-strip");
   strip.innerHTML = "";
   strip.appendChild(el("span", { text: `${data.total} games` }));
   if (data.filtered_score_stats.n) {
     strip.appendChild(el("span", { text: `median ${fmtScore(data.filtered_score_stats.median)}` }));
   }
   if (data.spoiler_excluded && data.spoiler_excluded.count) {
-    strip.appendChild(el("span", {
-      text: `⚠ ${data.spoiler_excluded.count} spoiler-protected games not shown here — see Slate`,
-    }));
+    strip.appendChild(el("span", { class: "spoiler" }, [
+      `⚠ ${data.spoiler_excluded.count} games spoiler-protected — see `,
+      el("a", { href: "/slate.html", text: "Slate" }),
+    ]));
   }
   const from = data.offset + 1, to = Math.min(data.offset + data.limit, data.total);
-  strip.appendChild(el("span", { text: data.total ? `showing ${from}–${to}` : "" }));
-  const histMount = el("div", { class: "hist-strip" });
-  strip.appendChild(histMount);
-  if (data.filtered_score_stats.n) renderMiniHistogram(histMount, data.filtered_score_stats);
-
-  const pag = document.getElementById("pagination");
-  pag.innerHTML = "";
-  const page = Math.floor(data.offset / data.limit);
-  const pageCount = Math.max(1, Math.ceil(data.total / data.limit));
-  pag.appendChild(el("button", { text: "‹ Prev", disabled: page === 0 ? "" : null, onclick: () => loadAndRender(page - 1, data.limit) }));
-  pag.appendChild(el("span", { text: `${from}–${to} of ${data.total}` }));
-  pag.appendChild(el("button", { text: "Next ›", disabled: (page + 1 >= pageCount) ? "" : null, onclick: () => loadAndRender(page + 1, data.limit) }));
+  strip.appendChild(el("span", { text: data.total ? `${from}–${to} of ${data.total}` : "no results" }));
+  if (data.filtered_score_stats.n) {
+    const bins = data.filtered_score_stats.histogram.bins;
+    const maxCount = Math.max(1, ...bins);
+    const hist = el("div", { class: "gm-hist" });
+    bins.forEach((c) => hist.appendChild(el("i", { style: `height:${Math.max(2, (c / maxCount) * 22)}px` })));
+    strip.appendChild(hist);
+  }
 }
 
-function resetFilters() {
-  document.querySelectorAll(".filters select").forEach((s) => (s.selectedIndex = 0));
-  document.querySelectorAll(".filters input[type=checkbox]").forEach((c) => (c.checked = c.id === "f-scored"));
-  document.getElementById("f-q").value = "";
-  history.replaceState(null, "", location.pathname);
-  loadAndRender(0);
+// ---- table ---------------------------------------------------------------
+
+function renderExpandMetrics(container, g) {
+  container.appendChild(el("div", { class: "gm-expand-caption", text: "Contribution by metric" }));
+  const rowsWrap = el("div", { class: "gm-expand-rows" });
+  REGISTRY.forEach((m) => {
+    const v = g.metrics[m.name];
+    if (v === null || v === undefined) return;
+    const color = RAMP12[Math.max(0, Math.min(9, Math.floor((1 - v.norm) * 9)))];
+    rowsWrap.appendChild(el("div", { class: "gm-expand-row" }, [
+      el("span", { class: "gm-expand-label", text: m.label }),
+      el("div", { class: "gm-expand-bar" }, el("i", { style: `width:${(v.norm * 100).toFixed(1)}%; background:${color}` })),
+      el("span", { class: "gm-expand-detail", text: `raw ${v.raw.toFixed(2)} · wt ${(m.weight * 100).toFixed(0)}%` }),
+    ]));
+  });
+  container.appendChild(rowsWrap);
+  if (g.uw_loss_bonus) {
+    container.appendChild(el("div", { class: "gm-expand-bonus", text: `+ UW loss bonus ${g.uw_loss_bonus.toFixed(3)}` }));
+  }
 }
 
-function wireFilters() {
-  document.querySelectorAll(".filters select, .filters input").forEach((elm) => {
-    elm.addEventListener("change", () => {
-      if (elm.id === "f-season" || elm.id === "f-season_type") refreshWeekOptions();
-      loadAndRender(0, CURRENT ? CURRENT.limit : 50);
+function renderRows(data) {
+  const mount = document.getElementById("gm-rows");
+  mount.innerHTML = "";
+  if (data.games.length === 0) {
+    const resetBtn = el("button", { text: "Reset filters" });
+    resetBtn.addEventListener("click", resetAll);
+    mount.appendChild(el("div", { class: "gm-empty" }, ["No games match these filters.", el("br"), resetBtn]));
+    return;
+  }
+  data.games.forEach((g, i) => {
+    const top3 = (data.offset + i) < 3;
+    const pi = postseasonInfo(g);
+    const wkText = pi ? pi.short : (g.season_type === 3 ? "Post" : (g.week !== null ? String(g.week) : "—"));
+
+    const scored = g.watchability_score !== null;
+    const scoreCell = el("div", { class: "gm-score-block" }, scored ? [
+      el("span", { class: "gm-score-val", text: fmtScore(g.watchability_score) }),
+      el("div", { class: "gm-score-meter" }, el("i", {
+        style: `width:${Math.min(100, (g.watchability_score / 0.87) * 100)}%; background:${rampColor(i)}`,
+      })),
+      el("span", { class: "gm-pctile", text: g.percentile !== null ? fmtPct(g.percentile) : "" }),
+    ] : [
+      el("span", { class: "gm-score-val null", text: "—" }),
+    ]);
+
+    const chevron = el("span", { class: scored ? "gm-chevron" : "", text: scored ? "⌄" : "" });
+
+    const row = el("div", { class: "gm-row" }, [
+      el("span", { class: `gm-rank${top3 ? " top3" : ""}`, text: g.rank ? String(g.rank) : "—" }),
+      el("span", { class: "gm-wk", title: pi ? pi.label : null, text: wkText }),
+      el("div", { class: "gm-matchup" }, [el("span", { class: "gm-matchup-text", text: fmtMatchup(g) }), ...gmChips(g)]),
+      el("span", { class: "gm-date", text: fmtDate(g.game_date) }),
+      el("span", {}),
+      scoreCell,
+      chevron,
+    ]);
+    row.addEventListener("click", () => {
+      sessionStorage.removeItem("top-return-search");
+      sessionStorage.setItem("games-return-search", location.search);
+      location.href = `/game.html?id=${g.game_id}`;
     });
+    mount.appendChild(row);
+
+    if (scored) {
+      const expandEl = el("div", { class: "gm-expand", style: "display:none" });
+      mount.appendChild(expandEl);
+      chevron.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        const showing = expandEl.style.display !== "none";
+        expandEl.style.display = showing ? "none" : "block";
+        chevron.classList.toggle("open", !showing);
+        if (!showing && expandEl.children.length === 0) renderExpandMetrics(expandEl, g);
+      });
+    }
   });
-  let qTimer = null;
-  document.getElementById("f-q").addEventListener("input", () => {
-    clearTimeout(qTimer);
-    qTimer = setTimeout(() => loadAndRender(0, CURRENT ? CURRENT.limit : 50), 250);
-  });
-  document.getElementById("f-reset").addEventListener("click", resetFilters);
 }
+
+function renderPagination(data) {
+  const pag = document.getElementById("gm-pagination");
+  pag.innerHTML = "";
+  const from = data.offset + 1, to = Math.min(data.offset + data.limit, data.total);
+  const prevBtn = el("button", { class: "gm-page-btn", text: "‹ Prev", disabled: data.offset === 0 ? "" : null });
+  prevBtn.addEventListener("click", () => { STATE.offset = Math.max(0, data.offset - data.limit); syncUrl(); refreshAll(); });
+  const nextBtn = el("button", { class: "gm-page-btn", text: "Next ›", disabled: (data.offset + data.limit) >= data.total ? "" : null });
+  nextBtn.addEventListener("click", () => { STATE.offset = data.offset + data.limit; syncUrl(); refreshAll(); });
+  pag.appendChild(prevBtn);
+  pag.appendChild(el("span", { class: "gm-page-range", text: data.total ? `${from}–${to} of ${data.total}` : "" }));
+  pag.appendChild(nextBtn);
+}
+
+async function refreshAll() {
+  const card = document.getElementById("gm-table-card");
+  card.classList.add("loading-frame");
+  const data = await api("/games", currentGamesParams());
+  renderSummaryStrip(data);
+  renderRows(data);
+  renderPagination(data);
+  card.classList.remove("loading-frame");
+}
+
+// ---- init ------------------------------------------------------------------
 
 (async function init() {
   await loadMeta();
   const metricsResp = await api("/metrics");
   REGISTRY = metricsResp.metrics;
-  const params = getParams();
-  applyFiltersToForm(params);
-  refreshWeekOptions();
-  if (params.week) document.getElementById("f-week").value = params.week;
-  wireFilters();
-  const limit = Number(params.limit) || 50;
-  const page = Math.floor((Number(params.offset) || 0) / limit);
-  loadAndRender(page, limit);
+
+  STATE = stateFromParams(getParams());
+  reconcileWeek();
+
+  document.addEventListener("click", () => {
+    if (openDropdown) { openDropdown = null; renderFilterBar(); }
+  });
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && openDropdown) { openDropdown = null; renderFilterBar(); }
+  });
+
+  renderFilterBar();
+  refreshAll();
 })();
 </script>
 </body>

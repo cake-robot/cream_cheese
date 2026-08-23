@@ -28,7 +28,7 @@
     <div class="t-filters">
       <div>
         <div class="t-filter-label">Season</div>
-        <div class="t-filter-options" id="t-season-options"></div>
+        <div id="t-season-select"></div>
       </div>
       <div>
         <div class="t-filter-label">Type</div>
@@ -167,24 +167,62 @@ async function loadMeta() {
   SCORED_SEASONS.sort((a, b) => a - b);
 }
 
-function renderFilterChips() {
-  const seasonMount = document.getElementById("t-season-options");
-  seasonMount.innerHTML = "";
-  const seasonOpts = [{ label: "All", value: "all" }].concat(
+// Single-select dropdown, not a chip row -- a growing season list doesn't
+// scale as chips the way Type's fixed three options do. Reuses the .gm-select
+// grammar built for the Games page rather than inventing a parallel one:
+// body[data-page="top"] already defines the same --g-* token values that
+// grammar reads (identical to Game Detail's, per the design system), so the
+// bare .gm-select* classes render correctly here with no page-scoped CSS of
+// their own.
+let seasonOpen = false;
+
+function buildSeasonOptions() {
+  return [{ label: "All seasons", value: "all" }].concat(
     SCORED_SEASONS.slice().sort((a, b) => b - a).map((s) => ({ label: String(s), value: String(s) })),
   );
-  seasonOpts.forEach((opt) => {
-    const btn = el("button", { class: `t-chip${STATE.season === opt.value ? " active" : ""}`, text: opt.label });
-    btn.addEventListener("click", () => {
-      if (STATE.season === opt.value) return;
-      STATE.season = opt.value;
-      STATE.limit = 50;
-      syncUrl();
-      renderFilterChips();
-      refreshAll();
-    });
-    seasonMount.appendChild(btn);
+}
+
+function onSeasonPick(value) {
+  seasonOpen = false;
+  if (STATE.season === value) { renderSeasonSelect(); return; }
+  STATE.season = value;
+  STATE.limit = 50;
+  syncUrl();
+  renderSeasonSelect();
+  refreshAll();
+}
+
+function renderSeasonSelect() {
+  const mount = document.getElementById("t-season-select");
+  mount.innerHTML = "";
+  const opts = buildSeasonOptions();
+  const current = opts.find((o) => o.value === STATE.season) || opts[0];
+  const trigger = el("div", {
+    class: `gm-select-trigger${STATE.season !== "all" ? " set" : ""}${seasonOpen ? " open" : ""}`,
+  }, [
+    el("span", { text: current.label }),
+    el("span", { class: "chev", text: "⌄" }),
+  ]);
+  trigger.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    seasonOpen = !seasonOpen;
+    renderSeasonSelect();
   });
+  const children = [trigger];
+  if (seasonOpen) {
+    const menu = el("div", { class: "gm-select-menu" });
+    opts.forEach((o) => {
+      const optEl = el("div", { class: `gm-select-option${o.value === STATE.season ? " selected" : ""}`, text: o.label });
+      optEl.addEventListener("click", (ev) => { ev.stopPropagation(); onSeasonPick(o.value); });
+      menu.appendChild(optEl);
+    });
+    children.push(menu);
+  }
+  mount.appendChild(el("div", { class: "gm-select" }, children));
+}
+
+function renderFilterChips() {
+  renderSeasonSelect();
 
   const typeMount = document.getElementById("t-type-options");
   typeMount.innerHTML = "";
@@ -356,6 +394,13 @@ function refreshAll() {
   if (params.season) STATE.season = params.season;
   if (params.season_type) STATE.seasonType = params.season_type;
   if (params.limit) STATE.limit = Number(params.limit) || 50;
+
+  document.addEventListener("click", () => {
+    if (seasonOpen) { seasonOpen = false; renderSeasonSelect(); }
+  });
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && seasonOpen) { seasonOpen = false; renderSeasonSelect(); }
+  });
 
   await loadMeta();
   renderFilterChips();

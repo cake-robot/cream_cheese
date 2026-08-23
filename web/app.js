@@ -184,6 +184,10 @@ function weeksForSeason(meta, season, seasonType) {
 
 function gameChips(g) {
   const chips = [];
+  // UW loss sorts first and is the one non-neutral chip -- g.uw_loss_bonus
+  // is only ever 0 or UW_LOSS_BONUS (scoring.uw_loss_bonus), so truthiness
+  // alone is "Washington played and lost," no team-id check needed here.
+  if (g.uw_loss_bonus) chips.push(["UW LOSS", "uw"]);
   if (g.spoiler_hidden) chips.push(["HIDDEN", "muted"]);
   if (g.status_state === "in") chips.push(["LIVE", "accent"]);
   if (g.ot) chips.push(["OT", "warn"]);
