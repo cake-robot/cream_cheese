@@ -442,8 +442,15 @@ async function loadAndRenderGame() {
 }
 
 (async function init() {
-  const savedSearch = sessionStorage.getItem("games-return-search");
-  if (savedSearch) document.getElementById("back-link").href = "/index.html" + savedSearch;
+  const topSearch = sessionStorage.getItem("top-return-search");
+  const gamesSearch = sessionStorage.getItem("games-return-search");
+  const backLink = document.getElementById("back-link");
+  if (topSearch) {
+    backLink.href = "/top.html" + topSearch;
+    backLink.textContent = "← BACK TO TOP GAMES";
+  } else if (gamesSearch) {
+    backLink.href = "/index.html" + gamesSearch;
+  }
 
   const metricsResp = await api("/metrics");
   metricsResp.metrics.forEach((m) => (REGISTRY_LABEL[m.name] = m.label));

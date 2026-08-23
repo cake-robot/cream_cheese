@@ -1287,3 +1287,92 @@ function heatmap(mount, correlation) {
   }
   mount.appendChild(tableTwin("Show as table", ["Metric A", "Metric B", "r", "N"], twinRows));
 }
+
+/* ---------------------------------------------------------------------
+ * weeklyPeaksChart -- Top Games "Weekly peaks" card (design_handoff_top_games).
+ * One polyline per season, fixed 0.55-0.90 y domain so seasons stay
+ * honestly comparable, weeks positioned by index within the union of
+ * rendered weeks (not by raw week number, so a bye/missing week in one
+ * season doesn't skew another's spacing). Per the handoff this chart has
+ * no hover state -- unlike every other chart on this site, Top Games
+ * deliberately gives hover only to nav/filters/rows, not chart elements --
+ * and per the handoff's chart-label note, all text lives in the HTML
+ * overlay at real px since the SVG uses preserveAspectRatio="none".
+ * `byWeek` is {season: [{week, watchability_score}, ...]}.
+ * ------------------------------------------------------------------- */
+function weeklyPeaksChart(mount, byWeek) {
+  const seasons = Object.keys(byWeek).sort();
+  const PAD_L = 46, RIGHT = 988, TOP = 14, BASELINE = 190, INSET = 24;
+  const usableW = RIGHT - PAD_L - 48;
+  const yMin = 0.55, yMax = 0.90;
+
+  const weekSet = new Set();
+  seasons.forEach((s) => byWeek[s].forEach((r) => weekSet.add(r.week)));
+  const weeks = Array.from(weekSet).sort((a, b) => a - b);
+  const n = weeks.length;
+  const weekIdx = {};
+  weeks.forEach((w, i) => (weekIdx[w] = i));
+
+  const xOf = (i) => (n > 1 ? PAD_L + INSET + (usableW * i) / (n - 1) : PAD_L + INSET + usableW / 2);
+  const groupW = n > 1 ? usableW / (n - 1) : usableW;
+  const yOf = (v) => {
+    const c = Math.max(yMin, Math.min(yMax, v));
+    return BASELINE - ((c - yMin) / (yMax - yMin)) * (BASELINE - TOP);
+  };
+
+  const NEWEST_COLORS = ["#e6e3d8", "var(--g-line-2)", "var(--g-ink-dim)"];
+  const seasonColor = (rankFromNewest) => (rankFromNewest < NEWEST_COLORS.length ? NEWEST_COLORS[rankFromNewest] : "var(--g-border-strong2)");
+
+  const root = svg("svg", { viewBox: "0 0 1000 250", preserveAspectRatio: "none", role: "img", "aria-label": "Weekly peak watchability score by season" });
+
+  weeks.forEach((w, i) => {
+    if (i % 2 !== 1) return;
+    root.appendChild(svg("rect", {
+      x: (xOf(i) - groupW / 2).toFixed(1), y: TOP, width: groupW.toFixed(1), height: (BASELINE - TOP).toFixed(1),
+      fill: "rgba(255,255,255,0.012)",
+    }));
+  });
+  [0.9, 0.8, 0.7, 0.6].forEach((v) => {
+    root.appendChild(svg("line", { x1: PAD_L, x2: RIGHT, y1: yOf(v).toFixed(1), y2: yOf(v).toFixed(1), stroke: "var(--g-border)", "stroke-width": "1" }));
+  });
+  root.appendChild(svg("line", { x1: PAD_L, x2: RIGHT, y1: BASELINE, y2: BASELINE, stroke: "var(--g-border-strong2)", "stroke-width": "1" }));
+
+  const overlay = el("div", { class: "t-peaks-plot" }, root);
+
+  const seasonsNewestFirst = seasons.slice().reverse();
+  seasonsNewestFirst.forEach((s, rankFromNewest) => {
+    const rows = byWeek[s].slice().sort((a, b) => a.week - b.week);
+    if (!rows.length) return;
+    const color = seasonColor(rankFromNewest);
+    const points = rows.map((r) => `${xOf(weekIdx[r.week]).toFixed(1)},${yOf(r.watchability_score).toFixed(1)}`).join(" ");
+    root.appendChild(svg("polyline", {
+      points, fill: "none", stroke: color, "stroke-width": rankFromNewest === 0 ? "1.8" : "1.4",
+      "stroke-linejoin": "round", "stroke-linecap": "round",
+    }));
+    let peak = rows[0];
+    rows.forEach((r) => { if (r.watchability_score > peak.watchability_score) peak = r; });
+    rows.forEach((r) => {
+      const isPeak = r === peak;
+      root.appendChild(svg("circle", {
+        cx: xOf(weekIdx[r.week]).toFixed(1), cy: yOf(r.watchability_score).toFixed(1),
+        r: isPeak ? "3.4" : "2", fill: isPeak ? "var(--g-accent)" : color,
+        stroke: "var(--g-card)", "stroke-width": "1",
+      }));
+    });
+    overlay.appendChild(el("div", {
+      class: "t-peaks-callout",
+      style: `left:${(xOf(weekIdx[peak.week]) / 1000) * 100}%;top:${(yOf(peak.watchability_score) / 250) * 100}%`,
+      text: `${s} · ${peak.watchability_score.toFixed(3)}`,
+    }));
+  });
+
+  [0.9, 0.8, 0.7, 0.6, 0.55].forEach((v) => {
+    overlay.appendChild(el("div", { class: "t-peaks-ylabel", style: `top:${(yOf(v) / 250) * 100}%`, text: v.toFixed(2) }));
+  });
+  weeks.forEach((w, i) => {
+    overlay.appendChild(el("div", { class: "t-peaks-xlabel", style: `left:${(xOf(i) / 1000) * 100}%`, text: String(w) }));
+  });
+
+  mount.appendChild(overlay);
+  mount.appendChild(el("div", { class: "t-peaks-caption", text: "One point per week: the single highest composite of that week. Oxblood marks each season's highest week. Postseason weeks are excluded from this view." }));
+}

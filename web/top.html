@@ -8,6 +8,7 @@
 </head>
 <body data-page="top">
 
+<div class="top-frame">
 <header class="chrome">
   <nav>
     <a href="/slate.html">Slate</a>
@@ -19,168 +20,345 @@
 </header>
 
 <main>
-  <div class="page-title">Top games</div>
-
-  <div class="filters">
-    <label>Rank by <select id="f-by">
-      <option value="composite">Composite score</option>
-    </select></label>
-    <label>Season <select id="f-season"><option value="">All</option></select></label>
-    <label>Type <select id="f-season_type">
-      <option value="all">All</option>
-      <option value="2">Regular</option>
-      <option value="3">Postseason</option>
-    </select></label>
-    <label>Top N <select id="f-limit">
-      <option value="10">10</option>
-      <option value="25" selected>25</option>
-      <option value="50">50</option>
-      <option value="100">100</option>
-    </select></label>
-  </div>
-
-  <div class="top-layout">
+  <div class="t-title-row">
     <div>
-      <div id="cap-banner"></div>
-      <div id="top-list"></div>
+      <div class="t-title">Top games</div>
+      <div class="t-result-line" id="t-result-line"></div>
     </div>
-    <div>
-      <div class="card">
-        <h2>Team leaderboard</h2>
-        <div class="card-sub">Average of each team's top 5 games (home + away), min. 8 games played.</div>
-        <div id="team-list"></div>
+    <div class="t-filters">
+      <div>
+        <div class="t-filter-label">Season</div>
+        <div class="t-filter-options" id="t-season-options"></div>
+      </div>
+      <div>
+        <div class="t-filter-label">Type</div>
+        <div class="t-filter-options" id="t-type-options"></div>
       </div>
     </div>
   </div>
 
-  <div class="card">
-    <h2 id="peaks-title">Weekly peaks</h2>
-    <div class="card-sub">The highest-scoring game of each week.</div>
-    <div id="peaks-mount"></div>
+  <div class="t-banner-stack" id="t-banner-stack"></div>
+
+  <div class="t-body-grid">
+    <div class="g-card">
+      <div class="t-list-head">
+        <div>
+          <div class="g-card-title">Ranked by composite</div>
+          <div class="g-card-sub">Watchability score, highest first. The two metrics that contributed most are named on each row.</div>
+        </div>
+        <div class="t-list-rule-note" id="t-rule-note"></div>
+      </div>
+      <div id="t-rows"></div>
+      <div id="t-show-more"></div>
+      <div class="t-list-footer">Click any row to open that game. Ranks reflect the spoiler-visible corpus only.</div>
+    </div>
+
+    <div class="t-rail">
+      <div class="g-card t-rail-card-pad">
+        <div class="g-card-title">Team leaderboard</div>
+        <div class="g-card-sub">Average of each team's top 5 games, home or away. Minimum 8 games played.</div>
+        <div class="t-team-rows" id="t-team-rows"></div>
+        <div class="t-rail-caption">Row click opens that team's best game. Bar is the average against the leader's.</div>
+      </div>
+
+      <div class="g-card t-rail-card-pad">
+        <div class="g-card-title">How to read this</div>
+        <div class="t-howto-body">
+          The composite is a weighted average of every applicable metric, normalized against its cap.
+          Two games can tie here and feel nothing alike — the driver line says which levers moved.
+        </div>
+        <div class="t-legend">
+          <div class="t-legend-item"><span class="t-legend-swatch" style="background:#e6e3d8"></span>Top of the list</div>
+          <div class="t-legend-item"><span class="t-legend-swatch" style="background:#9b6656"></span>Lower in the list</div>
+          <div class="t-legend-item"><span class="t-legend-swatch" style="background:#9a2b24"></span>Season peak / UW loss</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="g-card" style="margin-top:26px">
+    <div class="t-peaks-head">
+      <div>
+        <div class="g-card-title" id="t-peaks-title">Weekly peaks</div>
+        <div class="g-card-sub">The highest-scoring game of each week — the ceiling of a Saturday, not its average.</div>
+      </div>
+      <div class="t-peaks-legend" id="t-peaks-legend"></div>
+    </div>
+    <div class="t-peaks-body" id="t-peaks-body"></div>
+  </div>
+
+  <div class="t-footer">
+    <span>Watchability // top games</span>
+    <span>Ranked on what already happened</span>
   </div>
 </main>
+</div>
 
 <script src="/app.js"></script>
 <script src="/charts.js"></script>
 <script>
-let REGISTRY = [];
-let LATEST_SCORED_SEASON = null;
+const STATE = { season: "all", seasonType: "all", limit: 50 };
 let SCORED_SEASONS = [];
 
-async function loadMeta() {
-  const meta = await api("/meta");
-  const seasonSel = document.getElementById("f-season");
-  seasonSel.innerHTML = '<option value="">All</option>' + meta.seasons.slice().reverse().map((s) => `<option value="${s}">${s}</option>`).join("");
-  // `meta.seasons` can include a schedule-only future season with zero scored
-  // games (e.g. 2026), so probe each one and keep only those with real data.
-  for (const s of meta.seasons.slice().reverse()) {
-    const probe = await api("/games", { season: s, scored: 1, limit: 1 });
-    if (probe.total > 0) {
-      SCORED_SEASONS.push(s);
-      if (LATEST_SCORED_SEASON === null) LATEST_SCORED_SEASON = s;
-    }
-  }
-  SCORED_SEASONS.sort();
+const RAMP12 = ["#e6e3d8", "#ddd5c7", "#d3c7b6", "#c9b9a5", "#bfab95", "#b59d85", "#ab8f76", "#a18268", "#97755b", "#8d6950", "#845e47", "#7b543f"];
+function rampColor(i) { return RAMP12[Math.min(i, RAMP12.length - 1)]; }
 
-  const bySel = document.getElementById("f-by");
-  REGISTRY.forEach((m) => bySel.appendChild(el("option", { value: m.name, text: m.label })));
+// This page's own chip grammar (9px / 2px 5px, UW-first sort) is
+// deliberately not app.js's shared renderChips()/gameChips() -- those draw
+// the site-wide 10px .chip used by the Games table and Slate, a visibly
+// different size than this handoff's list rows call for. Same underlying
+// boolean fields, just re-rendered against the .t-chip-tag grammar.
+function topChips(g) {
+  const chips = [];
+  if (g.uw_loss_bonus) chips.push(["UW LOSS", true]);
+  if (g.ot) chips.push(["OT", false]);
+  if (g.conference_game) chips.push(["CONF", false]);
+  if (g.neutral_site) chips.push(["NEU", false]);
+  if (g.has_fox_correction) chips.push(["FOX", false]);
+  if (g.has_manual_correction) chips.push(["MANUAL", false]);
+  return chips.map(([label, uw]) => el("span", { class: `t-chip-tag${uw ? " uw" : ""}`, text: label }));
 }
 
-function currentFilters() {
+function matchupText(g) {
+  const away = g.away.rank ? `#${g.away.rank} ${g.away.name}` : g.away.name;
+  const home = g.home.rank ? `#${g.home.rank} ${g.home.name}` : g.home.name;
+  return el("span", { class: "t-matchup-text" }, [
+    `${away} `, el("span", { class: "score", text: String(g.away.score) }),
+    " ", el("span", { class: "at", text: "at" }), ` ${home} `,
+    el("span", { class: "score", text: String(g.home.score) }),
+  ]);
+}
+
+function typeLabel(seasonType) {
+  if (seasonType === "2") return "regular season";
+  if (seasonType === "3") return "postseason";
+  return "regular + postseason";
+}
+
+function goToGame(gameId) {
+  // Clear the sibling key so game.html's back link can't pick a stale
+  // referrer if the user also came through index.html earlier this
+  // session -- only the page navigated from most recently should win.
+  sessionStorage.removeItem("games-return-search");
+  sessionStorage.setItem("top-return-search", location.search);
+  location.href = `/game.html?id=${gameId}`;
+}
+
+function syncUrl() {
+  setParams({ season: STATE.season, season_type: STATE.seasonType, limit: STATE.limit === 50 ? undefined : STATE.limit });
+}
+
+function currentTopParams() {
   return {
-    by: document.getElementById("f-by").value,
-    season: document.getElementById("f-season").value,
-    season_type: document.getElementById("f-season_type").value,
-    limit: document.getElementById("f-limit").value,
+    season: STATE.season === "all" ? undefined : STATE.season,
+    season_type: STATE.seasonType,
   };
 }
 
-async function renderTop() {
-  const f = currentFilters();
-  const data = await api("/top", f);
-  const banner = document.getElementById("cap-banner");
-  banner.innerHTML = "";
-  if (data.cap_warning) banner.appendChild(el("div", { class: "cap-banner", text: `⚠ ${data.cap_warning}` }));
-  if (data.spoiler_excluded && data.spoiler_excluded.count) {
-    banner.appendChild(el("div", {
-      class: "cap-banner",
-      text: `⚠ ${data.spoiler_excluded.count} spoiler-protected games not shown here — see Slate`,
-    }));
+async function loadMeta() {
+  const meta = await api("/meta");
+  // meta.seasons can include a schedule-only future season with zero scored
+  // games, so probe each one and keep only those with real data -- same
+  // pattern as the rest of the app.
+  for (const s of meta.seasons.slice().reverse()) {
+    const probe = await api("/games", { season: s, scored: 1, limit: 1 });
+    if (probe.total > 0) SCORED_SEASONS.push(s);
   }
+  SCORED_SEASONS.sort((a, b) => a - b);
+}
 
-  const list = document.getElementById("top-list");
-  list.innerHTML = "";
-  data.results.forEach((r) => {
-    const g = r.game;
-    const value = f.by === "composite" ? fmtScore(g.watchability_score) : fmtRaw(r.value);
-    const why = f.by === "composite" && r.top_contributors.length
-      ? `Driven by ${r.top_contributors.map((c) => c.label).join(" + ")}`
-      : (f.by !== "composite" ? `${r.at_cap ? "at cap" : "raw value"}` : "");
-    const pi = postseasonInfo(g);
-    const whenLabel = pi ? pi.short : (g.season_type === 3 ? "postseason" : `wk ${g.week ?? "—"}`);
-    const item = el("div", { class: "top-list-item" }, [
-      el("div", { class: "pos", text: `#${r.rank}` }),
-      el("div", { class: "val tabular-nums", text: value }),
-      el("div", { class: "info" }, [
-        el("div", {}, [fmtMatchup(g), ...renderChips(g)]),
-        el("div", { class: "why", text: `${fmtDate(g.game_date)} · ${whenLabel}${why ? " · " + why : ""}` }),
-      ]),
-    ]);
-    item.addEventListener("click", () => (location.href = `/game.html?id=${g.game_id}`));
-    list.appendChild(item);
+function renderFilterChips() {
+  const seasonMount = document.getElementById("t-season-options");
+  seasonMount.innerHTML = "";
+  const seasonOpts = [{ label: "All", value: "all" }].concat(
+    SCORED_SEASONS.slice().sort((a, b) => b - a).map((s) => ({ label: String(s), value: String(s) })),
+  );
+  seasonOpts.forEach((opt) => {
+    const btn = el("button", { class: `t-chip${STATE.season === opt.value ? " active" : ""}`, text: opt.label });
+    btn.addEventListener("click", () => {
+      if (STATE.season === opt.value) return;
+      STATE.season = opt.value;
+      STATE.limit = 50;
+      syncUrl();
+      renderFilterChips();
+      refreshAll();
+    });
+    seasonMount.appendChild(btn);
+  });
+
+  const typeMount = document.getElementById("t-type-options");
+  typeMount.innerHTML = "";
+  [{ label: "All", value: "all" }, { label: "Reg", value: "2" }, { label: "Post", value: "3" }].forEach((opt) => {
+    const btn = el("button", { class: `t-chip${STATE.seasonType === opt.value ? " active" : ""}`, text: opt.label });
+    btn.addEventListener("click", () => {
+      if (STATE.seasonType === opt.value) return;
+      STATE.seasonType = opt.value;
+      STATE.limit = 50;
+      syncUrl();
+      renderFilterChips();
+      refreshAll();
+    });
+    typeMount.appendChild(btn);
   });
 }
 
-async function renderTeams() {
-  const f = currentFilters();
-  const data = await api("/top/teams", { season: f.season, season_type: f.season_type, min_games: 8, limit: 25 });
-  const mount = document.getElementById("team-list");
-  mount.innerHTML = "";
-  data.results.forEach((t) => {
-    const row = el("div", { class: "team-row" }, [
-      el("span", { text: `#${t.rank} ${t.name}` }),
-      el("span", { class: "val", text: `${fmtScore(t.avg_watchability)} / ${t.games_played}` }),
+async function renderList() {
+  const data = await api("/top", { by: "composite", ...currentTopParams(), limit: STATE.limit });
+
+  document.getElementById("t-result-line").textContent =
+    `${data.total} scored games · ${STATE.season === "all" ? "all seasons" : STATE.season} · ${typeLabel(STATE.seasonType)}`;
+
+  const bannerMount = document.getElementById("t-banner-stack");
+  bannerMount.innerHTML = "";
+  if (data.spoiler_excluded && data.spoiler_excluded.count > 0) {
+    bannerMount.appendChild(el("div", { class: "t-banner" }, [
+      el("span", { class: "glyph", text: "▲" }),
+      el("span", {}, [
+        `${data.spoiler_excluded.count} spoiler-protected games are excluded from this ranking — see `,
+        el("a", { href: "/slate.html", text: "Slate" }),
+        ".",
+      ]),
+    ]));
+  }
+
+  const rowsMount = document.getElementById("t-rows");
+  const showMoreMount = document.getElementById("t-show-more");
+  const ruleNote = document.getElementById("t-rule-note");
+  rowsMount.innerHTML = "";
+  showMoreMount.innerHTML = "";
+
+  if (!data.results.length) {
+    ruleNote.textContent = "";
+    rowsMount.appendChild(el("div", { class: "t-empty", text: "No scored games match these filters." }));
+    return;
+  }
+
+  const scores = data.results.map((r) => r.game.watchability_score);
+  const max = Math.max(...scores), min = Math.min(...scores);
+  const span = max - min;
+  ruleNote.textContent = `Rule width = score against #1 (${fmtScore(max)})`;
+
+  data.results.forEach((r, idx) => {
+    const g = r.game;
+    const pi = postseasonInfo(g);
+    const whenLabel = pi ? pi.short : `${g.season_year} wk ${g.week ?? "—"}`;
+    const chips = topChips(g);
+    const matchupLine = el("div", { class: "t-matchup-line" }, [matchupText(g), ...chips]);
+    const info = [matchupLine];
+    if (r.top_contributors.length) {
+      info.push(el("div", {
+        class: "t-driver-line",
+        text: `Driven by ${r.top_contributors.map((c) => c.label).join(" + ")}`,
+      }));
+    }
+    const fraction = span > 0 ? (g.watchability_score - min) / span : 1;
+    const ruleWidth = (0.18 + 0.82 * fraction) * 100;
+    const row = el("div", { class: "t-row" }, [
+      el("div", { class: `t-rank${r.rank <= 3 ? " top3" : ""}`, text: `#${r.rank}` }),
+      el("div", { class: "t-score", text: fmtScore(g.watchability_score) }),
+      el("div", { class: "t-info" }, info),
+      el("div", { class: "t-when", text: whenLabel }),
+      el("div", { class: "t-rule", style: `width:${ruleWidth}%;background:${rampColor(idx)}` }),
     ]);
-    if (t.best_game) row.addEventListener("click", () => (location.href = `/game.html?id=${t.best_game.game_id}`));
-    row.style.cursor = "pointer";
+    row.addEventListener("click", () => goToGame(g.game_id));
+    rowsMount.appendChild(row);
+  });
+
+  const shown = data.results.length;
+  const remaining = data.total - shown;
+  if (remaining > 0) {
+    const n = Math.min(25, remaining);
+    const band = el("div", { class: "t-show-more" }, [
+      el("div", { class: "t-show-more-label", text: `Show ${n} more` }),
+      el("div", { class: "t-show-more-count", text: `${shown} of ${data.total} shown` }),
+    ]);
+    band.addEventListener("click", () => {
+      STATE.limit += 25;
+      syncUrl();
+      renderList();
+    });
+    showMoreMount.appendChild(band);
+  }
+}
+
+async function renderTeams() {
+  const mount = document.getElementById("t-team-rows");
+  mount.innerHTML = "";
+  const data = await api("/top/teams", { ...currentTopParams(), min_games: 8, limit: 25 });
+  const rows = data.results.slice(0, 12);
+  const leaderAvg = rows.length ? rows[0].avg_watchability : 0;
+  rows.forEach((t, idx) => {
+    const barPct = leaderAvg ? (0.3 + 0.7 * (t.avg_watchability / leaderAvg)) * 100 : 0;
+    const row = el("div", { class: "t-team-row" }, [
+      el("div", { class: "t-team-rank", text: String(t.rank) }),
+      el("div", {}, [
+        el("div", { class: "t-team-name", text: t.name }),
+        el("div", { class: "t-team-track" }, el("div", { class: "t-team-fill", style: `width:${Math.min(100, barPct)}%;background:${rampColor(idx)}` })),
+      ]),
+      el("div", {}, [
+        el("div", { class: "t-team-avg", text: fmtScore(t.avg_watchability) }),
+        el("div", { class: "t-team-gp", text: `${t.games_played} gp` }),
+      ]),
+    ]);
+    if (t.best_game) {
+      row.addEventListener("click", () => goToGame(t.best_game.game_id));
+    } else {
+      row.style.cursor = "default";
+    }
     mount.appendChild(row);
   });
 }
 
 async function renderPeaks() {
-  const f = currentFilters();
-  const seasonType = f.season_type === "all" ? "2" : f.season_type;
-  const mount = document.getElementById("peaks-mount");
-  mount.innerHTML = "";
+  const titleMount = document.getElementById("t-peaks-title");
+  const legendMount = document.getElementById("t-peaks-legend");
+  const bodyMount = document.getElementById("t-peaks-body");
+  titleMount.textContent = `Weekly peaks — ${STATE.season === "all" ? "all seasons" : STATE.season}`;
+  bodyMount.innerHTML = "";
+  legendMount.innerHTML = "";
 
-  // With no season filter applied, overlay every scored season instead of
-  // silently collapsing to just the latest one.
-  const seasons = f.season ? [f.season] : SCORED_SEASONS;
+  const seasonType = STATE.seasonType === "all" ? "2" : STATE.seasonType;
+  const seasons = STATE.season !== "all" ? [STATE.season] : SCORED_SEASONS.map(String);
   if (!seasons.length) return;
 
   const results = await Promise.all(seasons.map((s) => api("/top/weekly-peaks", { season: s, season_type: seasonType })));
-  document.getElementById("peaks-title").textContent = `Weekly peaks — ${f.season ? f.season : "all seasons"}`;
   const byWeek = {};
   seasons.forEach((s, i) => {
-    byWeek[s] = results[i].weeks.map((w) => ({ week: w.week, avg_score: w.watchability_score, n: 1 }));
+    byWeek[s] = results[i].weeks.map((w) => ({ week: w.week, watchability_score: w.watchability_score }));
   });
-  multiLine(mount, byWeek);
+
+  // Same newest-first color ramp weeklyPeaksChart uses internally --
+  // duplicated here (3 lines) since the legend lives in the card header,
+  // outside the chart function's own DOM.
+  const LEGEND_COLORS = ["#e6e3d8", "var(--g-line-2)", "var(--g-ink-dim)"];
+  seasons.slice().sort().reverse().forEach((s, rank) => {
+    legendMount.appendChild(el("span", { class: "sw" }, [
+      el("i", { style: `background:${rank < LEGEND_COLORS.length ? LEGEND_COLORS[rank] : "var(--g-border-strong2)"}` }),
+      s,
+    ]));
+  });
+
+  weeklyPeaksChart(bodyMount, byWeek);
 }
 
-function wire() {
-  document.querySelectorAll(".filters select").forEach((s) => s.addEventListener("change", refreshAll));
-}
 function refreshAll() {
-  renderTop();
+  renderList();
   renderTeams();
   renderPeaks();
 }
 
 (async function init() {
-  const metricsResp = await api("/metrics");
-  REGISTRY = metricsResp.metrics;
+  // Restores state from the URL, not from sessionStorage directly -- the
+  // stored top-return-search value is just a location.search string that
+  // game.html's back link appends to /top.html, so by the time this page
+  // loads the filters are already sitting in the URL's own query params.
+  const params = getParams();
+  if (params.season) STATE.season = params.season;
+  if (params.season_type) STATE.seasonType = params.season_type;
+  if (params.limit) STATE.limit = Number(params.limit) || 50;
+
   await loadMeta();
-  wire();
+  renderFilterChips();
   refreshAll();
 })();
 </script>

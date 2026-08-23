@@ -184,6 +184,7 @@ function renderTable(data) {
     ]);
     row.addEventListener("click", (ev) => {
       if (ev.target.closest("button")) return;
+      sessionStorage.removeItem("top-return-search");
       sessionStorage.setItem("games-return-search", location.search);
       location.href = `/game.html?id=${g.game_id}`;
     });

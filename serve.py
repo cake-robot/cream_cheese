@@ -1960,8 +1960,11 @@ def api_top():
         limit = int(request.args.get("limit", 25))
     except ValueError:
         abort(400, description="limit must be an integer")
-    if not (1 <= limit <= 100):
-        abort(400, description="limit must be between 1 and 100")
+    # 1000 (not the old 100) -- Top Games' progressive disclosure starts at
+    # 50 and grows by 25 per "Show more" click, and the unfiltered corpus
+    # across all seasons is already well past 100 scored games.
+    if not (1 <= limit <= 1000):
+        abort(400, description="limit must be between 1 and 1000")
 
     where = ["g.watchability_score IS NOT NULL"]
     params = []
@@ -1997,6 +2000,9 @@ def api_top():
     where_sql = " AND ".join(where)
 
     if by == "composite":
+        total = conn.execute(
+            f"SELECT COUNT(*) AS n FROM games g WHERE {where_sql}", params,
+        ).fetchone()["n"]
         rows = conn.execute(
             f"SELECT g.*, {OT_EXISTS_SQL} AS is_ot FROM games g WHERE {where_sql} "
             f"ORDER BY g.watchability_score DESC LIMIT ?",
@@ -2022,7 +2028,7 @@ def api_top():
                 "top_contributors": [{"name": n, "label": METRIC_COPY[n]["label"], "weighted": w} for n, w in top2],
             })
         return jsonify({
-            "by": "composite", "results": results, "cap_warning": None,
+            "by": "composite", "results": results, "cap_warning": None, "total": total,
             "spoiler_excluded": {"count": excluded_count},
         })
 
