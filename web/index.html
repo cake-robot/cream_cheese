@@ -18,6 +18,13 @@
     <a href="/analytics.html">Analytics</a>
   </nav>
 </header>
+<div class="mnav-bar" id="mnav-bar">
+  <span class="mnav-word">Watchability</span>
+  <button type="button" class="mnav-trig" id="mnav-trig" aria-expanded="false" aria-controls="mnav-drawer">
+    <span class="t">Menu</span><span class="c" id="mnav-chev">⌄</span>
+  </button>
+  <div class="mnav-drawer" id="mnav-drawer" hidden></div>
+</div>
 
 <main>
   <div class="gm-title">Games</div>
@@ -62,6 +69,28 @@ let REGISTRY = [];
 let SCORED_SEASONS = [];
 let openDropdown = null; // 'season' | 'week' | 'ranked' | null
 let qTimer = null;
+// Mobile-only ("3a" handoff): Season/Type/Week/Ranked/Flags/Sort collapse
+// behind one "Filters" toggle next to the search field, which stays visible.
+// No effect above the phone breakpoint -- .gm-filter-groups is `display:
+// contents` there, so this state never touches desktop layout.
+let mobileFiltersOpen = false;
+
+// Count of filters (excluding search, which has its own always-visible
+// field) currently off their default -- shown as the mobile "Filters (n)"
+// badge so a collapsed accordion still tells you something's active.
+function activeFilterCount() {
+  let n = 0;
+  if (STATE.season) n++;
+  if (STATE.season_type !== "all") n++;
+  if (STATE.week) n++;
+  if (STATE.ranked !== "any") n++;
+  if (STATE.conference === "1") n++;
+  if (STATE.neutral === "1") n++;
+  if (STATE.ot === "1") n++;
+  if (STATE.scored !== "1") n++;
+  if (STATE.sort !== "score" || STATE.dir !== "desc") n++;
+  return n;
+}
 
 async function loadMeta() {
   META = await api("/meta");
@@ -277,13 +306,22 @@ function buildTeamChip() {
   return chip;
 }
 
+// Mobile ("3a"): everything except Search collapses behind one "Filters"
+// toggle. `.gm-filter-groups` is `display: contents` above the phone
+// breakpoint, so its two wrapper divs are invisible to desktop's flex-row
+// layout -- Season/Type/Week/Ranked/Flags/Sort/Reset sit in exactly the
+// same flex items, in the same order, as before this wrapper existed.
+// Two wrappers (not one) so Search can stay in its original document
+// position, between Flags and Sort, on desktop -- only its mobile `order`
+// (see style.css) floats it above the toggle-controlled groups.
 function renderFilterBar() {
   const bar = document.getElementById("gm-filter-bar");
   bar.innerHTML = "";
+  const openCls = mobileFiltersOpen ? " open" : "";
 
-  bar.appendChild(buildDropdownGroup("Season", "season", buildSeasonOptions(), ""));
-
-  bar.appendChild(el("div", {}, [
+  const before = el("div", { class: `gm-filter-groups${openCls}` });
+  before.appendChild(buildDropdownGroup("Season", "season", buildSeasonOptions(), ""));
+  before.appendChild(el("div", {}, [
     el("div", { class: "gm-filter-label", text: "Type" }),
     buildChipRow(
       [{ label: "All", value: "all" }, { label: "Reg", value: "2" }, { label: "Post", value: "3" }],
@@ -291,11 +329,9 @@ function renderFilterBar() {
       (v) => setChipState("season_type", v),
     ),
   ]));
-
-  bar.appendChild(buildDropdownGroup("Week", "week", buildWeekOptions(), ""));
-  bar.appendChild(buildDropdownGroup("Ranked", "ranked", RANKED_OPTIONS, "any"));
-
-  bar.appendChild(el("div", {}, [
+  before.appendChild(buildDropdownGroup("Week", "week", buildWeekOptions(), ""));
+  before.appendChild(buildDropdownGroup("Ranked", "ranked", RANKED_OPTIONS, "any"));
+  before.appendChild(el("div", {}, [
     el("div", { class: "gm-filter-label", text: "Flags" }),
     el("div", { class: "gm-chip-row" }, [
       ["conference", "Conf"], ["neutral", "Neutral"], ["ot", "OT"], ["scored", "Scored only"],
@@ -305,17 +341,27 @@ function renderFilterBar() {
       return btn;
     })),
   ]));
+  bar.appendChild(before);
 
   const searchInput = el("input", { class: "gm-search", type: "text", placeholder: "team or venue", value: STATE.q });
   searchInput.addEventListener("input", (ev) => onSearchInput(ev.target.value));
+  const mobileToggle = el("span", { class: "gm-mobile-toggle", "aria-expanded": String(mobileFiltersOpen) }, [
+    "Filters ", el("span", { class: "n", text: `(${activeFilterCount()})` }),
+  ]);
+  mobileToggle.addEventListener("click", () => {
+    mobileFiltersOpen = !mobileFiltersOpen;
+    renderFilterBar();
+  });
   bar.appendChild(el("div", { class: "gm-search-group" }, [
     el("div", { class: "gm-filter-label", text: "Search" }),
     el("div", { class: "gm-search-row" }, [
       ...(STATE.team ? [buildTeamChip()] : []),
       searchInput,
+      mobileToggle,
     ]),
   ]));
 
+  const after = el("div", { class: `gm-filter-groups${openCls}` });
   const sortChips = [
     { label: "Score", value: "score" }, { label: "Date", value: "date" },
     { label: "Week", value: "week" }, { label: "Margin", value: "margin" },
@@ -326,14 +372,14 @@ function renderFilterBar() {
   });
   const dirBtn = el("span", { class: "gm-dir", text: STATE.dir === "desc" ? "↓ desc" : "↑ asc" });
   dirBtn.addEventListener("click", toggleDir);
-  bar.appendChild(el("div", {}, [
+  after.appendChild(el("div", {}, [
     el("div", { class: "gm-filter-label", text: "Sort" }),
     el("div", { class: "gm-sort-group" }, [...sortChips, dirBtn]),
   ]));
-
   const resetBtn = el("span", { class: "gm-reset", text: "Reset" });
   resetBtn.addEventListener("click", resetAll);
-  bar.appendChild(resetBtn);
+  after.appendChild(resetBtn);
+  bar.appendChild(after);
 }
 
 // ---- summary strip --------------------------------------------------------

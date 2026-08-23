@@ -299,32 +299,75 @@ function addRevealed(gameId) {
   }
 }
 
-// ---- account menu (logout) -------------------------------------------------
-// Only reached on the six authenticated pages that carry <header
-// class="chrome"> -- login.html/signup.html don't include app.js at all
-// (see serve.py's login-wall docstring), so there's no unauthenticated
-// path where this fires and hits a 401 from /api/me.
+// ---- account menu (logout) + mobile nav drawer ------------------------------
+// Only reached on pages that carry <header class="chrome"> -- login.html/
+// signup.html don't include app.js at all (see serve.py's login-wall
+// docstring), so there's no unauthenticated path where this fires and hits
+// a 401 from /api/me.
+//
+// The mobile nav drawer (designed once on the Slate mobile handoff, "1a
+// drawer wins", reused verbatim on Game Detail/Games/Top games) is one
+// shared markup+JS pattern rather than four copies: each of those four
+// pages carries the same `#mnav-bar`/`#mnav-trig`/`#mnav-chev`/`#mnav-drawer`
+// skeleton in its HTML, and initMobileNav() below populates the drawer's
+// nav items straight off the desktop <nav> already in the DOM (so it can
+// never drift from the desktop links) and wires the open/close toggle.
+// initAccountMenu() feeds the same single /me fetch into both the existing
+// desktop account-menu AND the mobile drawer's account block, rather than
+// fetching it twice.
 
 async function initAccountMenu() {
   const header = document.querySelector("header.chrome");
-  if (!header) return;
+  const drawer = document.getElementById("mnav-drawer");
+  if (!header && !drawer) return;
   let me;
   try {
     me = await api("/me");
   } catch (e) {
     return;
   }
-  const logoutBtn = el("button", { class: "reset", text: "Log out" });
-  logoutBtn.addEventListener("click", async () => {
+  const logout = async () => {
     try { await apiPost("/logout", {}); } catch (e) { /* ignore -- redirect anyway */ }
     location.href = "/login.html";
+  };
+  if (header) {
+    const logoutBtn = el("button", { class: "reset", text: "Log out" });
+    logoutBtn.addEventListener("click", logout);
+    header.appendChild(el("div", { class: "account-menu" }, [
+      el("span", { class: "account-name", text: me.username }),
+      logoutBtn,
+    ]));
+  }
+  if (drawer) {
+    drawer.appendChild(el("div", { class: "mnav-acct", text: me.username }));
+    const outBtn = el("button", { class: "mnav-out", type: "button", text: "Log out" });
+    outBtn.addEventListener("click", logout);
+    drawer.appendChild(outBtn);
+  }
+}
+
+function initMobileNav() {
+  const drawer = document.getElementById("mnav-drawer");
+  const trig = document.getElementById("mnav-trig");
+  const chev = document.getElementById("mnav-chev");
+  const navLinks = document.querySelectorAll("header.chrome nav a");
+  if (!drawer || !trig || !navLinks.length) return;
+  navLinks.forEach((a) => {
+    drawer.appendChild(el("a", {
+      class: "mnav-item" + (a.getAttribute("aria-current") === "page" ? " on" : ""),
+      href: a.getAttribute("href"),
+      text: a.textContent,
+    }));
   });
-  header.appendChild(el("div", { class: "account-menu" }, [
-    el("span", { class: "account-name", text: me.username }),
-    logoutBtn,
-  ]));
+  function setOpen(open) {
+    drawer.hidden = !open;
+    trig.setAttribute("aria-expanded", String(open));
+    if (chev) chev.classList.toggle("up", open);
+  }
+  trig.addEventListener("click", () => setOpen(drawer.hidden));
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+  initMobileNav();
   initAccountMenu();
 });

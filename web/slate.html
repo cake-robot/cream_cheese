@@ -18,6 +18,13 @@
     <a href="/analytics.html">Analytics</a>
   </nav>
 </header>
+<div class="mnav-bar" id="mnav-bar">
+  <span class="mnav-word">Watchability</span>
+  <button type="button" class="mnav-trig" id="mnav-trig" aria-expanded="false" aria-controls="mnav-drawer">
+    <span class="t">Menu</span><span class="c" id="mnav-chev">⌄</span>
+  </button>
+  <div class="mnav-drawer" id="mnav-drawer" hidden></div>
+</div>
 
 <main>
   <div class="filters" id="filters">
@@ -210,16 +217,16 @@ function renderLiveSection(games) {
 
   const [top, ...rest] = games;
   const hero = el("div", { class: "card hero-card" });
-  hero.appendChild(el("div", { style: "display:flex; justify-content:space-between; gap:28px; align-items:flex-start" }, [
+  hero.appendChild(el("div", { class: "hero-toprow" }, [
     el("div", {}, [
       el("h2", {}, [fmtMatchup(top) + " ", ...renderChips(top)]),
       el("div", { class: "sub", text: top.live.status.detail || (top.spoiler_hidden ? "In progress" : "") }),
     ]),
     top.spoiler_hidden
       ? el("div", { class: "spoiler-hidden-tag", text: "SPOILER HIDDEN" })
-      : el("div", { style: "text-align:right" }, [
+      : el("div", { class: "hero-score-block" }, [
           el("div", { class: "hero-score tabular-nums", text: fmtScore(top.live.live_score) }),
-          el("div", { style: "font-family:var(--font-mono); font-size:10px; letter-spacing:.18em; color:var(--ink-muted); margin-top:8px", text: "LIVE SCORE" }),
+          el("div", { class: "hero-score-label", text: "LIVE SCORE" }),
         ]),
   ]));
   if (top.spoiler_hidden) {
@@ -231,7 +238,7 @@ function renderLiveSection(games) {
       text: "Ranked #1 among live games right now, but watchability is hidden for this game.",
     }));
   } else {
-    hero.appendChild(el("div", { class: "hero-context", style: "margin-top:20px; max-width:62ch", text: top.live.headline }));
+    hero.appendChild(el("div", { class: "hero-context hero-headline", text: top.live.headline }));
     hero.appendChild(halvesBars(top.live.quality_so_far, top.live.drama_from_here));
     const note = divergeNote(top.live);
     if (note) hero.appendChild(el("div", { class: "diverge-note", text: note }));
@@ -256,7 +263,7 @@ function renderLiveSection(games) {
       : `${g.live.status.detail || ""}${g.live.headline ? " · " + g.live.headline : ""}`;
     const row = el("div", { class: "slate-row row-live" + (flash ? " updated-flash" : "") }, [
       el("div", { class: "score-big", text: g.spoiler_hidden ? "—" : fmtScore(g.live.live_score) }),
-      el("div", {}, [
+      el("div", { class: "row-info" }, [
         el("div", { class: "matchup-line" }, [el("span", { class: "name", text: fmtMatchup(g) }), ...renderChips(g)]),
         el("div", { class: "row-sub", text: whyText }),
       ]),
@@ -320,7 +327,7 @@ function renderCompletedSection(games) {
         ]);
     const row = el("div", { class: "slate-row row-completed" }, [
       scoreCell,
-      el("div", {}, [
+      el("div", { class: "row-info" }, [
         el("div", { class: "matchup-line" }, [el("span", { class: "name", text: fmtMatchup(g) }), ...renderChips(g)]),
         rankText ? el("div", { class: "row-sub", text: rankText }) : null,
       ]),
