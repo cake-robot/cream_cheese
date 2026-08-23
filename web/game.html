@@ -8,20 +8,29 @@
 </head>
 <body data-page="game">
 
+<div class="game-frame">
 <header class="chrome">
   <nav>
     <a href="/slate.html">Slate</a>
     <a href="/top.html">Top games</a>
-    <a href="/index.html">Games</a>
+    <a href="/index.html" aria-current="page">Games</a>
     <a href="/">Settings</a>
     <a href="/analytics.html">Analytics</a>
   </nav>
 </header>
 
 <main id="content">
-  <a class="back-link" id="back-link" href="/index.html">← Back to games</a>
+  <div class="g-utility-row">
+    <a class="back-link" id="back-link" href="/index.html">← BACK TO GAMES</a>
+    <div class="g-neighbor-nav" id="neighbor-nav"></div>
+  </div>
   <div id="body-mount">Loading…</div>
+  <div class="g-footer">
+    <span id="footer-id"></span>
+    <span>The owls are not what they seem</span>
+  </div>
 </main>
+</div>
 
 <script src="/app.js"></script>
 <script src="/charts.js"></script>
@@ -228,90 +237,187 @@ function renderLive(mount, detail) {
   renderProvenance(mount, detail);
 }
 
+// Chips/status for the scored hero -- distinct from app.js's shared
+// gameChips()/renderChips() (used by the games table, slate rows, etc.):
+// this view gives the UW loss bonus its own oxblood grammar and drops the
+// LIVE/HIDDEN/NOT-SCORED cases that can't apply once a game has a score.
+function scoredHeroChips(g) {
+  const chips = [];
+  if (g.uw_loss_bonus) {
+    chips.push(el("span", { class: "g-chip g-chip-uw", text: `UW LOSS +${g.uw_loss_bonus.toFixed(3)}` }));
+  }
+  [
+    [g.conference_game, "CONF"],
+    [g.neutral_site, "NEU"],
+    [g.ot, "OT"],
+    [g.has_fox_correction, "FOX"],
+    [g.has_manual_correction, "MANUAL"],
+  ].forEach(([on, label]) => { if (on) chips.push(el("span", { class: "g-chip", text: label })); });
+  chips.push(el("span", { class: "g-status-word", text: "FINAL" }));
+  return chips;
+}
+
+// Provenance card for the scored rail -- a dedicated renderer (not the
+// shared renderProvenance() used by the hidden/not-scored branches) since
+// this design's row shape (dot + ESPN-arrow-Fox) and footer line differ.
+function renderProvenanceRail(mount, detail) {
+  const c = detail.corrections, ot = detail.ot;
+  const card = el("div", { class: "g-card g-card-pad-rail" });
+  card.appendChild(el("div", { class: "g-card-title", text: "Provenance" }));
+  if (c.fox_event_id) card.appendChild(el("div", { class: "g-card-sub", text: `Fox event ${c.fox_event_id}` }));
+
+  const hasAny = c.fox.length || c.manual.length || c.unusable_notes.length;
+  if (!hasAny) {
+    card.appendChild(el("div", { class: "g-card-sub", style: "margin-top:16px", text: "No corrections on record for this game." }));
+    mount.appendChild(card);
+    return;
+  }
+
+  c.fox.forEach((r) => {
+    card.appendChild(el("div", { class: "g-prov-row" }, [
+      el("span", { class: "g-prov-dot" }),
+      el("span", { class: "metric-label", text: REGISTRY_LABEL[r.metric_name] || r.metric_name }),
+      el("span", { class: "arrow", text: `ESPN ${r.espn_value} →` }),
+      el("span", { text: `Fox ${r.fox_value}` }),
+    ]));
+  });
+  if (c.fox.length) {
+    card.appendChild(el("div", { class: "g-prov-note", text: "Metric recomputed from Fox's independently collected play data." }));
+  }
+  c.unusable_notes.forEach((r) => {
+    card.appendChild(el("div", { class: "g-prov-warn", text: `⚠ Fox reconciliation unusable for this game: ${r.notes || ""}` }));
+  });
+  c.manual.forEach((m) => {
+    card.appendChild(el("details", { class: "g-prov-details" }, [
+      el("summary", { text: `Manual override: ${REGISTRY_LABEL[m.metric_name] || m.metric_name} → ${m.raw_value}` }),
+      el("div", { text: m.reason }),
+    ]));
+  });
+  const footerParts = [c.manual.length ? `${c.manual.length} manual override${c.manual.length > 1 ? "s" : ""} on record.` : "No manual overrides on record."];
+  if (ot && ot.is_ot && ot.note) footerParts.push(ot.note);
+  card.appendChild(el("div", { class: "g-prov-footer", text: footerParts.join(" ") }));
+  mount.appendChild(card);
+}
+
 function renderScored(mount, detail) {
   const g = detail.game;
   const rc = detail.rank_context;
   const si = detail.score_integrity;
 
-  const header = el("div", { class: "matchup-header" }, [
-    el("div", {}, [
-      el("h1", {}, [fmtMatchup(g) + " ", ...renderChips(g)]),
-      el("div", { class: "sub", text: `${fmtDate(g.game_date)}${venueLabel(g) ? " · " + venueLabel(g) : ""}${g.attendance ? " · " + g.attendance.toLocaleString() : ""} · ${seasonWeekLabel(g)}` }),
-    ]),
-    el("div", { class: "neighbor-nav" }, [
-      detail.neighbors.prev_by_rank
-        ? el("a", { href: `/game.html?id=${detail.neighbors.prev_by_rank.game_id}`, text: `‹ #${detail.neighbors.prev_by_rank.rank}` })
-        : el("span"),
-      el("span", { text: rc ? `rank ${rc.global.rank} of ${rc.global.n}` : "" }),
-      detail.neighbors.next_by_rank
-        ? el("a", { href: `/game.html?id=${detail.neighbors.next_by_rank.game_id}`, text: `#${detail.neighbors.next_by_rank.rank} ›` })
-        : el("span"),
-    ]),
-  ]);
-  mount.appendChild(header);
+  // -- utility row: neighbor-by-rank nav (back link is static page chrome) --
+  const neighborNav = document.getElementById("neighbor-nav");
+  neighborNav.appendChild(detail.neighbors.prev_by_rank
+    ? el("a", { href: `/game.html?id=${detail.neighbors.prev_by_rank.game_id}`, text: `‹ #${detail.neighbors.prev_by_rank.rank}` })
+    : el("span"));
+  neighborNav.appendChild(el("span", { class: "rank-of", text: rc ? `RANK ${rc.global.rank} / ${rc.global.n.toLocaleString()}` : "" }));
+  neighborNav.appendChild(detail.neighbors.next_by_rank
+    ? el("a", { href: `/game.html?id=${detail.neighbors.next_by_rank.game_id}`, text: `#${detail.neighbors.next_by_rank.rank} ›` })
+    : el("span"));
 
-  const hero = el("div", { class: "hero-row" }, [
-    el("div", { class: "hero-score tabular-nums", text: fmtScore(g.watchability_score) }),
-    el("div", { class: "hero-context" }, [
-      el("div", { text: rc ? `${fmtPct(rc.global.percentile)} percentile · #${rc.global.rank} of ${rc.global.n} scored games` : "" }),
-      el("div", { text: rc ? `#${rc.season.rank} of ${rc.season.n} in ${rc.season.label} · #${rc.week.rank} of ${rc.week.n} in ${rc.week.label}` : "" }),
-    ]),
+  // -- hero --
+  const awayRank = g.away.rank ? `#${g.away.rank} ` : "";
+  const homeRank = g.home.rank ? `#${g.home.rank} ` : "";
+  const matchup = el("div", { class: "g-matchup" }, [
+    awayRank, g.away.name, " ", el("span", { class: "score", text: String(g.away.score) }),
+    el("br"),
+    "at ", homeRank, g.home.name, " ", el("span", { class: "score", text: String(g.home.score) }),
   ]);
-  mount.appendChild(hero);
+  const metaText = [fmtDate(g.game_date), venueLabel(g), g.attendance ? g.attendance.toLocaleString() : null, seasonWeekLabel(g)]
+    .filter(Boolean).join(" · ");
+  const heroLeft = el("div", {}, [
+    el("div", { class: "g-chip-row" }, scoredHeroChips(g)),
+    matchup,
+    el("div", { class: "g-meta", text: metaText }),
+  ]);
 
-  const integrityChip = si.matches
-    ? el("span", { class: "ok", text: "✓ matches stored score" })
-    : el("span", { class: "bad", text: `⚠ differs from stored score by ${si.delta.toFixed(4)} — caps may have changed since this game was scored` });
-  const integrityFormula = `Σ contributions ${si.weighted_sum.toFixed(3)} ÷ applicable weight ${si.applicable_weight.toFixed(1)} = ${(si.composite_recomputed - (si.uw_loss_bonus || 0)).toFixed(4)}`
-    + (si.uw_loss_bonus ? ` + UW loss bonus ${si.uw_loss_bonus.toFixed(3)} = ${si.composite_recomputed.toFixed(4)}` : "");
-  mount.appendChild(el("div", { class: "integrity-strip" }, [
-    el("span", { text: integrityFormula }),
-    integrityChip,
+  const bonus = g.uw_loss_bonus || 0;
+  const base = g.watchability_score - bonus;
+  const composite = el("div", { class: "g-composite-wrap" }, [
+    el("div", { class: "g-composite", text: fmtScore(g.watchability_score) }),
+    el("div", { class: "g-composite-caption", text: "WATCHABILITY" }),
+  ]);
+  if (bonus) {
+    composite.appendChild(el("div", { class: "g-bonus-line" }, [
+      el("span", { class: "base", text: fmtScore(base) }), " metrics ",
+      el("span", { class: "bonus", text: `+${bonus.toFixed(3)}` }), " UW loss",
+    ]));
+  }
+
+  const rankRailDefs = rc ? [
+    { label: "ALL SEASONS", rank: rc.global.rank, n: rc.global.n, pct: rc.global.percentile, suffix: " percentile", sub: "scored" },
+    { label: `${rc.season.label} SEASON`, rank: rc.season.rank, n: rc.season.n, pct: rc.season.percentile, suffix: "", sub: "" },
+    { label: rc.week.label.toUpperCase(), rank: rc.week.rank, n: rc.week.n, pct: rc.week.percentile, suffix: "", sub: "" },
+  ] : [];
+  const rankRails = el("div", { class: "g-rank-rails" }, rankRailDefs.map((r) => {
+    const barPct = r.n ? Math.max(0, Math.min(100, (1 - r.rank / r.n) * 100)) : 0;
+    return el("div", {}, [
+      el("div", { class: "g-rank-rail-head" }, [el("span", { text: r.label }), el("span", { class: "rank-val", text: `#${r.rank}` })]),
+      el("div", { class: "g-rank-track" }, [
+        el("div", { class: "g-rank-fill", style: `width:${barPct}%` }),
+        el("div", { class: "g-rank-marker", style: `left:${barPct}%` }),
+      ]),
+      el("div", { class: "g-rank-sub" }, [
+        el("span", { class: "pctile", text: `${fmtPct(r.pct)}${r.suffix}` }),
+        ` of ${r.n.toLocaleString()}${r.sub ? " " + r.sub : ""}`,
+      ]),
+    ]);
+  }));
+
+  mount.appendChild(el("div", { class: "g-hero" }, [
+    heroLeft,
+    el("div", { class: "g-hero-right" }, [composite, el("div", { class: "g-hero-rule" }), rankRails]),
   ]));
 
+  // -- body: rail layout --
+  const mainCol = el("div", { class: "g-main-col" });
+  const railCol = el("div", { class: "g-rail-col" });
+  mount.appendChild(el("div", { class: "g-body" }, [mainCol, railCol]));
+
   if (detail.wp) {
-    const wpCard = el("div", { class: "card" }, [
-      el("h2", { text: `Win probability — ${g.away.name} at ${g.home.name}` }),
-      el("div", { class: "card-sub", text: `Home win probability across ${detail.wp.n} plays.` }),
-    ]);
-    wpChart(wpCard, detail.wp, g);
-    mount.appendChild(wpCard);
-
-    mount.appendChild(renderScoreCard(detail, g));
+    const wpCard = el("div", { class: "g-card" });
+    wpCard.appendChild(el("div", { class: "g-card-head g-wp-head" }, [
+      el("div", {}, [
+        el("div", { class: "g-card-title", text: "Win probability" }),
+        el("div", { class: "g-card-sub", text: `${g.home.name} win probability and the score ladder, given equal weight across ${detail.wp.n} plays.` }),
+      ]),
+      el("div", { class: "g-wp-legend" }, [
+        el("span", { class: "sw" }, [el("i", { style: "background:var(--g-ink-bright)" }), g.home.name.toUpperCase()]),
+        el("span", { class: "sw" }, [el("i", { style: "background:var(--g-accent)" }), g.away.name.toUpperCase()]),
+      ]),
+    ]));
+    const wpBody = el("div", { class: "g-wp-body" });
+    wpDualCard(wpBody, detail.wp, g);
+    wpCard.appendChild(wpBody);
+    mainCol.appendChild(wpCard);
   }
 
-  const contribCard = el("div", { class: "card" }, [
-    el("h2", { text: "What drove this score" }),
-    el("div", { class: "card-sub", text: `Points contributed to the ${fmtScore(g.watchability_score)} composite.` }),
-  ]);
-  contributionBars(contribCard, g.metrics, detail.registry, si.applicable_weight, si.uw_loss_bonus);
-  mount.appendChild(contribCard);
+  const driversCard = el("div", { class: "g-card g-card-pad" });
+  driversCard.appendChild(el("div", { class: "g-card-head" }, el("div", {}, [
+    el("div", { class: "g-card-title", text: "What drove this score" }),
+    el("div", { class: "g-card-sub", text: `Points contributed to the ${fmtScore(g.watchability_score)} composite, against each metric's ceiling.` }),
+  ])));
+  driversWeighted(driversCard, g.metrics, detail.registry, si);
+  mainCol.appendChild(driversCard);
 
-  const twoCol = el("div", { class: "two-col" });
-  const histCard = el("div", { class: "card" }, [el("h2", { text: "Where this game sits" })]);
-  const histMount = el("div");
-  histCard.appendChild(histMount);
-  twoCol.appendChild(histCard);
-  const provMount = el("div");
-  twoCol.appendChild(provMount);
-  mount.appendChild(twoCol);
-  renderProvenance(provMount, detail);
-  if (provMount.children.length === 0) {
-    provMount.appendChild(el("div", { class: "card" }, [el("h2", { text: "Data provenance" }), el("div", { class: "card-sub", text: "No corrections on record for this game." })]));
-  }
-
+  const distCard = el("div", { class: "g-card g-card-pad-rail" });
+  distCard.appendChild(el("div", { class: "g-card-title", text: "Where this sits" }));
+  distCard.appendChild(el("div", { class: "g-card-sub", text: rc ? `${rc.global.n.toLocaleString()} scored games, all seasons.` : "" }));
+  const distBody = el("div");
+  distCard.appendChild(distBody);
+  railCol.appendChild(distCard);
   api("/analytics").then((analytics) => {
-    histogram(histMount, analytics.distribution.histogram, {
-      width: 320, height: 90,
-      markers: [{ value: g.watchability_score, label: fmtScore(g.watchability_score) }],
-    });
+    distributionRail(distBody, analytics.distribution.histogram, g.watchability_score);
   });
+
+  renderProvenanceRail(railCol, detail);
 }
 
 async function loadAndRenderGame() {
   const id = gameId();
   const mount = document.getElementById("body-mount");
+  const neighborNav = document.getElementById("neighbor-nav");
   if (!id) { mount.textContent = "No game id provided."; return; }
+  document.getElementById("footer-id").textContent = `Watchability // game ${id}`;
 
   let detail;
   try {
@@ -321,6 +427,7 @@ async function loadAndRenderGame() {
     return;
   }
   mount.innerHTML = "";
+  neighborNav.innerHTML = "";
   if (detail.game.spoiler_hidden) {
     renderHidden(mount, detail);
   } else if (detail.game.watchability_score !== null) {

@@ -204,6 +204,271 @@ function wpChart(mount, wp, game) {
 }
 
 /* ---------------------------------------------------------------------
+ * wpDualCard -- scored-game-detail centerpiece (design_handoff_game_detail,
+ * locked to the Dual chart / Bars ladder variant). x = play ordinal (same
+ * rationale as wpChart -- elapsed is non-monotonic in a chunk of games).
+ * Two stacked SVGs sharing one 1000-unit-wide coordinate space: a filled
+ * area chart of home win probability, and a waterfall score ladder below
+ * it. All text is an absolutely-positioned HTML overlay rather than SVG
+ * <text> -- an SVG viewBox downscales text authored inside it along with
+ * everything else (a 10-unit label in a 1000-unit box rendered at 714px
+ * comes out at 7.1px), so real px type has to live outside the viewBox.
+ * ------------------------------------------------------------------- */
+function wpDualCard(mount, wp, game) {
+  const n = wp.n;
+  const homeAbbr = game.home.abbr, awayAbbr = game.away.abbr;
+  const PAD_L = 44, PAD_R = 12, TOP = 14, plotW = 1000 - PAD_L - PAD_R;
+  // Both charts render at width:100% off the same 1000-unit-wide card, so
+  // giving them the same viewBox height is what makes them occupy the same
+  // vertical space on screen -- CHART_H is shared with the ladder below.
+  const CHART_H = 340;
+  const plotH = CHART_H - TOP - 20, bottom = TOP + plotH, vbH = TOP + plotH + 20;
+  const x = (i) => PAD_L + (n > 1 ? i / (n - 1) : 0) * plotW;
+  const y = (wpv) => TOP + (1 - wpv) * plotH;
+  const mid = y(0.5);
+
+  const wpPoints = wp.i.map((i) => `${x(i).toFixed(1)},${y(wp.home_win_pct[i]).toFixed(1)}`).join(" ");
+  const areaPoints = `${x(0).toFixed(1)},${mid.toFixed(1)} ${wpPoints} ${x(n - 1).toFixed(1)},${mid.toFixed(1)}`;
+
+  const starts = wp.meta.period_starts;
+  const bands = starts.map((p, k) => {
+    const nextI = starts[k + 1] ? starts[k + 1].i : n - 1;
+    return {
+      x: x(p.i), w: x(nextI) - x(p.i), label: p.label,
+      fill: k % 2 ? "rgba(255,255,255,0.012)" : "transparent",
+    };
+  });
+
+  const plotRoot = svg("svg", { viewBox: `0 0 1000 ${vbH.toFixed(1)}` });
+  const clipHome = `clip-home-${Math.random().toString(36).slice(2)}`;
+  const clipAway = `clip-away-${Math.random().toString(36).slice(2)}`;
+  const defs = svg("defs", {}, [
+    svg("clipPath", { id: clipHome }, svg("rect", { x: 0, y: 0, width: 1000, height: mid.toFixed(1) })),
+    svg("clipPath", { id: clipAway }, svg("rect", { x: 0, y: mid.toFixed(1), width: 1000, height: vbH.toFixed(1) })),
+  ]);
+  plotRoot.appendChild(defs);
+  bands.forEach((b) => {
+    plotRoot.appendChild(svg("g", {}, [
+      svg("rect", { x: b.x.toFixed(1), y: TOP, width: b.w.toFixed(1), height: plotH, fill: b.fill }),
+      svg("line", { x1: b.x.toFixed(1), y1: TOP, x2: b.x.toFixed(1), y2: bottom, stroke: "var(--g-border)" }),
+    ]));
+  });
+  plotRoot.appendChild(svg("line", {
+    x1: PAD_L, y1: mid.toFixed(1), x2: 1000 - PAD_R, y2: mid.toFixed(1),
+    stroke: "var(--g-border-strong2)", "stroke-dasharray": "3 4",
+  }));
+  plotRoot.appendChild(svg("polygon", { points: areaPoints, fill: "var(--g-ink-bright)", opacity: ".16", "clip-path": `url(#${clipHome})` }));
+  plotRoot.appendChild(svg("polygon", { points: areaPoints, fill: "var(--g-accent)", opacity: ".34", "clip-path": `url(#${clipAway})` }));
+  plotRoot.appendChild(svg("polyline", { points: wpPoints, fill: "none", stroke: "var(--g-ink-bright)", "stroke-width": "1.4", "stroke-linejoin": "round" }));
+  wp.meta.score_changes.forEach((sc) => {
+    plotRoot.appendChild(svg("circle", {
+      cx: x(sc.i).toFixed(1), cy: y(wp.home_win_pct[sc.i]).toFixed(1), r: "5.2",
+      fill: sc.team === "home" ? "var(--g-ink-bright)" : "var(--g-accent)",
+      stroke: "var(--g-card)", "stroke-width": "1",
+    }));
+  });
+
+  // hover / keyboard crosshair -- same contract as wpChart's, ported to
+  // this chart's 1000-unit coordinate space and page-scoped colors.
+  const crosshair = svg("line", {
+    x1: 0, x2: 0, y1: TOP, y2: bottom, stroke: "var(--g-ink-muted)", "stroke-width": "1", visibility: "hidden",
+  });
+  const crossDot = svg("circle", { r: "3.5", fill: "var(--g-ink-bright)", stroke: "var(--g-card)", "stroke-width": "1.5", visibility: "hidden" });
+  plotRoot.appendChild(crosshair);
+  plotRoot.appendChild(crossDot);
+
+  function moveTo(idx, clientX, clientY) {
+    idx = Math.max(0, Math.min(n - 1, idx));
+    const px = x(idx);
+    crosshair.setAttribute("x1", px.toFixed(1));
+    crosshair.setAttribute("x2", px.toFixed(1));
+    crosshair.setAttribute("visibility", "visible");
+    crossDot.setAttribute("cx", px.toFixed(1));
+    crossDot.setAttribute("cy", y(wp.home_win_pct[idx]).toFixed(1));
+    crossDot.setAttribute("visibility", "visible");
+    const pct = (wp.home_win_pct[idx] * 100).toFixed(1);
+    const period = wp.meta.period_starts.slice().reverse().find((p) => p.i <= idx);
+    const clock = wp.clock_display[idx] || "";
+    const hs = wp.home_score_clean[idx], as = wp.away_score_clean[idx];
+    const html = `<div class="tt-value">${pct}% ${homeAbbr}</div>` +
+      `<div class="tt-sub">${period ? period.label : ""}${clock ? " · " + clock : ""}</div>` +
+      `<div class="tt-sub">${awayAbbr} ${as} – ${homeAbbr} ${hs}</div>`;
+    if (clientX !== undefined) showTooltip(html, clientX, clientY);
+  }
+
+  const wpHit = svg("rect", { x: PAD_L, y: 0, width: plotW.toFixed(1), height: vbH.toFixed(1), fill: "transparent" });
+  wpHit.addEventListener("pointermove", (ev) => {
+    const rect = plotRoot.getBoundingClientRect();
+    const scale = 1000 / rect.width;
+    const localX = (ev.clientX - rect.left) * scale;
+    const idx = Math.round(((localX - PAD_L) / plotW) * (n - 1));
+    moveTo(idx, ev.clientX, ev.clientY);
+  });
+  wpHit.addEventListener("pointerleave", () => {
+    crosshair.setAttribute("visibility", "hidden");
+    crossDot.setAttribute("visibility", "hidden");
+    hideTooltip();
+  });
+  plotRoot.appendChild(wpHit);
+
+  plotRoot.setAttribute("tabindex", "0");
+  plotRoot.setAttribute("role", "img");
+  plotRoot.setAttribute("aria-label", `Win probability, ${awayAbbr} at ${homeAbbr}, ${n} plays`);
+  let focusIdx = 0;
+  plotRoot.addEventListener("keydown", (ev) => {
+    if (["ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"].includes(ev.key)) ev.preventDefault();
+    if (ev.key === "ArrowLeft") focusIdx -= 1;
+    else if (ev.key === "ArrowRight") focusIdx += 1;
+    else if (ev.key === "PageDown") focusIdx -= 10;
+    else if (ev.key === "PageUp") focusIdx += 10;
+    else if (ev.key === "Home") focusIdx = 0;
+    else if (ev.key === "End") focusIdx = n - 1;
+    else return;
+    focusIdx = Math.max(0, Math.min(n - 1, focusIdx));
+    const rect = plotRoot.getBoundingClientRect();
+    const px = (x(focusIdx) / 1000) * rect.width + rect.left;
+    const py = rect.top + rect.height / 2;
+    moveTo(focusIdx, px, py);
+  });
+  plotRoot.addEventListener("blur", () => {
+    crosshair.setAttribute("visibility", "hidden");
+    crossDot.setAttribute("visibility", "hidden");
+    hideTooltip();
+  });
+
+  const plotWrap = el("div", { class: "g-wp-plot" }, plotRoot);
+  bands.forEach((b) => {
+    plotWrap.appendChild(el("span", { class: "g-band-label", style: `left:${(b.x + 8) / 10}%` }, b.label));
+  });
+  [[1, "100%"], [0.5, "50%"], [0, "0%"]].forEach(([v, label]) => {
+    plotWrap.appendChild(el("span", { class: "g-ytick", style: `top:${(y(v) / vbH) * 100}%` }, label));
+  });
+
+  // --- score ladder (waterfall bars) -------------------------------------
+  const LH = CHART_H, zero = LH / 2;
+  const margins = wp.meta.score_changes.map((sc) => ({ i: sc.i, m: sc.home - sc.away, team: sc.team, pts: sc.delta, home: sc.home, away: sc.away }));
+  const maxAbs = Math.max(...margins.map((d) => Math.abs(d.m)), 1);
+  const barMax = zero - 62;
+  const barW = Math.min(15, plotW / Math.max(margins.length, 1) / 1.9 / 2);
+  const my = (m) => zero - (m / maxAbs) * barMax;
+
+  let prevMargin = 0;
+  const ladderBars = margins.map((d) => {
+    const from = prevMargin, to = d.m;
+    prevMargin = to;
+    const up = to > from;
+    const yTop = my(Math.max(from, to)), yBot = my(Math.min(from, to));
+    const tip = up ? yTop : yBot;
+    const fill = d.team === "home" ? "var(--g-ink-bright)" : "var(--g-accent)";
+    // The chevron's apex sits exactly on the tip (the true net-margin
+    // value), so the bar itself has to stop short of the tip by the same
+    // amount the chevron's base recedes -- otherwise the chevron draws
+    // right on top of the bar's own fill color and disappears into it.
+    // barSpan is the bar's natural (pre-gap) length; carving out GAP would
+    // push a short bar below the 5-unit floor, so gapActual shrinks (down
+    // to 0) rather than the bar ever inverting.
+    const GAP = 8;
+    const barSpan = yBot - yTop;
+    const finalH = Math.max(5, barSpan - GAP);
+    const gapActual = Math.max(0, barSpan - finalH);
+    const rectY = up ? yBot - finalH : yTop;
+    return {
+      x: (x(d.i) - barW / 2).toFixed(1), w: barW.toFixed(1),
+      y: rectY.toFixed(1), h: finalH.toFixed(1),
+      cx: x(d.i), tip, up, fill,
+      chev: [
+        `${(x(d.i) - 7).toFixed(1)},${(tip + (up ? gapActual : -gapActual)).toFixed(1)}`,
+        `${x(d.i).toFixed(1)},${tip.toFixed(1)}`,
+        `${(x(d.i) + 7).toFixed(1)},${(tip + (up ? gapActual : -gapActual)).toFixed(1)}`,
+      ].join(" "),
+      label: `${d.pts}`,
+      labelTop: ((tip + (up ? -14 : 14)) / LH) * 100,
+      labelFill: d.team === "home" ? "var(--g-ink-body2)" : "var(--g-accent-tint)",
+      scorer: `${d.team === "home" ? homeAbbr : awayAbbr} +${d.pts}`,
+      i: d.i, team: d.team, pts: d.pts, from, to, home: d.home, away: d.away,
+    };
+  });
+  const carries = margins.map((d, k) => ({
+    x1: x(d.i) + barW / 2,
+    x2: k === margins.length - 1 ? x(n - 1) : x(margins[k + 1].i) - barW / 2,
+    y: my(d.m),
+  }));
+
+  const ladderRoot = svg("svg", { viewBox: `0 0 1000 ${LH}` });
+  bands.forEach((b) => {
+    ladderRoot.appendChild(svg("line", { x1: b.x.toFixed(1), y1: 0, x2: b.x.toFixed(1), y2: LH - 6, stroke: "var(--g-hairline)" }));
+  });
+  ladderRoot.appendChild(svg("line", { x1: PAD_L, y1: zero.toFixed(1), x2: 1000 - PAD_R, y2: zero.toFixed(1), stroke: "var(--g-muted-graphic)" }));
+  carries.forEach((c) => {
+    ladderRoot.appendChild(svg("line", {
+      x1: c.x1.toFixed(1), y1: c.y.toFixed(1), x2: c.x2.toFixed(1), y2: c.y.toFixed(1),
+      stroke: "var(--g-border-strong2)", "stroke-dasharray": "2 3",
+    }));
+  });
+  const marginLabel = (v) => (v === 0 ? "TIE" : `${v > 0 ? "+" : ""}${v}`);
+  ladderBars.forEach((b) => {
+    ladderRoot.appendChild(svg("g", {}, [
+      svg("rect", { x: b.x, y: b.y, width: b.w, height: b.h, fill: b.fill }),
+      svg("polyline", { points: b.chev, fill: "none", stroke: b.fill, "stroke-width": "2.4", "stroke-linecap": "round", "stroke-linejoin": "round" }),
+    ]));
+    // Full-height hit target, not just the (sometimes 5-unit-tall) bar
+    // itself -- a thin field-goal bar would otherwise be nearly unhoverable.
+    const hit = svg("rect", { x: b.x, y: 0, width: b.w, height: LH, fill: "transparent" });
+    const period = wp.meta.period_starts.slice().reverse().find((p) => p.i <= b.i);
+    const clock = wp.clock_display[b.i] || "";
+    const scorerAbbr = b.team === "home" ? homeAbbr : awayAbbr;
+    hit.addEventListener("pointermove", (ev) => {
+      const html = `<div class="tt-value">${scorerAbbr} +${b.pts}</div>` +
+        `<div class="tt-sub">${period ? period.label : ""}${clock ? " · " + clock : ""}</div>` +
+        `<div class="tt-sub">${awayAbbr} ${b.away} – ${homeAbbr} ${b.home}</div>` +
+        `<div class="tt-sub">Margin ${marginLabel(b.from)} → ${marginLabel(b.to)}</div>`;
+      showTooltip(html, ev.clientX, ev.clientY);
+    });
+    hit.addEventListener("pointerleave", hideTooltip);
+    ladderRoot.appendChild(hit);
+  });
+
+  const ladderWrap = el("div", { class: "g-ladder-plot" }, ladderRoot);
+  ladderWrap.appendChild(el("span", { class: "g-ladder-axis", style: `top:${((zero - barMax) / LH) * 100}%` }, `±${maxAbs}`));
+  ladderWrap.appendChild(el("span", { class: "g-ladder-axis", style: `top:${((zero + barMax) / LH) * 100}%` }, `±${maxAbs}`));
+  ladderBars.forEach((b) => {
+    const left = (b.cx / 10).toFixed(2) + "%";
+    ladderWrap.appendChild(el("span", { class: "g-ladder-value", style: `left:${left}; top:${b.labelTop}%; color:${b.labelFill}` }, b.label));
+    ladderWrap.appendChild(el("span", { class: "g-ladder-scorer", style: `left:${left}; top:${((LH - 10) / LH) * 100}%` }, b.scorer));
+  });
+
+  mount.appendChild(plotWrap);
+  const ladderSection = el("div", { class: "g-ladder-section" }, [
+    el("div", { class: "g-ladder-label-row" }, el("span", { class: "g-ladder-label", text: "NET SCORE — ONE BAR PER SCORING PLAY" })),
+    ladderWrap,
+    el("div", {
+      class: "g-ladder-caption",
+      text: "Each bar runs from the margin before the score to the margin after it — the chevron points the way the margin moved, "
+        + `so its length is the points scored and its tip is the new margin. Bone = ${homeAbbr} scored, oxblood = ${awayAbbr}. Dashed = margin holding until the next score.`,
+    }),
+  ]);
+  mount.appendChild(ladderSection);
+
+  const rows = wp.i.map((i) => [
+    String(i),
+    wp.meta.period_starts.slice().reverse().find((p) => p.i <= i)?.label || "",
+    wp.clock_display[i] || "",
+    (wp.home_win_pct[i] * 100).toFixed(1) + "%",
+    String(wp.home_score_clean[i]),
+    String(wp.away_score_clean[i]),
+  ]);
+  mount.appendChild(tableTwin(`Show as table (${n} plays)`,
+    ["Play #", "Period", "Clock", "Home WP", "Home score", "Away score"], rows));
+
+  if (wp.meta.wp_final !== null && wp.meta.wp_final > 0.02 && wp.meta.wp_final < 0.98) {
+    const finalPct = (wp.meta.wp_final * 100).toFixed(1);
+    mount.appendChild(el("div", { class: "caveat" },
+      `Note: ESPN's final win-probability value for this game is ${finalPct}%, which disagrees with the ` +
+      `${wp.meta.final.away}–${wp.meta.final.home} final. Overtime tails are often noisy.`));
+  }
+}
+
+/* ---------------------------------------------------------------------
  * scoreChart -- the running score, away vs. home, as a step function.
  * x defaults to event ordinal (play index for ESPN -- 356 games have
  * non-monotonic clocks, so ESPN never gets a time axis), but an adapter
@@ -733,6 +998,109 @@ function contributionBars(mount, metricsMap, registry, applicableWeight, uwLossB
   });
   mount.appendChild(tableTwin("Show as table",
     ["Metric", "Raw", "Cap", "Normalized", "Weight", "Weighted", "Share", "At cap", "Applicable"], twinRows));
+}
+
+/* ---------------------------------------------------------------------
+ * driversWeighted -- scored-game-detail "what drove this score", locked to
+ * the Weighted variant (design_handoff_game_detail). One row per metric,
+ * sorted by actual contribution (norm x weight) descending -- sorting by
+ * norm instead would float the two 0.5-weight metrics above metrics that
+ * contributed more. The UW loss bonus draws with its own grammar below a
+ * dashed rule: no bar, no track, since it has no weight or cap to plot
+ * against. The integrity strip lives in this card (not a separate one),
+ * spelling out the same arithmetic the bars just drew.
+ * ------------------------------------------------------------------- */
+function driversWeighted(mount, metricsMap, registry, si) {
+  const RAMP = ["#e6e3d8", "#d6cfc0", "#c5b7a6", "#b69c8b", "#a88170", "#9b6656", "#8d5a4c", "#7d4a41"];
+  const bonus = si.uw_loss_bonus || 0;
+  const rows = registry
+    .map((r) => ({ ...r, v: metricsMap[r.name] }))
+    .filter((r) => r.v !== null)
+    .sort((a, b) => b.v.weighted - a.v.weighted);
+  const maxWeight = Math.max(...registry.map((r) => r.weight));
+
+  const wrap = el("div", { class: "g-drivers-rows" });
+  rows.forEach((r, k) => {
+    const color = RAMP[k % RAMP.length];
+    const weightText = r.weight.toFixed(1).replace(/\.0$/, "");
+    const row = el("div", { class: "g-drivers-row" }, [
+      el("span", { class: "label", text: r.label }),
+      el("span", { class: "weight", text: `×${weightText}` }),
+      el("span", { class: "g-drivers-bar" }, [
+        el("span", { class: "g-drivers-track", style: `width:${(r.weight / maxWeight) * 100}%` }),
+        el("span", { class: "g-drivers-fill", style: `width:${(r.v.weighted / maxWeight) * 100}%; background:${color}` }),
+      ]),
+      el("span", { class: "value", text: r.v.weighted.toFixed(3) }),
+    ]);
+    row.title = r.description;
+    wrap.appendChild(row);
+  });
+  mount.appendChild(wrap);
+
+  if (bonus > 0) {
+    const uwRow = el("div", { class: "g-uw-row" }, [
+      el("span", { class: "label", text: "UW loss" }),
+      el("span", { class: "flat", text: "FLAT" }),
+      el("span", { class: "note", text: "Added straight to the composite — no weight, no cap, not diluted" }),
+      el("span", { class: "value", text: `+${bonus.toFixed(3)}` }),
+    ]);
+    uwRow.title = "Flat +0.07 whenever Washington loses — deliberate rooting bias, added on top of the weighted composite rather than as one of its metrics.";
+    mount.appendChild(uwRow);
+  }
+
+  mount.appendChild(el("div", {
+    class: "g-drivers-caption",
+    text: "Sorted by contribution. Dim track = the most this metric could contribute at its weight; fill = what it actually contributed.",
+  }));
+
+  const base = si.composite_recomputed !== null ? si.composite_recomputed - bonus : si.weighted_sum / si.applicable_weight;
+  let formula = `Σ contributions ${si.weighted_sum.toFixed(3)} ÷ applicable weight ${si.applicable_weight.toFixed(1)} = ${base.toFixed(4)}`;
+  if (bonus) formula += ` + UW loss bonus ${bonus.toFixed(3)} = ${si.composite_recomputed.toFixed(4)}`;
+  const verdict = si.matches
+    ? el("span", { class: "ok", text: "✓ matches stored score" })
+    : el("span", { class: "bad", text: `⚠ differs from stored score by ${si.delta.toFixed(4)} — caps may have changed since this game was scored` });
+  mount.appendChild(el("div", { class: "g-integrity-strip" }, [el("span", { text: formula }), verdict]));
+
+  const twinRows = registry.map((r) => {
+    const v = metricsMap[r.name];
+    if (v === null) return [r.label, "—", String(r.cap ?? "—"), "—", String(r.weight), "—", "no"];
+    return [r.label, v.raw.toFixed(4), String(r.cap ?? "—"), v.norm.toFixed(4), String(r.weight), v.weighted.toFixed(4), v.at_cap ? "yes" : "no"];
+  });
+  mount.appendChild(tableTwin("Show as table",
+    ["Metric", "Raw", "Cap", "Normalized", "Weight", "Weighted", "At cap"], twinRows));
+}
+
+/* ---------------------------------------------------------------------
+ * distributionRail -- "where this sits" rail card. Same 20-bin histogram
+ * as /api/analytics' distribution.histogram, but styled as a dim bar field
+ * with only the bucket containing this game lit, plus a marker line and
+ * label at the composite's exact position (design_handoff_game_detail).
+ * ------------------------------------------------------------------- */
+function distributionRail(mount, hist, composite) {
+  const nBins = hist.bins.length;
+  const domainMax = hist.bin_width * nBins;
+  const activeIdx = Math.max(0, Math.min(nBins - 1, Math.floor(composite / hist.bin_width)));
+  const maxCount = Math.max(1, ...hist.bins);
+  const spacing = 300 / nBins;
+  const barW = Math.max(spacing - 2, 1);
+
+  const root = svg("svg", { viewBox: "0 0 300 104", role: "img", "aria-label": "Score distribution histogram" });
+  hist.bins.forEach((c, k) => {
+    const h = (c / maxCount) * 96;
+    root.appendChild(svg("rect", {
+      x: (k * spacing + 1).toFixed(1), y: (102 - h).toFixed(1), width: barW.toFixed(1), height: h.toFixed(1),
+      fill: k === activeIdx ? "var(--g-muted-graphic)" : "var(--track)",
+    }));
+  });
+  const frac = Math.max(0, Math.min(1, composite / domainMax));
+  const markerX = (frac * 300).toFixed(1);
+  root.appendChild(svg("line", { x1: markerX, y1: 0, x2: markerX, y2: 102, stroke: "var(--g-accent)", "stroke-width": "1.5" }));
+
+  const wrap = el("div", { class: "g-hist-wrap" }, root);
+  wrap.appendChild(el("div", { class: "g-hist-marker-row" },
+    el("span", { class: "g-hist-marker-label", style: `left:${frac * 100}%`, text: fmtScore(composite) })));
+  wrap.appendChild(el("div", { class: "g-hist-axis" }, [el("span", { text: "0.0" }), el("span", { text: "1.0" })]));
+  mount.appendChild(wrap);
 }
 
 /* ---------------------------------------------------------------------
