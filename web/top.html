@@ -130,9 +130,11 @@ function matchupText(g) {
   const away = g.away.rank ? `#${g.away.rank} ${g.away.name}` : g.away.name;
   const home = g.home.rank ? `#${g.home.rank} ${g.home.name}` : g.home.name;
   return el("span", { class: "t-matchup-text" }, [
-    `${away} `, el("span", { class: "score", text: String(g.away.score) }),
-    " ", el("span", { class: "at", text: "at" }), ` ${home} `,
-    el("span", { class: "score", text: String(g.home.score) }),
+    el("span", { class: "t-matchup-side" }, [`${away} `, el("span", { class: "score", text: String(g.away.score) })]),
+    " ",
+    el("span", { class: "t-matchup-side" }, [
+      el("span", { class: "at", text: "at" }), ` ${home} `, el("span", { class: "score", text: String(g.home.score) }),
+    ]),
   ]);
 }
 

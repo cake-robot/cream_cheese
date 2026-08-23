@@ -83,6 +83,18 @@ function fmtMatchup(g) {
   }
   return `${away} at ${home}`;
 }
+// Same away/home split as fmtMatchup, but as two pieces instead of one
+// string -- lets a caller keep each side unbreakable (nowrap) while still
+// allowing the line to wrap between them on narrow screens, instead of the
+// whole matchup running off the edge of the frame.
+function fmtMatchupParts(g) {
+  const away = g.away.rank ? `#${g.away.rank} ${g.away.name}` : g.away.name;
+  const home = g.home.rank ? `#${g.home.rank} ${g.home.name}` : g.home.name;
+  if ((g.completed || g.status_state === "in") && g.away.score !== null && g.home.score !== null) {
+    return { away: `${away} ${g.away.score}`, home: `at ${home} ${g.home.score}` };
+  }
+  return { away, home: `at ${home}` };
+}
 function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {

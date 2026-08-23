@@ -893,7 +893,8 @@ body[data-page="top"] .top-frame main {
 }
 .t-info { min-width: 0; }
 .t-matchup-line { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
-.t-matchup-text { font-family: var(--font-body); font-size: 14px; color: var(--g-ink-body2); white-space: nowrap; }
+.t-matchup-text { font-family: var(--font-body); font-size: 14px; color: var(--g-ink-body2); }
+.t-matchup-side { white-space: nowrap; }
 .t-matchup-text .score { color: var(--g-ink-bright); font-variant-numeric: tabular-nums; }
 .t-matchup-text .at { color: var(--g-ink-dim); }
 .t-driver-line {
@@ -1126,7 +1127,8 @@ body[data-page="games"] .games-frame main {
 .gm-rank.top3 { color: var(--g-ink-strong); }
 .gm-wk { font-family: var(--font-mono); font-size: 11px; color: var(--g-ink-muted); }
 .gm-matchup { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; min-width: 0; }
-.gm-matchup-text { font-family: var(--font-body); font-size: 14px; color: var(--g-ink-body2); white-space: nowrap; }
+.gm-matchup-text { font-family: var(--font-body); font-size: 14px; color: var(--g-ink-body2); }
+.gm-matchup-side { white-space: nowrap; }
 .gm-date { font-family: var(--font-mono); font-size: 11px; color: var(--g-ink-muted); white-space: nowrap; }
 .gm-score-block { display: flex; align-items: center; gap: 8px; }
 .gm-score-val { font-family: var(--font-display); font-weight: 300; font-size: 18px; min-width: 44px; color: var(--g-ink-bright); font-variant-numeric: tabular-nums; }

@@ -455,11 +455,19 @@ function renderRows(data) {
     ]);
 
     const chevron = el("span", { class: scored ? "gm-chevron" : "", text: scored ? "⌄" : "" });
+    const matchupParts = fmtMatchupParts(g);
 
     const row = el("div", { class: "gm-row" }, [
       el("span", { class: `gm-rank${top3 ? " top3" : ""}`, text: g.rank ? String(g.rank) : "—" }),
       el("span", { class: "gm-wk", title: pi ? pi.label : null, text: wkText }),
-      el("div", { class: "gm-matchup" }, [el("span", { class: "gm-matchup-text", text: fmtMatchup(g) }), ...gmChips(g)]),
+      el("div", { class: "gm-matchup" }, [
+        el("span", { class: "gm-matchup-text" }, [
+          el("span", { class: "gm-matchup-side", text: matchupParts.away }),
+          " ",
+          el("span", { class: "gm-matchup-side", text: matchupParts.home }),
+        ]),
+        ...gmChips(g),
+      ]),
       el("span", { class: "gm-date", text: fmtDate(g.game_date) }),
       el("span", {}),
       scoreCell,
