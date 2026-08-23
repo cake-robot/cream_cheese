@@ -8,6 +8,7 @@
 </head>
 <body data-page="settings">
 
+<div class="settings-frame">
 <header class="chrome">
   <nav>
     <a href="/slate.html">Slate</a>
@@ -19,42 +20,44 @@
 </header>
 
 <main>
-  <div class="page-title">Spoiler settings</div>
-  <div class="card-sub" style="margin-bottom:18px;font-size:13.5px">
-    Manual controls for what's spoiler-protected -- nothing here changes on its own.
-    The <a href="/slate.html">Slate</a> is the one page that still shows protected games
-    (ranked by watchability, numbers withheld). Everywhere else, a protected game is left
-    off the list entirely.
+  <div class="s-title-block">
+    <div class="t-title">Spoiler settings</div>
+    <div class="s-explainer">
+      Manual controls for what's spoiler-protected -- nothing here changes on its own.
+      The <a href="/slate.html">Slate</a> is the one page that still shows protected games
+      (ranked by watchability, numbers withheld). Everywhere else, a protected game is left
+      off the list entirely.
+    </div>
   </div>
 
-  <div id="status-line" class="status-line"></div>
+  <div id="status-line" class="s-status"></div>
 
-  <div class="card">
-    <h2>Default</h2>
-    <div class="card-sub">
+  <div class="g-card s-card-pad">
+    <div class="g-card-title">Default</div>
+    <div class="g-card-sub s-card-sub-wide">
       Every game from this point in the season calendar onward is protected -- a later season
       entirely, or this season from the chosen week on -- unless a week or game override below
       says otherwise. This is what you'd move forward mid-season (e.g. "I don't care about
       being spoiled for week 1 anymore").
     </div>
-    <div class="spoiler-row">
-      <span>Hide from</span>
+    <div class="s-row">
+      <span class="s-row-text">Hide from</span>
       <select id="f-default-season"></select>
       <select id="f-default-type">
         <option value="2">Regular</option>
         <option value="3">Postseason</option>
       </select>
       <select id="f-default-week"></select>
-      <span>onward</span>
-      <button class="reset" id="btn-save-default">Save</button>
-      <button class="reset" id="btn-reset-default">Reset to default</button>
+      <span class="s-row-text">onward</span>
+      <button class="s-btn" id="btn-save-default">Save</button>
+      <button class="s-btn" id="btn-reset-default">Reset to default</button>
     </div>
   </div>
 
-  <div class="card">
-    <h2>Week overrides</h2>
-    <div class="card-sub">Beats the default, in either direction, for one (season, type, week).</div>
-    <div class="spoiler-row">
+  <div class="g-card s-card-pad">
+    <div class="g-card-title">Week overrides</div>
+    <div class="g-card-sub">Beats the default, in either direction, for one (season, type, week).</div>
+    <div class="s-row">
       <select id="f-week-season"></select>
       <select id="f-week-type">
         <option value="2">Regular</option>
@@ -66,29 +69,34 @@
         <option value="shown">Revealed</option>
         <option value="default">Default</option>
       </select>
-      <button class="reset" id="btn-save-week">Save</button>
+      <button class="s-btn" id="btn-save-week">Save</button>
     </div>
-    <div id="week-overrides-list" class="spoiler-overrides" style="margin-top:14px"></div>
+    <div id="week-overrides-list" class="s-list"></div>
   </div>
 
-  <div class="card">
-    <h2>Game overrides</h2>
-    <div class="card-sub">
+  <div class="g-card s-card-pad">
+    <div class="g-card-title">Game overrides</div>
+    <div class="g-card-sub s-card-sub-wide">
       Beats both the default and any week override, for one specific game -- the strongest tier.
       Games tab search excludes protected games, so search here instead; it deliberately doesn't.
     </div>
-    <div class="spoiler-row">
-      <input type="text" id="f-game-search" placeholder="team or venue" style="width:180px">
+    <div class="s-row">
+      <input type="text" id="f-game-search" placeholder="team or venue">
       <select id="f-game-state">
         <option value="hidden">Hidden</option>
         <option value="shown">Revealed</option>
       </select>
-      <button class="reset" id="btn-save-game" disabled>Save</button>
+      <button class="s-btn" id="btn-save-game" disabled>Save</button>
     </div>
-    <div id="game-search-results" style="margin-top:8px"></div>
-    <div id="game-overrides-list" class="spoiler-overrides" style="margin-top:14px"></div>
+    <div id="game-search-results" class="s-search-list"></div>
+    <div id="game-overrides-list" class="s-list"></div>
+  </div>
+
+  <div class="t-footer">
+    <span>Watchability // settings</span><span>Manual — nothing here changes automatically</span>
   </div>
 </main>
+</div>
 
 <script src="/app.js"></script>
 <script>
@@ -165,9 +173,9 @@ function overrideLabel(o) {
 }
 
 function renderOverrideRow(o, labelText, onClear) {
-  const removeBtn = el("span", { class: "spoiler-remove", text: "✕", title: "Clear this override" });
+  const removeBtn = el("span", { class: "s-override-clear", text: "✕", title: "Clear this override" });
   removeBtn.addEventListener("click", onClear);
-  return el("div", { class: "spoiler-override-row" }, [el("span", { text: labelText }), removeBtn]);
+  return el("div", { class: "s-override-row" }, [el("span", { text: labelText }), removeBtn]);
 }
 
 async function renderOverrides(overrides) {
@@ -180,7 +188,7 @@ async function renderOverrides(overrides) {
   const games = overrides.filter((o) => o.type === "game");
 
   if (!weeks.length) {
-    weekList.appendChild(el("div", { class: "spoiler-empty", text: "No week overrides set." }));
+    weekList.appendChild(el("div", { class: "s-empty", text: "No week overrides set." }));
   }
   weeks.forEach((o) => {
     weekList.appendChild(renderOverrideRow(o, overrideLabel(o), () => runWrite(
@@ -190,10 +198,10 @@ async function renderOverrides(overrides) {
   });
 
   if (!games.length) {
-    gameList.appendChild(el("div", { class: "spoiler-empty", text: "No individual game overrides set." }));
+    gameList.appendChild(el("div", { class: "s-empty", text: "No individual game overrides set." }));
   }
   games.forEach((o) => {
-    const row = el("div", { class: "spoiler-override-row" }, [el("span", { text: `Loading ${o.game_id}…` })]);
+    const row = el("div", { class: "s-override-row" }, [el("span", { text: `Loading ${o.game_id}…` })]);
     gameList.appendChild(row);
     // /api/spoilers/search deliberately bypasses the spoiler policy -- this
     // list needs to label hidden games too, or every row here would just
@@ -205,7 +213,7 @@ async function renderOverrides(overrides) {
         : overrideLabel(o);
       row.innerHTML = "";
       row.appendChild(el("a", { href: `/game.html?id=${o.game_id}`, text: labelText }));
-      const removeBtn = el("span", { class: "spoiler-remove", text: "✕", title: "Clear this override" });
+      const removeBtn = el("span", { class: "s-override-clear", text: "✕", title: "Clear this override" });
       removeBtn.addEventListener("click", () => runWrite(
         () => apiPost("/spoilers/game", { game_id: o.game_id, hidden: null }),
         `Cleared the override for ${labelText}.`,
@@ -282,11 +290,11 @@ document.getElementById("f-game-search").addEventListener("input", () => {
     const data = await api("/spoilers/search", { q, limit: 10 });
     resultsMount.innerHTML = "";
     if (!data.results.length) {
-      resultsMount.appendChild(el("div", { class: "spoiler-empty", text: "No matching games." }));
+      resultsMount.appendChild(el("div", { class: "s-empty", text: "No matching games." }));
       return;
     }
     data.results.forEach((g) => {
-      const row = el("div", { class: "spoiler-override-row", style: "cursor:pointer" }, [
+      const row = el("div", { class: "s-search-row" }, [
         el("span", { text: `${fmtMatchup(g)} — ${fmtDate(g.game_date)} · ${seasonWeekLabel(g)}` }),
       ]);
       row.addEventListener("click", () => {

@@ -8,6 +8,7 @@
 </head>
 <body data-page="analytics">
 
+<div class="analytics-frame">
 <header class="chrome">
   <nav>
     <a href="/slate.html">Slate</a>
@@ -19,150 +20,455 @@
 </header>
 
 <main>
-  <div class="page-title">Analytics</div>
-
-  <div class="filters">
-    <label>Season <select id="f-season"><option value="">All</option></select></label>
-    <label>Type <select id="f-season_type">
-      <option value="all">All</option>
-      <option value="2" selected>Regular</option>
-      <option value="3">Postseason</option>
-    </select></label>
+  <div class="t-title-row">
+    <div>
+      <div class="t-title">Analytics</div>
+      <div class="t-result-line" id="an-result-line"></div>
+    </div>
+    <div class="t-filters">
+      <div>
+        <div class="t-filter-label">Season</div>
+        <div class="t-filter-options" id="an-season-options"></div>
+      </div>
+      <div>
+        <div class="t-filter-label">Type</div>
+        <div class="t-filter-options" id="an-type-options"></div>
+      </div>
+    </div>
   </div>
 
-  <div class="stat-tiles" id="stat-tiles"></div>
+  <div class="an-cards">
+    <div class="g-card an-card-pad">
+      <div class="g-card-title">Score distribution</div>
+      <div class="g-card-sub" id="an-dist-sub"></div>
+      <div class="an-dist-body">
+        <div class="an-stat-tiles" id="an-stat-tiles"></div>
+        <div class="an-hist" id="an-hist"></div>
+      </div>
+    </div>
 
-  <div class="card">
-    <h2>Score distribution</h2>
-    <div class="card-sub" id="dist-sub"></div>
-    <div id="dist-mount"></div>
+    <div class="g-card an-card-pad">
+      <div class="g-card-title">Designed weight vs. delivered contribution</div>
+      <div class="g-card-sub" id="an-wvd-sub"></div>
+      <div class="an-wvd-head"><div></div><div>Designed</div><div>Delivered</div><div class="r">Delta</div></div>
+      <div class="an-wvd-rows" id="an-wvd-rows"></div>
+      <div class="an-callout" id="an-callout"></div>
+    </div>
+
+    <div class="g-card an-card-pad">
+      <div class="an-card-head">
+        <div class="g-card-title">Metric registry</div>
+        <div class="an-card-hint">Click a row to load it into the leaderboard below</div>
+      </div>
+      <table class="an-table">
+        <thead><tr id="an-registry-head"></tr></thead>
+        <tbody id="an-registry-body"></tbody>
+      </table>
+    </div>
+
+    <div class="g-card an-card-pad" id="an-leaderboard-card">
+      <div class="g-card-title" id="an-lb-title">Single-metric leaderboard</div>
+      <div class="an-lb-sub">Ranked by raw value, not composite. Disagrees with every other rank in the app on purpose.</div>
+      <div class="an-cap-banner" id="an-cap-banner" style="display:none"></div>
+      <div class="an-lb-rows" id="an-lb-rows"></div>
+      <div class="an-lb-footer">Spoiler-hidden games are excluded from every leaderboard, this one included.</div>
+    </div>
+
+    <div class="g-card an-card-pad">
+      <div class="g-card-title">Mean score by week</div>
+      <div class="g-card-sub">Regular season, most recent two seasons with data.</div>
+      <div class="an-week-bars" id="an-week-bars"></div>
+      <div class="an-week-legend" id="an-week-legend"></div>
+    </div>
+
+    <div class="g-card an-card-pad">
+      <div class="g-card-title">Metric correlation</div>
+      <div class="g-card-sub" id="an-corr-sub">Pairwise Pearson correlation of normalized metric values (and the composite score).</div>
+      <div class="an-corr-grid" id="an-corr-grid"></div>
+    </div>
+
+    <div class="g-card an-card-pad">
+      <div class="g-card-title">Saturation</div>
+      <div class="g-card-sub">How often each metric's normalization cap is hit — the composite can't distinguish games past this point.</div>
+      <table class="an-table">
+        <thead><tr>
+          <th>Metric</th><th>Cap</th><th>N at cap</th><th>% at cap</th>
+        </tr></thead>
+        <tbody id="an-saturation-body"></tbody>
+      </table>
+    </div>
   </div>
 
-  <div class="card">
-    <h2>Designed weight vs. delivered contribution</h2>
-    <div class="card-sub" id="wvd-sub"></div>
-    <div id="wvd-mount"></div>
-    <div class="callout" id="callout"></div>
-    <div class="not-implemented" id="not-implemented"></div>
-  </div>
-
-  <div class="card">
-    <h2>Per-metric stats</h2>
-    <div id="stats-table-mount"></div>
-  </div>
-
-  <div class="card">
-    <h2>Mean score by week</h2>
-    <div class="card-sub">Regular season, most recent two seasons with data.</div>
-    <div id="byweek-mount"></div>
-  </div>
-
-  <div class="card">
-    <h2>Metric correlation</h2>
-    <div class="card-sub">Pairwise Pearson correlation of normalized metric values (and the composite score).</div>
-    <div id="heatmap-mount"></div>
-  </div>
-
-  <div class="card">
-    <h2>Saturation</h2>
-    <div class="card-sub">How often each metric's normalization cap is hit -- the composite can't distinguish games past this point.</div>
-    <div id="saturation-mount"></div>
+  <div class="t-footer">
+    <span>Watchability // analytics</span><span>Audit view — not for the public app</span>
   </div>
 </main>
+</div>
 
 <script src="/app.js"></script>
-<script src="/charts.js"></script>
 <script>
-function currentFilters() {
-  return {
-    season: document.getElementById("f-season").value,
-    season_type: document.getElementById("f-season_type").value,
-  };
+const REGISTRY_COLS = [
+  { key: "label", label: "Metric" }, { key: "weight", label: "Weight" }, { key: "cap", label: "Cap" },
+  { key: "n", label: "N" }, { key: "avg_raw", label: "Avg raw" }, { key: "avg_norm", label: "Avg norm" },
+  { key: "n_at_cap", label: "N@cap" }, { key: "pct_at_cap", label: "%@cap" },
+];
+
+let ANALYTICS = null;
+let META = null;
+let METRIC_ORDER = [];
+const STATE = { season: "all", seasonType: "all", by: null, sortKey: "weight", sortDir: "desc" };
+
+function stateFromParams(p) {
+  STATE.season = p.season || "all";
+  STATE.seasonType = p.season_type || "all";
+  STATE.by = p.by || null;
+  STATE.sortKey = p.sort || "weight";
+  STATE.sortDir = p.dir === "asc" ? "asc" : "desc";
+}
+function syncUrl() {
+  setParams({
+    season: STATE.season, season_type: STATE.seasonType, by: STATE.by,
+    sort: STATE.sortKey === "weight" ? undefined : STATE.sortKey,
+    dir: STATE.sortDir === "desc" ? undefined : STATE.sortDir,
+  });
 }
 
-function statTile(label, value) {
-  return el("div", { class: "stat-tile" }, [el("div", { class: "label", text: label }), el("div", { class: "value tabular-nums", text: value })]);
+// Fixed hue per metric, stepped 45° in REGISTRY order (never resort order) --
+// the same metric must read as the same color in the weight-vs-delivered
+// bars and the correlation/leaderboard focus, independent of how the
+// registry table is currently sorted.
+function metricColor(name) {
+  const idx = METRIC_ORDER.indexOf(name);
+  return `oklch(72% 0.10 ${(idx * 45) % 360})`;
 }
 
-async function render() {
-  const f = currentFilters();
-  const data = await api("/analytics", f);
+function sortRegistryRows(rows) {
+  const dir = STATE.sortDir === "asc" ? 1 : -1;
+  return rows.slice().sort((a, b) => {
+    let av = a[STATE.sortKey], bv = b[STATE.sortKey];
+    if (av === null) av = -Infinity;
+    if (bv === null) bv = -Infinity;
+    if (typeof av === "string") return av.localeCompare(bv) * dir;
+    return (av - bv) * dir;
+  });
+}
+function capLabel(cap) {
+  if (cap === null) return "—";
+  return Number.isInteger(cap) ? String(cap) : cap.toFixed(2);
+}
 
-  const tiles = document.getElementById("stat-tiles");
-  tiles.innerHTML = "";
-  tiles.appendChild(statTile("Games scored", String(data.n)));
-  tiles.appendChild(statTile("Median score", fmtScore(data.distribution.median)));
-  tiles.appendChild(statTile("Mean score", fmtScore(data.distribution.mean)));
-  tiles.appendChild(statTile("Max score", fmtScore(data.distribution.max)));
+// ---- filter chips -----------------------------------------------------
 
-  document.getElementById("dist-sub").textContent =
-    `n=${data.n} · p10 ${fmtScore(data.distribution.p10)} · median ${fmtScore(data.distribution.median)} · p90 ${fmtScore(data.distribution.p90)}`;
-  const distMount = document.getElementById("dist-mount");
-  distMount.innerHTML = "";
-  histogram(distMount, data.distribution.histogram, {
-    width: 640, height: 160,
-    markers: [
-      { value: data.distribution.p10, label: "p10" },
-      { value: data.distribution.median, label: "median" },
-      { value: data.distribution.p90, label: "p90" },
-    ],
+function renderFilters() {
+  const seasonWrap = document.getElementById("an-season-options");
+  seasonWrap.innerHTML = "";
+  ["all", ...META.seasons.slice().reverse().map(String)].forEach((v) => {
+    const btn = el("button", { class: `t-chip${STATE.season === v ? " active" : ""}`, text: v === "all" ? "All" : v });
+    btn.addEventListener("click", () => {
+      if (STATE.season === v) return;
+      STATE.season = v;
+      syncUrl();
+      renderFilters();
+      refreshAll();
+    });
+    seasonWrap.appendChild(btn);
   });
 
-  document.getElementById("wvd-sub").textContent = `Share of the mean composite score, n=${data.n}.`;
-  const wvdMount = document.getElementById("wvd-mount");
-  wvdMount.innerHTML = "";
-  groupedBars(wvdMount, data.weight_vs_delivery);
-  document.getElementById("callout").textContent = data.callout || "";
-
-  const niMount = document.getElementById("not-implemented");
-  niMount.innerHTML = "";
-  niMount.appendChild(el("div", { text: "Designed but not implemented -- these do not exist in the data:" }));
-  niMount.appendChild(el("ul", {}, data.not_implemented.map((ni) => el("li", { text: `${ni.name}: ${ni.note}` }))));
-
-  const statsMount = document.getElementById("stats-table-mount");
-  statsMount.innerHTML = "";
-  const table = el("table", { class: "stats-table" }, [
-    el("thead", {}, el("tr", {}, ["Metric", "N", "Avg raw", "Max raw", "Avg norm", "At cap", "% at cap"].map((h) => el("th", { text: h })))),
-    el("tbody", {}, data.weight_vs_delivery.map((r) => el("tr", {}, [
-      el("td", { text: r.label }),
-      el("td", { class: "tabular-nums", text: String(r.n) }),
-      el("td", { class: "tabular-nums", text: fmtRaw(r.avg_raw) }),
-      el("td", { class: "tabular-nums", text: fmtRaw(r.max_raw) }),
-      el("td", { class: "tabular-nums", text: fmtRaw(r.avg_norm) }),
-      el("td", { class: "tabular-nums", text: String(r.n_at_cap) }),
-      el("td", { class: "tabular-nums", text: `${r.pct_at_cap.toFixed(1)}%` }),
-    ]))),
-  ]);
-  statsMount.appendChild(table);
-
-  const byWeekMount = document.getElementById("byweek-mount");
-  byWeekMount.innerHTML = "";
-  if (Object.keys(data.by_week).length) multiLine(byWeekMount, data.by_week);
-
-  const heatMount = document.getElementById("heatmap-mount");
-  heatMount.innerHTML = "";
-  if (data.correlation.matrix.length) heatmap(heatMount, data.correlation);
-
-  const satMount = document.getElementById("saturation-mount");
-  satMount.innerHTML = "";
-  const satTable = el("table", { class: "stats-table" }, [
-    el("thead", {}, el("tr", {}, ["Metric", "Cap", "N at cap", "% at cap"].map((h) => el("th", { text: h })))),
-    el("tbody", {}, data.weight_vs_delivery.map((r) => el("tr", {}, [
-      el("td", { text: r.label }),
-      el("td", { class: "tabular-nums", text: r.cap !== null ? String(r.cap) : "—" }),
-      el("td", { class: "tabular-nums", text: String(r.n_at_cap) }),
-      el("td", {}, r.pct_at_cap > 1 ? el("span", { class: "chip warn", text: `⚠ ${r.pct_at_cap.toFixed(1)}% at cap` }) : el("span", { class: "tabular-nums", text: `${r.pct_at_cap.toFixed(1)}%` })),
-    ]))),
-  ]);
-  satMount.appendChild(satTable);
+  const typeWrap = document.getElementById("an-type-options");
+  typeWrap.innerHTML = "";
+  [["all", "All"], ["2", "Reg"], ["3", "Post"]].forEach(([v, label]) => {
+    const btn = el("button", { class: `t-chip${STATE.seasonType === v ? " active" : ""}`, text: label });
+    btn.addEventListener("click", () => {
+      if (STATE.seasonType === v) return;
+      STATE.seasonType = v;
+      syncUrl();
+      renderFilters();
+      refreshAll();
+    });
+    typeWrap.appendChild(btn);
+  });
 }
 
+// ---- score distribution -------------------------------------------------
+
+function renderResultLine(data) {
+  const seasonLabel = STATE.season === "all" ? "all seasons" : STATE.season;
+  const typeLabel = STATE.seasonType === "all" ? "regular + postseason" : (STATE.seasonType === "2" ? "regular season" : "postseason");
+  document.getElementById("an-result-line").textContent = `${data.n} scored games · ${seasonLabel} · ${typeLabel}`;
+}
+
+function renderDistribution(data) {
+  const dist = data.distribution;
+  document.getElementById("an-dist-sub").textContent =
+    `n=${data.n} · p10 ${fmtScore(dist.p10)} · median ${fmtScore(dist.median)} · p90 ${fmtScore(dist.p90)}`;
+
+  const tiles = document.getElementById("an-stat-tiles");
+  tiles.innerHTML = "";
+  [["Games scored", String(data.n)], ["Median", fmtScore(dist.median)], ["Mean", fmtScore(dist.mean)], ["Max", fmtScore(dist.max)]]
+    .forEach(([label, value]) => {
+      tiles.appendChild(el("div", {}, [
+        el("div", { class: "an-stat-label", text: label }),
+        el("div", { class: "an-stat-value tabular-nums", text: value }),
+      ]));
+    });
+
+  const hist = document.getElementById("an-hist");
+  hist.innerHTML = "";
+  const bins = dist.histogram.bins, binWidth = dist.histogram.bin_width;
+  const maxCount = Math.max(1, ...bins);
+  const loIdx = dist.p10 !== null ? Math.max(0, Math.min(bins.length - 1, Math.floor(dist.p10 / binWidth))) : -1;
+  const hiIdx = dist.p90 !== null ? Math.max(0, Math.min(bins.length - 1, Math.floor(dist.p90 / binWidth))) : -1;
+  bins.forEach((c, i) => {
+    const h = Math.max(2, (c / maxCount) * 100);
+    const inBand = i >= loIdx && i <= hiIdx;
+    hist.appendChild(el("i", { style: `height:${h}%; background:${inBand ? "var(--g-muted-graphic)" : "var(--track)"}` }));
+  });
+}
+
+// ---- weight vs delivered -------------------------------------------------
+
+function renderWeightVsDelivered(data) {
+  document.getElementById("an-wvd-sub").textContent = `Share of the mean composite score, n=${data.n}.`;
+  const rows = document.getElementById("an-wvd-rows");
+  rows.innerHTML = "";
+  data.weight_vs_delivery.forEach((m) => {
+    const deltaPct = m.delta * 100;
+    rows.appendChild(el("div", { class: "an-wvd-row" }, [
+      el("div", { class: "an-wvd-label", text: m.label }),
+      el("div", { class: "an-wvd-track" }, el("i", { style: `width:${m.designed_share * 100}%; background:var(--g-ink-dim)` })),
+      el("div", { class: "an-wvd-track" }, el("i", { style: `width:${m.delivered_share * 100}%; background:${metricColor(m.name)}` })),
+      el("div", {
+        class: "an-wvd-delta tabular-nums",
+        style: `color:${m.delta >= 0 ? "var(--g-delta-pos)" : "var(--g-delta-neg)"}`,
+        text: `${m.delta >= 0 ? "+" : ""}${deltaPct.toFixed(1)}`,
+      }),
+    ]));
+  });
+  document.getElementById("an-callout").textContent = data.callout || "";
+}
+
+// ---- metric registry ------------------------------------------------------
+
+function renderRegistry() {
+  const thead = document.getElementById("an-registry-head");
+  thead.innerHTML = "";
+  REGISTRY_COLS.forEach((c) => {
+    const active = STATE.sortKey === c.key;
+    const arrow = active ? (STATE.sortDir === "asc" ? " ▲" : " ▼") : "";
+    const th = el("th", { class: `sortable${active ? " active" : ""}`, text: c.label + arrow });
+    th.addEventListener("click", () => {
+      STATE.sortDir = STATE.sortKey === c.key ? (STATE.sortDir === "asc" ? "desc" : "asc") : "desc";
+      STATE.sortKey = c.key;
+      syncUrl();
+      renderRegistry();
+    });
+    thead.appendChild(th);
+  });
+
+  const tbody = document.getElementById("an-registry-body");
+  tbody.innerHTML = "";
+  sortRegistryRows(ANALYTICS.weight_vs_delivery).forEach((m) => {
+    const tr = el("tr", { "data-selectable": "" });
+    if (m.name === STATE.by) tr.classList.add("selected");
+    tr.appendChild(el("td", { text: m.label }));
+    tr.appendChild(el("td", { class: "num tabular-nums", text: String(m.weight) }));
+    tr.appendChild(el("td", { class: "num tabular-nums", text: capLabel(m.cap) }));
+    tr.appendChild(el("td", { class: "num tabular-nums", text: String(m.n) }));
+    tr.appendChild(el("td", { class: "num tabular-nums", text: fmtRaw(m.avg_raw, 2) }));
+    tr.appendChild(el("td", { class: "num tabular-nums", text: fmtRaw(m.avg_norm, 2) }));
+    tr.appendChild(el("td", { class: "num tabular-nums", text: String(m.n_at_cap) }));
+    const pctTd = el("td", { class: "num" });
+    pctTd.appendChild(el("span", { class: `tabular-nums${m.pct_at_cap > 1 ? " an-cap-warn" : ""}`, text: `${m.pct_at_cap.toFixed(1)}%` }));
+    tr.appendChild(pctTd);
+    tr.addEventListener("click", () => {
+      if (STATE.by === m.name) return;
+      STATE.by = m.name;
+      syncUrl();
+      renderRegistry();
+      renderCorrelation(ANALYTICS);
+      refreshLeaderboard();
+    });
+    tbody.appendChild(tr);
+  });
+}
+
+// ---- single-metric leaderboard --------------------------------------------
+
+function renderLeaderboard(data) {
+  const registryRow = ANALYTICS.weight_vs_delivery.find((r) => r.name === STATE.by);
+  document.getElementById("an-lb-title").textContent = `Single-metric leaderboard — ${registryRow ? registryRow.label : STATE.by}`;
+
+  const banner = document.getElementById("an-cap-banner");
+  banner.innerHTML = "";
+  if (data.cap_warning) {
+    banner.style.display = "flex";
+    banner.appendChild(el("span", { class: "glyph", text: "▲" }));
+    banner.appendChild(document.createTextNode(data.cap_warning));
+  } else {
+    banner.style.display = "none";
+  }
+
+  const cap = registryRow ? registryRow.cap : null;
+  const rows = document.getElementById("an-lb-rows");
+  rows.innerHTML = "";
+  data.results.forEach((r) => {
+    const decimals = (cap === null || cap === 1.0) ? 2 : (Number.isInteger(r.value) ? 0 : 1);
+    const row = el("div", { class: "an-lb-row" }, [
+      el("span", { class: "an-lb-rank tabular-nums", text: String(r.rank) }),
+      el("span", { class: "an-lb-raw tabular-nums", text: r.value.toFixed(decimals) }),
+      el("span", { class: "an-lb-matchup", text: fmtMatchup(r.game) }),
+      r.at_cap ? el("span", { class: "t-chip-tag uw", text: "AT CAP" }) : el("span"),
+    ]);
+    row.addEventListener("click", () => { location.href = `/game.html?id=${r.game.game_id}`; });
+    rows.appendChild(row);
+  });
+}
+
+async function refreshLeaderboard() {
+  const card = document.getElementById("an-leaderboard-card");
+  card.classList.add("loading-frame");
+  try {
+    const data = await api("/top", {
+      by: STATE.by, season: STATE.season === "all" ? undefined : STATE.season,
+      season_type: STATE.seasonType, limit: 8,
+    });
+    renderLeaderboard(data);
+  } finally {
+    card.classList.remove("loading-frame");
+  }
+}
+
+// ---- mean score by week ----------------------------------------------------
+
+function renderByWeek(data) {
+  const mount = document.getElementById("an-week-bars");
+  mount.innerHTML = "";
+  const seasons = Object.keys(data.by_week).sort((a, b) => b - a).slice(0, 2);
+  const colors = ["var(--g-ink-bright)", "var(--g-ink-dim)"];
+  const allRows = seasons.flatMap((s) => data.by_week[s]);
+  const maxScore = Math.max(...allRows.map((r) => r.avg_score), 0.01) * 1.15;
+  const maxWeek = Math.max(...allRows.map((r) => r.week), 1);
+
+  for (let w = 1; w <= maxWeek; w++) {
+    seasons.forEach((s, si) => {
+      const row = (data.by_week[s] || []).find((r) => r.week === w);
+      const h = row ? Math.max(4, (row.avg_score / maxScore) * 100) : 0;
+      const bar = el("i", { style: `height:${h}%; background:${colors[si]}` });
+      if (row) bar.title = `${s} week ${w} · ${row.avg_score.toFixed(3)} · n=${row.n}`;
+      mount.appendChild(bar);
+    });
+  }
+
+  const legend = document.getElementById("an-week-legend");
+  legend.innerHTML = "";
+  seasons.forEach((s, si) => {
+    legend.appendChild(el("span", { class: "sw" }, [el("i", { style: `background:${colors[si]}` }), s]));
+  });
+}
+
+// ---- metric correlation -----------------------------------------------------
+
+function corrColor(v) {
+  if (v === null) return "var(--g-hairline)";
+  const a = Math.min(Math.abs(v), 1);
+  const alpha = (0.06 + a * 0.55).toFixed(2);
+  return v >= 0 ? `rgba(230,227,216,${alpha})` : `rgba(154,43,36,${alpha})`;
+}
+function corrLabelFor(name, registryByName) {
+  if (name === "watchability_score") return "Composite";
+  return (registryByName[name] && registryByName[name].label) || name;
+}
+function shortLabel(l) {
+  return l.length > 9 ? `${l.slice(0, 8)}…` : l;
+}
+
+function renderCorrelation(data) {
+  const focusRow = data.weight_vs_delivery.find((r) => r.name === STATE.by);
+  document.getElementById("an-corr-sub").textContent =
+    `Pairwise Pearson correlation of normalized metric values (and the composite score). ${focusRow ? focusRow.label : ""} is outlined below.`;
+
+  const mount = document.getElementById("an-corr-grid");
+  mount.innerHTML = "";
+  const labels = data.correlation.labels;
+  if (!labels.length) return;
+  const registryByName = Object.fromEntries(data.weight_vs_delivery.map((r) => [r.name, r]));
+  const displayLabels = labels.map((n) => corrLabelFor(n, registryByName));
+  const focusIdx = labels.indexOf(STATE.by);
+
+  mount.style.gridTemplateColumns = `110px repeat(${labels.length}, 1fr)`;
+  mount.appendChild(el("div"));
+  displayLabels.forEach((l) => mount.appendChild(el("div", { class: "an-corr-col-label", text: shortLabel(l) })));
+
+  labels.forEach((rowName, r) => {
+    mount.appendChild(el("div", {
+      class: "an-corr-row-label",
+      style: `color:${r === focusIdx ? "var(--g-ink-bright)" : "var(--g-ink-muted)"}`,
+      text: displayLabels[r],
+    }));
+    data.correlation.matrix[r].forEach((v, c) => {
+      const outline = (r === focusIdx || c === focusIdx) ? "1px solid var(--g-accent)" : "none";
+      mount.appendChild(el("div", {
+        class: "an-corr-cell",
+        style: `background:${corrColor(v)}; outline:${outline}; outline-offset:-1px`,
+        text: v === null ? "—" : v.toFixed(2).replace(/^(-?)0\./, "$1."),
+      }));
+    });
+  });
+}
+
+// ---- saturation --------------------------------------------------------------
+
+function renderSaturation(data) {
+  const tbody = document.getElementById("an-saturation-body");
+  tbody.innerHTML = "";
+  data.weight_vs_delivery.forEach((m) => {
+    const tr = el("tr", {}, [
+      el("td", { text: m.label }),
+      el("td", { class: "num tabular-nums", text: capLabel(m.cap) }),
+      el("td", { class: "num tabular-nums", text: String(m.n_at_cap) }),
+    ]);
+    const pctTd = el("td", { class: "num" });
+    pctTd.appendChild(el("span", { class: `tabular-nums${m.pct_at_cap > 1 ? " an-cap-warn" : ""}`, text: `${m.pct_at_cap.toFixed(1)}%` }));
+    tr.appendChild(pctTd);
+    tbody.appendChild(tr);
+  });
+}
+
+// ---- top-level refresh ----------------------------------------------------
+
+async function refreshAll() {
+  const main = document.querySelector(".analytics-frame main");
+  main.classList.add("loading-frame");
+  try {
+    const data = await api("/analytics", {
+      season: STATE.season === "all" ? undefined : STATE.season, season_type: STATE.seasonType,
+    });
+    ANALYTICS = data;
+    METRIC_ORDER = data.weight_vs_delivery.map((r) => r.name);
+    if (!STATE.by || !METRIC_ORDER.includes(STATE.by)) {
+      STATE.by = sortRegistryRows(data.weight_vs_delivery)[0].name;
+      syncUrl();
+    }
+    renderResultLine(data);
+    renderDistribution(data);
+    renderWeightVsDelivered(data);
+    renderRegistry();
+    renderByWeek(data);
+    renderCorrelation(data);
+    renderSaturation(data);
+  } finally {
+    main.classList.remove("loading-frame");
+  }
+  await refreshLeaderboard();
+}
+
+// ---- init ------------------------------------------------------------------
+
 (async function init() {
-  const meta = await api("/meta");
-  const seasonSel = document.getElementById("f-season");
-  seasonSel.innerHTML = '<option value="">All</option>' + meta.seasons.slice().reverse().map((s) => `<option value="${s}">${s}</option>`).join("");
-  document.querySelectorAll(".filters select").forEach((s) => s.addEventListener("change", render));
-  render();
+  META = await api("/meta");
+  stateFromParams(getParams());
+  renderFilters();
+  await refreshAll();
 })();
 </script>
 </body>

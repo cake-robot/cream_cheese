@@ -181,42 +181,7 @@ header.chrome nav a[aria-current="page"] {
   font-weight: 700;
 }
 
-/* ---- spoiler control (nav pill) + spoiler settings page ---- */
-
-.spoiler-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  align-items: center;
-}
-.spoiler-row select, .spoiler-row input[type="text"] {
-  font: 12px var(--font-mono);
-  padding: 5px 6px;
-  border: 1px solid var(--axis);
-  border-radius: 0;
-  background: var(--page);
-  color: var(--ink-1);
-}
-.spoiler-row span { font-size: 13px; color: var(--ink-2); }
-
-.spoiler-overrides { display: flex; flex-direction: column; gap: 4px; }
-.spoiler-empty { color: var(--ink-muted); font-size: 12.5px; }
-.spoiler-override-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-  font-size: 12.5px;
-  color: var(--ink-2);
-}
-.spoiler-remove {
-  cursor: pointer;
-  color: var(--ink-muted);
-  padding: 0 4px;
-}
-.spoiler-remove:hover { color: var(--critical); }
-
-/* ---- spoiler settings page ---- */
+/* ---- status line (login/signup; spoiler settings has its own .s-status) ---- */
 
 .status-line {
   font-size: 13px;
@@ -230,15 +195,6 @@ main {
   max-width: 1180px;
   margin: 0 auto;
   padding: 20px 24px 64px;
-}
-
-.page-title {
-  font-family: var(--font-display);
-  font-weight: 400;
-  font-size: 26px;
-  letter-spacing: .02em;
-  text-transform: uppercase;
-  margin: 20px 0 20px;
 }
 
 /* ---- filter row ---- */
@@ -274,8 +230,8 @@ main {
   color: var(--ink-2);
 }
 .filters .spacer { flex: 1 1 auto; }
-/* Not scoped to .filters -- also used standalone on the spoiler settings
-   page's .spoiler-row groups. */
+/* Not scoped to .filters -- also used standalone (account-menu logout,
+   game-detail's Reveal button). */
 button.reset {
   font-family: var(--font-display);
   font-size: 11px;
@@ -450,23 +406,6 @@ details.table-twin th, details.table-twin td { text-align: left; padding: 4px 8p
    handoff)" block -- it reuses the game-detail page's --g-* token/card
    grammar rather than the site-wide --ink-*/--grid-* family used here. */
 
-/* ---- analytics ---- */
-
-.stat-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1px; margin-bottom: 18px; background: var(--grid); border: 1px solid var(--grid); }
-.stat-tile { background: var(--surface-1); padding: 14px 16px; }
-.stat-tile .label { color: var(--ink-muted); font-family: var(--font-display); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; }
-.stat-tile .value { font-family: var(--font-display); font-size: 26px; font-weight: 300; font-variant-numeric: tabular-nums; margin-top: 4px; }
-
-.callout {
-  background: var(--surface-1); border-left: 3px solid var(--series-1);
-  padding: 10px 14px; font-size: 13.5px; color: var(--ink-1); border-radius: 0; margin: 10px 0 16px;
-}
-.not-implemented { color: var(--ink-muted); font-size: 12px; font-family: var(--font-mono); margin: 6px 0 18px; }
-.not-implemented ul { margin: 4px 0 0; padding-left: 18px; }
-
-table.stats-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-table.stats-table th, table.stats-table td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--grid); }
-table.stats-table th { color: var(--ink-muted); font-family: var(--font-display); font-weight: 400; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
 
 .heatmap-wrap { overflow-x: auto; }
 .heatmap-cell-label { font-size: 11px; color: var(--ink-2); }
@@ -1285,3 +1224,255 @@ body[data-page="games"] .games-frame main {
 
 .account-menu { display: flex; align-items: center; gap: 10px; margin-left: 10px; }
 .account-menu .account-name { font-size: 11px; font-family: var(--font-mono); letter-spacing: .06em; color: var(--ink-muted); }
+
+/* ---- analytics (Analytics handoff) --------------------------------------
+   Same --g-* token grammar as Game Detail/Top games/Games (values
+   identical -- the handoff calls fidelity out as exact), reusing
+   .g-card/.g-card-*/.t-title-row/.t-title/.t-result-line/.t-filters/
+   .t-chip/.t-footer/.t-chip-tag unscoped below rather than inventing
+   parallel ones -- nothing about this page's chrome or filter-chip
+   grammar is novel. Four one-off tokens don't map onto any existing
+   token at the exact hex the design calls for (cap-warning gold, delta
+   pos/neg, callout ink); the metric identity ramp (oklch, stepped 45°
+   per metric in registry order) is computed in JS, not a static token. */
+body[data-page="analytics"] {
+  --g-ink-dimmest: #3f4a47;
+  --g-ink-dim: #4a5551;
+  --g-ink-muted: #5f6b66;
+  --g-ink-sec: #6e7b75;
+  --g-ink-sec2: #7d8a84;
+  --g-ink-body: #9aa39d;
+  --g-ink-body2: #c6c9c4;
+  --g-ink-strong: #c9c4b6;
+  --g-ink-bright: #e6e3d8;
+  --g-border: #1b2220;
+  --g-border-strong: #232b29;
+  --g-border-strong2: #2b3532;
+  --g-muted-graphic: #3a4441;
+  --g-card: #0b0f0e;
+  --g-card-inset: #0e1211;
+  --g-hairline: #161c1a;
+  --g-accent: #9a2b24;
+  --g-accent-ground: #2a1210;
+  --g-row-hairline: #101514;
+  --g-track: #141a18;
+  --g-chip-border: #3a4441;
+  --g-expand-ground: #080b0a;
+  --g-show-more-bg: #0a0e0d;
+  --g-cap-warn: #c9a05a;
+  --g-delta-pos: #8faa9d;
+  --g-delta-neg: #b5766a;
+  --g-callout-ink: #c9b9a5;
+}
+
+body[data-page="analytics"] .analytics-frame {
+  position: relative;
+  background: var(--surface-0);
+  overflow: hidden;
+}
+body[data-page="analytics"] .analytics-frame::before {
+  content: "";
+  position: absolute; inset: 0; pointer-events: none; opacity: .055;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+body[data-page="analytics"] .analytics-frame::after {
+  content: "";
+  position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(120% 80% at 50% -10%, rgba(148, 180, 168, .07), rgba(0, 0, 0, 0) 60%);
+}
+body[data-page="analytics"] .analytics-frame header.chrome {
+  background: transparent; padding: 0 34px; position: relative;
+}
+body[data-page="analytics"] .analytics-frame main {
+  max-width: none; margin: 0; padding: 26px 34px 44px; position: relative;
+}
+
+.an-cards > .g-card { margin-top: 20px; }
+.an-card-pad { padding: 20px 24px 22px; }
+
+/* 2. score distribution */
+.an-dist-body { display: flex; gap: 18px; margin-top: 16px; }
+.an-stat-tiles { flex: none; width: 120px; display: flex; flex-direction: column; gap: 10px; }
+.an-stat-label { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--g-ink-dimmest); }
+.an-stat-value { font-family: var(--font-display); font-size: 20px; color: var(--g-ink-bright); }
+.an-hist { flex: 1; display: flex; align-items: flex-end; gap: 2px; height: 120px; border-left: 1px solid var(--g-hairline); border-bottom: 1px solid var(--g-hairline); padding-left: 6px; }
+.an-hist i { flex: 1; display: block; }
+
+/* 3. weight vs delivered */
+.an-wvd-head {
+  display: grid; grid-template-columns: 140px 1fr 1fr 60px; gap: 8px 12px; margin-top: 16px;
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--g-ink-dimmest);
+}
+.an-wvd-head .r { text-align: right; }
+.an-wvd-rows { display: flex; flex-direction: column; gap: 10px; margin-top: 6px; }
+.an-wvd-row { display: grid; grid-template-columns: 140px 1fr 1fr 60px; align-items: center; gap: 12px; }
+.an-wvd-label { font-family: var(--font-body); font-size: 12px; color: var(--g-ink-body2); }
+.an-wvd-track { height: 8px; background: var(--g-track); position: relative; }
+.an-wvd-track i { position: absolute; inset: 0; width: 0; }
+.an-wvd-delta { font-family: var(--font-mono); font-size: 10.5px; text-align: right; }
+.an-callout {
+  margin-top: 14px; padding: 10px 14px; border: 1px solid var(--g-border-strong); background: var(--g-expand-ground);
+  font-family: var(--font-mono); font-size: 11.5px; color: var(--g-callout-ink);
+}
+
+/* 4/8. registry + saturation tables */
+.an-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.an-card-hint { font-family: var(--font-mono); font-size: 10px; color: var(--g-ink-dimmest); letter-spacing: .1em; }
+.an-table { width: 100%; border-collapse: collapse; margin-top: 14px; font-family: var(--font-mono); font-size: 11px; }
+.an-table th {
+  text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--g-hairline); color: var(--g-ink-dimmest);
+  letter-spacing: .1em; text-transform: uppercase; font-size: 9.5px; font-weight: 400;
+}
+.an-table th.sortable { cursor: pointer; }
+.an-table th.active { color: var(--g-ink-strong); }
+.an-table td { padding: 7px 10px; border-bottom: 1px solid var(--g-row-hairline); color: var(--g-ink-body); }
+.an-table td:first-child { color: var(--g-ink-body2); }
+.an-table td.num { text-align: right; }
+.an-table tbody tr[data-selectable] { cursor: pointer; }
+.an-table tbody tr:hover[data-selectable] { background: var(--g-card-inset); }
+.an-table tbody tr.selected { background: var(--g-track); }
+.an-cap-warn { color: var(--g-cap-warn); }
+
+/* 5. leaderboard */
+.an-lb-sub { font-family: var(--font-mono); font-size: 11px; color: var(--g-ink-sec); margin-top: 6px; }
+.an-cap-banner {
+  margin-top: 12px; display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+  border: 1px solid var(--g-border-strong); background: var(--g-show-more-bg);
+  font-family: var(--font-mono); font-size: 11px; color: var(--g-ink-sec2);
+}
+.an-cap-banner .glyph { color: var(--g-accent); }
+.an-lb-rows { display: flex; flex-direction: column; margin-top: 14px; }
+.an-lb-row {
+  display: grid; grid-template-columns: 36px 90px 1fr 70px; gap: 14px; align-items: center;
+  padding: 10px 6px; border-bottom: 1px solid var(--g-row-hairline); cursor: pointer;
+}
+.an-lb-row:hover { background: var(--g-card-inset); }
+.an-lb-rank { font-family: var(--font-mono); font-size: 11px; color: var(--g-ink-dim); }
+.an-lb-raw { font-family: var(--font-display); font-size: 18px; color: var(--g-ink-bright); }
+.an-lb-matchup { font-family: var(--font-body); font-size: 13px; color: var(--g-ink-body2); }
+.an-lb-footer {
+  margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--g-hairline);
+  font-family: var(--font-mono); font-size: 10px; color: var(--g-ink-dimmest); line-height: 1.6;
+}
+
+/* 6. mean score by week */
+.an-week-bars {
+  display: flex; align-items: flex-end; gap: 4px; height: 110px; margin-top: 16px;
+  border-left: 1px solid var(--g-hairline); border-bottom: 1px solid var(--g-hairline); padding-left: 6px;
+}
+.an-week-bars i { flex: 1; display: block; }
+.an-week-legend { display: flex; gap: 16px; margin-top: 10px; }
+.an-week-legend .sw { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 10px; letter-spacing: .12em; color: var(--g-ink-sec); }
+.an-week-legend .sw i { width: 14px; height: 2px; display: inline-block; }
+
+/* 7. correlation */
+.an-corr-grid { display: grid; margin-top: 16px; width: fit-content; }
+.an-corr-col-label {
+  font-family: var(--font-mono); font-size: 8.5px; color: var(--g-ink-dimmest); writing-mode: vertical-rl;
+  text-orientation: mixed; height: 64px; text-align: right; padding-bottom: 4px;
+}
+.an-corr-row-label { font-family: var(--font-mono); font-size: 9.5px; padding: 2px 8px 2px 0; display: flex; align-items: center; }
+.an-corr-cell {
+  width: 30px; height: 30px; display: flex; align-items: center; justify-content: center;
+  font-family: var(--font-mono); font-size: 8px; color: var(--g-ink-sec2);
+}
+
+/* ---- settings (Settings handoff) ----------------------------------------
+   Same --g-* token grammar as the rest of the app, reusing .g-card/
+   .g-card-*/.t-title/.t-footer unscoped below -- the JS logic here was
+   already correct pre-redesign (season+1/+2 options, STANDARD_WEEKS vs.
+   weeksForSeason(), debounced search, spoiler-bypassing search for
+   already-hidden game overrides); this is a pure markup/CSS reskin.
+   No one-off tokens -- even the error/clear-hover red is the existing
+   global --critical, which happens to match the design's hex exactly. */
+body[data-page="settings"] {
+  --g-ink-dimmest: #3f4a47;
+  --g-ink-dim: #4a5551;
+  --g-ink-muted: #5f6b66;
+  --g-ink-sec: #6e7b75;
+  --g-ink-sec2: #7d8a84;
+  --g-ink-body: #9aa39d;
+  --g-ink-body2: #c6c9c4;
+  --g-ink-strong: #c9c4b6;
+  --g-ink-bright: #e6e3d8;
+  --g-border: #1b2220;
+  --g-border-strong: #232b29;
+  --g-border-strong2: #2b3532;
+  --g-card: #0b0f0e;
+  --g-row-hairline: #101514;
+  --g-accent: #9a2b24;
+}
+
+body[data-page="settings"] .settings-frame {
+  position: relative;
+  background: var(--surface-0);
+  overflow: hidden;
+}
+body[data-page="settings"] .settings-frame::before {
+  content: "";
+  position: absolute; inset: 0; pointer-events: none; opacity: .055;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+body[data-page="settings"] .settings-frame::after {
+  content: "";
+  position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(120% 80% at 50% -10%, rgba(148, 180, 168, .07), rgba(0, 0, 0, 0) 60%);
+}
+body[data-page="settings"] .settings-frame header.chrome {
+  background: transparent; padding: 0 34px; position: relative;
+}
+body[data-page="settings"] .settings-frame main {
+  max-width: none; margin: 0; padding: 26px 34px 44px; position: relative;
+}
+
+.s-card-pad { padding: 20px 24px 22px; }
+.s-card-sub-wide { line-height: 1.7; max-width: 72ch; }
+
+/* 1. title block + explainer + status line */
+.s-title-block { padding-bottom: 22px; border-bottom: 1px solid var(--g-border); }
+.s-explainer {
+  margin-top: 14px; font-family: var(--font-body); font-size: 13.5px; color: var(--g-ink-body);
+  line-height: 1.6; max-width: 74ch;
+}
+.s-explainer a { color: inherit; border-bottom: 1px solid var(--g-border-strong2); text-decoration: none; }
+.s-explainer a:hover { color: var(--g-ink-bright); }
+.s-status { margin-top: 18px; font-family: var(--font-mono); font-size: 12px; color: var(--g-ink-body); min-height: 16px; }
+.s-status.error { color: var(--critical); }
+
+/* control rows shared by all three cards */
+.s-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+.s-row-text { font-family: var(--font-body); font-size: 13px; color: var(--g-ink-body2); }
+.s-row select, .s-row input[type="text"] {
+  font-family: var(--font-mono); font-size: 12px; padding: 5px 6px;
+  border: 1px solid var(--g-border-strong2); background: var(--page); color: var(--g-ink-bright);
+}
+.s-row select:focus, .s-row input[type="text"]:focus { outline: 1px solid var(--g-ink-dim); }
+.s-row input[type="text"] { width: 200px; }
+.s-btn {
+  font-family: var(--font-display); font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--g-ink-strong); background: none; border: 1px solid var(--g-border-strong2);
+  padding: 6px 12px; cursor: pointer;
+}
+.s-btn:hover:not(:disabled) { border-color: var(--g-accent); color: var(--g-ink-bright); }
+.s-btn:disabled { opacity: .4; cursor: default; }
+
+/* override lists (week + game cards) */
+.s-list { display: flex; flex-direction: column; gap: 6px; margin-top: 16px; }
+.s-override-row {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  font-family: var(--font-mono); font-size: 12px; color: var(--g-ink-strong);
+  padding: 6px 0; border-bottom: 1px solid var(--g-row-hairline);
+}
+.s-override-row a { color: inherit; border-bottom: 1px solid var(--g-border-strong2); text-decoration: none; }
+.s-override-row a:hover { color: var(--g-ink-bright); }
+.s-override-clear { cursor: pointer; color: var(--g-ink-sec); padding: 0 4px; }
+.s-override-clear:hover { color: var(--critical); }
+.s-empty { font-family: var(--font-mono); font-size: 12px; color: var(--g-ink-sec); }
+
+/* game search results (game overrides card only) */
+.s-search-list { margin-top: 8px; }
+.s-search-row {
+  cursor: pointer; padding: 7px 4px; font-family: var(--font-mono); font-size: 12px;
+  color: var(--g-ink-body); border-bottom: 1px solid var(--g-row-hairline);
+}
+.s-search-row:hover { color: var(--g-ink-bright); }
