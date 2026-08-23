@@ -562,13 +562,9 @@ table.stats-table th { color: var(--ink-muted); font-family: var(--font-display)
    card per the handoff, not the site's usual edge-to-edge header +
    separately-boxed main. Scoped to body[data-page="slate"] so every other
    page keeps the plain full-width header.chrome + centered main. */
-body[data-page="slate"] { padding: 56px 24px; }
 body[data-page="slate"] .slate-frame {
   position: relative;
-  max-width: 1120px;
-  margin: 0 auto;
   background: var(--surface-0);
-  border: 1px solid var(--grid);
   overflow: hidden;
 }
 body[data-page="slate"] .slate-frame::before {
@@ -730,15 +726,11 @@ body[data-page="game"] {
   --g-accent: #9a2b24;
   --g-accent-tint: #c96b60;
   --g-accent-ground: #2a1210;
-  padding: 56px 24px;
 }
 
 body[data-page="game"] .game-frame {
   position: relative;
-  max-width: 1180px;
-  margin: 0 auto;
   background: var(--surface-0);
-  border: 1px solid var(--g-border);
   overflow: hidden;
 }
 body[data-page="game"] .game-frame::before {
