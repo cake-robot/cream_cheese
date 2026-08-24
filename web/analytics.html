@@ -160,13 +160,26 @@ function metricColor(name) {
 // Fixed hue per season (by chronological order, never by current selection --
 // deselecting a season in the multiselect must not repaint the survivors).
 // This is a categorical-identity palette, not this page's metricColor scheme
-// above: with up to 8 seasons all visible as adjacent bars in the same week
-// group, they need real hue separation to stay distinguishable, so this uses
-// the dataviz skill's validated 8-slot dark categorical palette instead
-// (all 5 checks pass against this page's --g-card #0b0f0e surface; the
-// metricColor formula above does not, at this lightness/chroma/step-size).
+// above: adjacent bars in the same week group need real hue separation to
+// stay distinguishable, which metricColor's oklch(72% 0.10, 45° steps) does
+// not clear at this surface (adjacent pairs as close as CVD ΔE 2.4). Rather
+// than reach for a generic categorical palette, these five hues are drawn
+// from -- and validated to sit beside -- the site's own accent-tier colors:
+// index 1 (#a03f3a) and 2 (#c38824) are close cousins of --g-accent's maroon
+// and --g-cap-warn's gold, index 3/4 extend the same warm sweep into olive
+// and teal, and index 0's dusty plum is the one hue this site doesn't
+// otherwise use -- five perceptually-distinct adjacent categorical colors
+// don't fit inside this site's narrow warm range alone (checked: no
+// combination confined to that range clears the CVD/normal-vision floors),
+// so one color has to step outside it. All five pass every check --
+// lightness band, chroma floor, CVD separation, normal-vision floor, contrast
+// -- against this page's --g-card surface (#0b0f0e), adjacent pairs, dark
+// mode (dataviz skill's validate_palette.py). Exactly 5 on purpose, matching
+// today's 5 scored seasons (2022-2026) -- a 6th season needs this re-derived
+// and re-validated, not silently wrapped via modulo (that would collide two
+// seasons on the same color).
 const WEEK_SEASON_COLORS = [
-  "#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767",
+  "#b373a5", "#a03f3a", "#c38824", "#556e00", "#00ae8d",
 ];
 
 function sortRegistryRows(rows) {
