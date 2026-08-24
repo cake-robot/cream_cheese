@@ -1336,6 +1336,7 @@ body[data-page="analytics"] .analytics-frame main {
 }
 .an-table th.sortable { cursor: pointer; }
 .an-table th.active { color: var(--g-ink-strong); }
+.an-table th.num { text-align: right; }
 .an-table td { padding: 7px 10px; border-bottom: 1px solid var(--g-row-hairline); color: var(--g-ink-body); }
 .an-table td:first-child { color: var(--g-ink-body2); }
 .an-table td.num { text-align: right; }

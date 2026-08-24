@@ -99,7 +99,7 @@
       <div class="g-card-sub">How often each metric's normalization cap is hit — the composite can't distinguish games past this point.</div>
       <table class="an-table">
         <thead><tr>
-          <th>Metric</th><th>Cap</th><th>N at cap</th><th>% at cap</th>
+          <th>Metric</th><th class="num">Cap</th><th class="num">N at cap</th><th class="num">% at cap</th>
         </tr></thead>
         <tbody id="an-saturation-body"></tbody>
       </table>
@@ -115,9 +115,9 @@
 <script src="/app.js"></script>
 <script>
 const REGISTRY_COLS = [
-  { key: "label", label: "Metric" }, { key: "weight", label: "Weight" }, { key: "cap", label: "Cap" },
-  { key: "n", label: "N" }, { key: "avg_raw", label: "Avg raw" }, { key: "avg_norm", label: "Avg norm" },
-  { key: "n_at_cap", label: "N@cap" }, { key: "pct_at_cap", label: "%@cap" },
+  { key: "label", label: "Metric" }, { key: "weight", label: "Weight", num: true }, { key: "cap", label: "Cap", num: true },
+  { key: "n", label: "N", num: true }, { key: "avg_raw", label: "Avg raw", num: true }, { key: "avg_norm", label: "Avg norm", num: true },
+  { key: "n_at_cap", label: "N@cap", num: true }, { key: "pct_at_cap", label: "%@cap", num: true },
 ];
 
 let ANALYTICS = null;
@@ -303,7 +303,7 @@ function renderRegistry() {
   REGISTRY_COLS.forEach((c) => {
     const active = STATE.sortKey === c.key;
     const arrow = active ? (STATE.sortDir === "asc" ? " ▲" : " ▼") : "";
-    const th = el("th", { class: `sortable${active ? " active" : ""}`, text: c.label + arrow });
+    const th = el("th", { class: `sortable${active ? " active" : ""}${c.num ? " num" : ""}`, text: c.label + arrow });
     th.addEventListener("click", () => {
       STATE.sortDir = STATE.sortKey === c.key ? (STATE.sortDir === "asc" ? "desc" : "asc") : "desc";
       STATE.sortKey = c.key;
