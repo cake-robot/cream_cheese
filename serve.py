@@ -1531,6 +1531,68 @@ def api_slate():
     })
 
 
+@app.route("/api/slate/adjacent")
+def api_slate_adjacent():
+    """Where the Slate's prev/next buttons should land. A plain +-1-day
+    (Day scope) or +-7-day (Week scope) step would walk through months of
+    dead air between one season's CFP championship and the next season's
+    opening week -- this jumps straight across that gap instead, landing on
+    the adjacent season's first/last game date. Anything short of crossing
+    a season boundary (a bye week, the regular-season-to-bowl-season
+    transition) is a normal step; /api/slate's own resolution (Tuesday-
+    anchored windows, CFP/bowl labeling) handles what to actually show once
+    it gets there -- this endpoint only decides which date to hand it.
+    """
+    conn = get_db()
+    date_str = request.args.get("date")
+    scope = request.args.get("scope", "week")
+    direction = request.args.get("dir")
+    tz_name = request.args.get("tz", "America/Los_Angeles")
+    if scope not in ("day", "week"):
+        abort(400, description="scope must be day or week")
+    if direction not in ("next", "prev"):
+        abort(400, description="dir must be next or prev")
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        abort(400, description=f"unknown tz: {tz_name}")
+    try:
+        local_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        abort(400, description="date must be YYYY-MM-DD")
+
+    def to_local_date(iso_utc):
+        return datetime.strptime(iso_utc, "%Y-%m-%dT%H:%MZ").replace(tzinfo=ZoneInfo("UTC")).astimezone(tz).date()
+
+    rows = conn.execute("""
+        SELECT g.season_year, MIN(g.game_date) AS start,
+               (SELECT MAX(g2.game_date) FROM games g2
+                WHERE g2.season_year = g.season_year AND g2.season_type = 3) AS postseason_end
+        FROM games g WHERE g.season_type = 2
+        GROUP BY g.season_year ORDER BY g.season_year
+    """).fetchall()
+    seasons = [{
+        "year": r["season_year"],
+        "start": to_local_date(r["start"]),
+        # A season still in progress (postseason not discovered/played yet)
+        # has no postseason_end -- treat its "end" as its own start so nothing
+        # downstream mistakes an in-progress season for one it can skip past.
+        "end": to_local_date(r["postseason_end"]) if r["postseason_end"] else to_local_date(r["start"]),
+    } for r in rows]
+
+    step = timedelta(days=7 if scope == "week" else 1)
+    naive = local_date + step if direction == "next" else local_date - step
+
+    current = next((s for s in reversed(seasons) if s["start"] <= local_date), None)
+    if current is not None:
+        idx = seasons.index(current)
+        if direction == "next" and naive > current["end"] and idx + 1 < len(seasons):
+            return jsonify({"date": str(seasons[idx + 1]["start"])})
+        if direction == "prev" and naive < current["start"] and idx - 1 >= 0:
+            return jsonify({"date": str(seasons[idx - 1]["end"])})
+    return jsonify({"date": str(naive)})
+
+
 # ---- games list / detail ---------------------------------------------------
 
 SORT_WHITELIST = {

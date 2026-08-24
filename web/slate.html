@@ -32,7 +32,11 @@
       <button type="button" data-scope="day">Day</button>
       <button type="button" data-scope="week">Week</button>
     </div>
-    <input type="date" id="f-date">
+    <div class="date-nav">
+      <button type="button" id="date-prev" aria-label="Previous">‹</button>
+      <input type="date" id="f-date">
+      <button type="button" id="date-next" aria-label="Next">›</button>
+    </div>
     <span class="date-label" id="date-label"></span>
     <div class="spacer"></div>
     <span class="feed-pill" id="feed-pill"></span>
@@ -444,11 +448,43 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") loadSlate();
 });
 
+function fmtDateInput(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+// Steps by the resolved window's own span (1 day, or the 7-day Tuesday-
+// anchored window every "week" scope resolves to -- see serve.py's
+// _tuesday_window/_postseason_week_window), but asks the server to resolve
+// the actual target date rather than just adding days locally -- stepping
+// past the CFP championship (or back past the season opener) needs to jump
+// clear across the offseason to the adjacent season's boundary instead of
+// landing in months of dead air. See /api/slate/adjacent.
+async function stepSlate(dir) {
+  const dateInput = document.getElementById("f-date");
+  const anchor = dateInput.value || (CURRENT_SLATE && CURRENT_SLATE.date);
+  if (!anchor) return;
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const { date } = await api("/slate/adjacent", { date: anchor, scope: CURRENT_SCOPE, dir: dir > 0 ? "next" : "prev", tz });
+    dateInput.value = date;
+  } catch (e) {
+    const d = new Date(`${anchor}T00:00:00`);
+    d.setDate(d.getDate() + (CURRENT_SCOPE === "week" ? 7 : 1) * dir);
+    dateInput.value = fmtDateInput(d);
+  }
+  loadSlate({ push: true });
+}
+
 function wireFilters() {
   document.querySelectorAll("#scope-toggle button").forEach((b) => {
     b.addEventListener("click", () => setScope(b.dataset.scope));
   });
   document.getElementById("f-date").addEventListener("change", () => loadSlate({ push: true }));
+  document.getElementById("date-prev").addEventListener("click", () => stepSlate(-1));
+  document.getElementById("date-next").addEventListener("click", () => stepSlate(1));
 }
 
 (async function init() {
