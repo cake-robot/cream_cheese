@@ -413,7 +413,7 @@ details.table-twin th, details.table-twin td { text-align: left; padding: 4px 8p
 
 /* Top games page CSS lives further down, in the "top games (Ledger + Lines
    handoff)" block -- it reuses the game-detail page's --g-* token/card
-   grammar rather than the site-wide --ink-*/--grid-* family used here. */
+   grammar rather than the site-wide --ink-* /--grid-* family used here. */
 
 
 .heatmap-wrap { overflow-x: auto; }
@@ -1239,7 +1239,7 @@ body[data-page="games"] .games-frame main {
 /* ---- analytics (Analytics handoff) --------------------------------------
    Same --g-* token grammar as Game Detail/Top games/Games (values
    identical -- the handoff calls fidelity out as exact), reusing
-   .g-card/.g-card-*/.t-title-row/.t-title/.t-result-line/.t-filters/
+   .g-card/.g-card-* /.t-title-row/.t-title/.t-result-line/.t-filters/
    .t-chip/.t-footer/.t-chip-tag unscoped below rather than inventing
    parallel ones -- nothing about this page's chrome or filter-chip
    grammar is novel. Four one-off tokens don't map onto any existing
@@ -1390,7 +1390,7 @@ body[data-page="analytics"] .analytics-frame main {
 
 /* ---- settings (Settings handoff) ----------------------------------------
    Same --g-* token grammar as the rest of the app, reusing .g-card/
-   .g-card-*/.t-title/.t-footer unscoped below -- the JS logic here was
+   .g-card-* /.t-title/.t-footer unscoped below -- the JS logic here was
    already correct pre-redesign (season+1/+2 options, STANDARD_WEEKS vs.
    weeksForSeason(), debounced search, spoiler-bypassing search for
    already-hidden game overrides); this is a pure markup/CSS reskin.
