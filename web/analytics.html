@@ -157,29 +157,23 @@ function metricColor(name) {
   return `oklch(72% 0.10 ${(idx * 45) % 360})`;
 }
 
-// Fixed hue per season (by chronological order, never by current selection --
+// Fixed step per season (by chronological order, never by current selection --
 // deselecting a season in the multiselect must not repaint the survivors).
-// This is a categorical-identity palette, not this page's metricColor scheme
-// above: adjacent bars in the same week group need real hue separation to
-// stay distinguishable, which metricColor's oklch(72% 0.10, 45° steps) does
-// not clear at this surface (adjacent pairs as close as CVD ΔE 2.4). Rather
-// than reach for a generic categorical palette, these five hues are drawn
-// from -- and validated to sit beside -- the site's own accent-tier colors:
-// index 1 (#a03f3a) and 2 (#c38824) are close cousins of --g-accent's maroon
-// and --g-cap-warn's gold, index 3/4 extend the same warm sweep into olive
-// and teal, and index 0's dusty plum is the one hue this site doesn't
-// otherwise use -- five perceptually-distinct adjacent categorical colors
-// don't fit inside this site's narrow warm range alone (checked: no
-// combination confined to that range clears the CVD/normal-vision floors),
-// so one color has to step outside it. All five pass every check --
-// lightness band, chroma floor, CVD separation, normal-vision floor, contrast
-// -- against this page's --g-card surface (#0b0f0e), adjacent pairs, dark
-// mode (dataviz skill's validate_palette.py). Exactly 5 on purpose, matching
-// today's 5 scored seasons (2022-2026) -- a 6th season needs this re-derived
-// and re-validated, not silently wrapped via modulo (that would collide two
-// seasons on the same color).
+// A grayscale-style ramp rather than a hue-carrying categorical palette --
+// same near-zero-chroma character and cool-to-warm lightness drift as this
+// page's own --g-ink-dimmest -> --g-ink-bright ramp, just re-stepped (the 9
+// actual ink tokens aren't evenly spaced enough for this: the bottom two
+// sit under 3:1 contrast on this page's --g-card surface, #0b0f0e, and the
+// top two are nearly identical in lightness). These 5 steps all clear 3:1
+// contrast individually, but adjacent-pair separation only reaches ~9.5
+// ΔE (OKLab) -- short of the usual 15-point normal-vision floor a color-only
+// encoding would need. That's an accepted tradeoff here, not an oversight:
+// color is never the only way to read a bar -- position is fixed
+// (chronological, left-to-right within every week group), a direct-labeled
+// legend sits below the chart, and every bar has a hover tooltip with the
+// exact season/week/value.
 const WEEK_SEASON_COLORS = [
-  "#b373a5", "#a03f3a", "#c38824", "#556e00", "#00ae8d",
+  "#5e6d67", "#7c887f", "#9ca498", "#bfc1b2", "#e3decf",
 ];
 
 function sortRegistryRows(rows) {
@@ -501,7 +495,13 @@ function renderByWeek(data) {
       const row = (data.by_week[s] || []).find((r) => r.week === w);
       const h = row ? Math.max(4, (row.avg_score / maxScore) * 100) : 0;
       const bar = el("i", { style: `height:${h}%; background:${weekColor(allSeasons, s)}` });
-      if (row) bar.title = `${s} week ${w} · ${row.avg_score.toFixed(3)} · n=${row.n}`;
+      if (row) {
+        bar.addEventListener("pointermove", (ev) => showTooltip(
+          `<div class="tt-value">${row.avg_score.toFixed(3)}</div><div class="tt-sub">${s} week ${w} · n=${row.n}</div>`,
+          ev.clientX, ev.clientY,
+        ));
+        bar.addEventListener("pointerleave", hideTooltip);
+      }
       group.appendChild(bar);
     });
     mount.appendChild(group);
