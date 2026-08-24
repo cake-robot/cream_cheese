@@ -1256,6 +1256,88 @@ def _default_slate_date(conn, tz):
     return datetime.now(tz).date()
 
 
+_CFP_ROUND_ORDER = ["first_round", "quarterfinal", "semifinal", "championship"]
+
+
+def _cfp_round(event_note):
+    """Classify a postseason game's event_note into its CFP round, or None
+    for a standard (non-playoff) bowl. Covers both the 4-team era's short
+    "CFP ..." notes and the 12-team era's full "College Football Playoff
+    ..." notes (see cfp_playoff_format_history memory) -- "National
+    Championship" is checked first since it's unambiguous, unlike the other
+    three which only ever appear in a playoff note to begin with.
+    """
+    if not event_note:
+        return None
+    if "National Championship" in event_note:
+        return "championship"
+    if "Quarterfinal" in event_note:
+        return "quarterfinal"
+    if "Semifinal" in event_note:
+        return "semifinal"
+    if "First Round" in event_note:
+        return "first_round"
+    return None
+
+
+def _tuesday_window(local_date, tz):
+    """The Tuesday-anchored 7-day window containing local_date. Confirmed
+    against 4 seasons of data: a CFB week's earliest game is never a Sun/Mon
+    (early-week MACtion games belong with the *upcoming* weekend, not the
+    one just past) and its last game is almost always Sat, occasionally
+    trailing to Sun/Mon -- so Tue->Mon, not the calendar Mon->Sun week, is
+    the real boundary.
+    """
+    tue_offset = (local_date.weekday() - 1) % 7
+    tuesday = local_date - timedelta(days=tue_offset)
+    window_start = datetime(tuesday.year, tuesday.month, tuesday.day, tzinfo=tz)
+    return window_start, window_start + timedelta(days=7)
+
+
+def _postseason_week_window(conn, local_date, tz, iso_utc):
+    """Postseason equivalent of the regular season's `week`-field grouping
+    below. `week` is forced to a flat 1 across the entire ~6-week bowl slate
+    (see project notes -- postseason discovery needs `week=1` to work at
+    all), so it can't group postseason games the way it groups regular
+    season ones; a naive field match would pull in the whole postseason as
+    "the week". Bucket by the same Tuesday-anchored calendar window instead.
+
+    This deliberately does NOT split CFP games out of the query into their
+    own window: the CFP semifinal and championship already isolate into
+    their own single-event bucket purely from the real multi-week gaps
+    around them, while First Round/Quarterfinal games land in the same
+    bucket as the standard bowls airing the same days -- which is exactly
+    how that week is actually watched. `postseason.cfp_rounds`/`has_bowls`
+    below exist so the UI can *label* what's in the bucket without the
+    query having artificially separated them.
+    """
+    window_start, window_end = _tuesday_window(local_date, tz)
+    bucket_rows = conn.execute(
+        "SELECT season_year, event_note FROM games "
+        "WHERE season_type = 3 AND game_date >= ? AND game_date < ?",
+        (iso_utc(window_start), iso_utc(window_end)),
+    ).fetchall()
+    rounds_present = sorted(
+        {r for r in (_cfp_round(row["event_note"]) for row in bucket_rows) if r},
+        key=_CFP_ROUND_ORDER.index,
+    )
+    has_bowls = any(_cfp_round(row["event_note"]) is None for row in bucket_rows)
+    return (
+        "g.season_type = 3 AND g.game_date >= ? AND g.game_date < ?",
+        [iso_utc(window_start), iso_utc(window_end)],
+        {
+            "date": str(local_date),
+            "window_utc": [iso_utc(window_start), iso_utc(window_end)],
+            "weeks": [],
+            "postseason": {
+                "season_year": bucket_rows[0]["season_year"] if bucket_rows else local_date.year,
+                "has_bowls": has_bowls,
+                "cfp_rounds": rounds_present,
+            },
+        },
+    )
+
+
 def _slate_window(conn, scope, date_str, tz_name):
     """Resolve the requested scope into a (where_sql, params, resolved) tuple.
     `where_sql`/`params` select against `g.game_date` (a fixed-format UTC ISO
@@ -1267,8 +1349,11 @@ def _slate_window(conn, scope, date_str, tz_name):
     scope="week" resolves the (season_year, season_type, week) tuple(s)
     present in the day window and matches on that instead -- consistent with
     how the rest of the app defines "a week" (see game.html's postseason
-    handling) rather than a raw 7-day span. Falls back to a Mon-Sun window
-    around the date if the day itself has no games with a week number.
+    handling) rather than a raw 7-day span. Falls back to a Tuesday-anchored
+    calendar window around the date if the day itself has no games with a
+    week number (see _tuesday_window). Postseason dates skip the field-based
+    match entirely and go through _postseason_week_window instead, since
+    `week` is a flat 1 across the whole bowl slate there.
     """
     try:
         tz = ZoneInfo(tz_name)
@@ -1320,15 +1405,17 @@ def _slate_window(conn, scope, date_str, tz_name):
         "WHERE game_date >= ? AND game_date < ? AND week IS NOT NULL",
         (_iso_utc(day_start), _iso_utc(day_end)),
     ).fetchall()
+    if tuples and {t["season_type"] for t in tuples} == {3}:
+        return _postseason_week_window(conn, local_date, tz, _iso_utc)
     if not tuples:
-        monday = local_date - timedelta(days=local_date.weekday())
-        window_start = datetime(monday.year, monday.month, monday.day, tzinfo=tz)
-        window_end = window_start + timedelta(days=7)
+        window_start, window_end = _tuesday_window(local_date, tz)
         tuples = conn.execute(
             "SELECT DISTINCT season_year, season_type, week FROM games "
             "WHERE game_date >= ? AND game_date < ? AND week IS NOT NULL",
             (_iso_utc(window_start), _iso_utc(window_end)),
         ).fetchall()
+        if tuples and {t["season_type"] for t in tuples} == {3}:
+            return _postseason_week_window(conn, local_date, tz, _iso_utc)
 
     resolved_weeks = [{"season_year": t["season_year"], "season_type": t["season_type"], "week": t["week"]} for t in tuples]
 
@@ -1349,7 +1436,7 @@ def _slate_window(conn, scope, date_str, tz_name):
 @app.route("/api/slate")
 def api_slate():
     conn = get_db()
-    scope = request.args.get("scope", "day")
+    scope = request.args.get("scope", "week")
     if scope not in ("day", "week"):
         abort(400, description="scope must be day or week")
     tz_name = request.args.get("tz", "America/Los_Angeles")

@@ -68,7 +68,7 @@
 let SLATE_REGISTRY = { so_far: [], from_here: [] };
 let LIVE_LABELS = {};
 let CURRENT_SLATE = null;
-let CURRENT_SCOPE = "day";
+let CURRENT_SCOPE = "week";
 const EXPANDED = new Set();
 const PREV_LIVE_SCORES = {};
 let IN_FLIGHT = false;
@@ -101,7 +101,7 @@ function currentFilters() {
 }
 
 function applyFiltersToForm(params) {
-  setScope(params.scope || "day", { silent: true });
+  setScope(params.scope || "week", { silent: true });
   // Leave blank if the URL didn't pin a date -- the request then omits
   // `date` and the server picks the nearest day with something still to
   // watch (see api_slate's default), rather than always landing on today.
@@ -136,6 +136,20 @@ function renderFeedPill(data) {
   pill.appendChild(el("span", { text: s === null ? "feed not running" : `updated ${Math.round(s)}s ago` }));
 }
 
+const CFP_ROUND_NAMES = {
+  first_round: "First Round",
+  quarterfinal: "Quarterfinal",
+  semifinal: "Semifinal",
+  championship: "National Championship",
+};
+
+function postseasonLabel(p) {
+  const rounds = (p.cfp_rounds || []).map((r) => CFP_ROUND_NAMES[r] || r);
+  if (rounds.length && p.has_bowls) return `Bowl season · CFP ${rounds.join("/")} · ${p.season_year} postseason`;
+  if (rounds.length) return `CFP ${rounds.join("/")} · ${p.season_year} postseason`;
+  return `Bowl season · ${p.season_year} postseason`;
+}
+
 function renderDateLabel(data) {
   const label = document.getElementById("date-label");
   const anySpoilerHidden = ["live", "completed", "upcoming"].some((k) => data.sections[k].some((g) => g.spoiler_hidden));
@@ -143,8 +157,11 @@ function renderDateLabel(data) {
     .find((p) => p.type === "timeZoneName").value;
   if (data.scope === "week") {
     const w = (data.weeks || [])[0];
-    const kind = w && w.season_type === 3 ? "postseason" : "regular season";
-    label.textContent = w ? `Week ${w.week} · ${w.season_year} ${kind} · ${tz}` : `Week of ${data.date} · ${tz}`;
+    let text;
+    if (w) text = `Week ${w.week} · ${w.season_year} regular season`;
+    else if (data.postseason) text = postseasonLabel(data.postseason);
+    else text = `Week of ${data.date}`;
+    label.textContent = `${text} · ${tz}`;
   } else {
     const weekday = new Date(`${data.date}T00:00:00`).toLocaleDateString(undefined, { weekday: "short" }).toUpperCase();
     label.textContent = `${weekday} · ${tz}` + (anySpoilerHidden ? " · spoiler shield on" : "");
