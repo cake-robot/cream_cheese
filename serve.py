@@ -2559,11 +2559,12 @@ def api_me():
 
 @app.route("/")
 def index_page():
-    # Landing page is spoiler settings, not the games list -- this is the
-    # control panel you'd actually want to see first, especially the first
-    # time the site loads for a new season. /index.html (Games) is still
-    # reachable directly, just no longer what "/" resolves to.
-    return send_from_directory(WEB_DIR, "settings.html")
+    # Landing page is Slate -- the page you'd actually want to see first on
+    # opening the site. /slate.html is still reachable directly, just no
+    # longer the only way to reach it. Every page's nav points its Settings
+    # link at "/settings.html" explicitly (not "/") so it isn't shadowed by
+    # whatever "/" resolves to.
+    return send_from_directory(WEB_DIR, "slate.html")
 
 
 @app.route("/<path:filename>")
