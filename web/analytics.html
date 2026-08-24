@@ -82,8 +82,11 @@
     </div>
 
     <div class="g-card an-card-pad">
-      <div class="g-card-title">Mean score by week</div>
-      <div class="g-card-sub">Regular season, most recent two seasons with data.</div>
+      <div class="an-card-head">
+        <div class="g-card-title">Mean score by week</div>
+        <div id="an-week-season-select"></div>
+      </div>
+      <div class="g-card-sub">Regular season.</div>
       <div class="an-week-bars" id="an-week-bars"></div>
       <div class="an-week-legend" id="an-week-legend"></div>
     </div>
@@ -123,7 +126,10 @@ const REGISTRY_COLS = [
 let ANALYTICS = null;
 let META = null;
 let METRIC_ORDER = [];
-const STATE = { season: "all", seasonType: "all", by: null, sortKey: "weight", sortDir: "desc" };
+// weekSeasons: null means "all available seasons" (the default, and it tracks
+// newly-added seasons automatically); once the user deselects anything it
+// becomes an explicit array and stays exactly that set from then on.
+const STATE = { season: "all", seasonType: "all", by: null, sortKey: "weight", sortDir: "desc", weekSeasons: null };
 
 function stateFromParams(p) {
   STATE.season = p.season || "all";
@@ -131,12 +137,14 @@ function stateFromParams(p) {
   STATE.by = p.by || null;
   STATE.sortKey = p.sort || "weight";
   STATE.sortDir = p.dir === "asc" ? "asc" : "desc";
+  STATE.weekSeasons = p.weeks ? p.weeks.split(",") : null;
 }
 function syncUrl() {
   setParams({
     season: STATE.season, season_type: STATE.seasonType, by: STATE.by,
     sort: STATE.sortKey === "weight" ? undefined : STATE.sortKey,
     dir: STATE.sortDir === "desc" ? undefined : STATE.sortDir,
+    weeks: STATE.weekSeasons ? STATE.weekSeasons.join(",") : undefined,
   });
 }
 
@@ -148,6 +156,18 @@ function metricColor(name) {
   const idx = METRIC_ORDER.indexOf(name);
   return `oklch(72% 0.10 ${(idx * 45) % 360})`;
 }
+
+// Fixed hue per season (by chronological order, never by current selection --
+// deselecting a season in the multiselect must not repaint the survivors).
+// This is a categorical-identity palette, not this page's metricColor scheme
+// above: with up to 8 seasons all visible as adjacent bars in the same week
+// group, they need real hue separation to stay distinguishable, so this uses
+// the dataviz skill's validated 8-slot dark categorical palette instead
+// (all 5 checks pass against this page's --g-card #0b0f0e surface; the
+// metricColor formula above does not, at this lightness/chroma/step-size).
+const WEEK_SEASON_COLORS = [
+  "#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767",
+];
 
 function sortRegistryRows(rows) {
   const dir = STATE.sortDir === "asc" ? 1 : -1;
@@ -388,29 +408,96 @@ async function refreshLeaderboard() {
 
 // ---- mean score by week ----------------------------------------------------
 
+// Single dropdown, checkbox-style options that don't close the menu on
+// click (unlike the single-select season/type filters above) -- reuses the
+// same .gm-select grammar since nothing about this page's dropdown chrome
+// is novel, just the multi-pick interaction.
+let weekSeasonsOpen = false;
+
+function weekColor(allSeasons, s) {
+  return WEEK_SEASON_COLORS[allSeasons.indexOf(s) % WEEK_SEASON_COLORS.length];
+}
+
+function effectiveWeekSeasons(allSeasons) {
+  return STATE.weekSeasons === null ? allSeasons : STATE.weekSeasons.filter((s) => allSeasons.includes(s));
+}
+
+function toggleWeekSeason(allSeasons, s) {
+  const current = new Set(effectiveWeekSeasons(allSeasons));
+  if (current.has(s)) {
+    if (current.size === 1) return; // always keep at least one season selected
+    current.delete(s);
+  } else {
+    current.add(s);
+  }
+  const next = allSeasons.filter((x) => current.has(x));
+  STATE.weekSeasons = next.length === allSeasons.length ? null : next;
+  syncUrl();
+  renderByWeek(ANALYTICS);
+}
+
+function renderWeekSeasonSelect(allSeasons) {
+  const mount = document.getElementById("an-week-season-select");
+  const selected = effectiveWeekSeasons(allSeasons);
+  const label = STATE.weekSeasons === null ? "All seasons"
+    : selected.length === 1 ? selected[0]
+    : `${selected.length} seasons`;
+  mount.innerHTML = "";
+  const trigger = el("div", {
+    class: `gm-select-trigger${STATE.weekSeasons !== null ? " set" : ""}${weekSeasonsOpen ? " open" : ""}`,
+  }, [
+    el("span", { text: label }),
+    el("span", { class: "chev", text: "⌄" }),
+  ]);
+  trigger.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    weekSeasonsOpen = !weekSeasonsOpen;
+    renderWeekSeasonSelect(allSeasons);
+  });
+  const children = [trigger];
+  if (weekSeasonsOpen) {
+    const menu = el("div", { class: "gm-select-menu" });
+    allSeasons.slice().sort((a, b) => b - a).forEach((s) => {
+      const isOn = selected.includes(s);
+      const optEl = el("div", { class: `gm-select-option${isOn ? " selected" : ""}` }, [
+        el("span", { class: "gm-select-check", text: isOn ? "✓" : "" }),
+        s,
+      ]);
+      optEl.addEventListener("click", (ev) => { ev.stopPropagation(); toggleWeekSeason(allSeasons, s); });
+      menu.appendChild(optEl);
+    });
+    children.push(menu);
+  }
+  mount.appendChild(el("div", { class: "gm-select" }, children));
+}
+
 function renderByWeek(data) {
+  const allSeasons = META.seasons.slice().map(String).sort();
+  renderWeekSeasonSelect(allSeasons);
+
   const mount = document.getElementById("an-week-bars");
   mount.innerHTML = "";
-  const seasons = Object.keys(data.by_week).sort((a, b) => b - a).slice(0, 2);
-  const colors = ["var(--g-ink-bright)", "var(--g-ink-dim)"];
+  const seasons = effectiveWeekSeasons(allSeasons).filter((s) => data.by_week[s]);
   const allRows = seasons.flatMap((s) => data.by_week[s]);
   const maxScore = Math.max(...allRows.map((r) => r.avg_score), 0.01) * 1.15;
   const maxWeek = Math.max(...allRows.map((r) => r.week), 1);
 
   for (let w = 1; w <= maxWeek; w++) {
-    seasons.forEach((s, si) => {
+    const group = el("div", { class: "an-week-group" });
+    seasons.forEach((s) => {
       const row = (data.by_week[s] || []).find((r) => r.week === w);
       const h = row ? Math.max(4, (row.avg_score / maxScore) * 100) : 0;
-      const bar = el("i", { style: `height:${h}%; background:${colors[si]}` });
+      const bar = el("i", { style: `height:${h}%; background:${weekColor(allSeasons, s)}` });
       if (row) bar.title = `${s} week ${w} · ${row.avg_score.toFixed(3)} · n=${row.n}`;
-      mount.appendChild(bar);
+      group.appendChild(bar);
     });
+    mount.appendChild(group);
   }
 
   const legend = document.getElementById("an-week-legend");
   legend.innerHTML = "";
-  seasons.forEach((s, si) => {
-    legend.appendChild(el("span", { class: "sw" }, [el("i", { style: `background:${colors[si]}` }), s]));
+  seasons.forEach((s) => {
+    legend.appendChild(el("span", { class: "sw" }, [el("i", { style: `background:${weekColor(allSeasons, s)}` }), s]));
   });
 }
 
@@ -515,9 +602,12 @@ async function refreshAll() {
 (async function init() {
   document.addEventListener("click", () => {
     if (seasonOpen) { seasonOpen = false; renderSeasonSelect(); }
+    if (weekSeasonsOpen) { weekSeasonsOpen = false; renderWeekSeasonSelect(META.seasons.slice().map(String).sort()); }
   });
   document.addEventListener("keydown", (ev) => {
-    if (ev.key === "Escape" && seasonOpen) { seasonOpen = false; renderSeasonSelect(); }
+    if (ev.key !== "Escape") return;
+    if (seasonOpen) { seasonOpen = false; renderSeasonSelect(); }
+    if (weekSeasonsOpen) { weekSeasonsOpen = false; renderWeekSeasonSelect(META.seasons.slice().map(String).sort()); }
   });
 
   META = await api("/meta");

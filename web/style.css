@@ -1369,13 +1369,15 @@ body[data-page="analytics"] .analytics-frame main {
 
 /* 6. mean score by week */
 .an-week-bars {
-  display: flex; align-items: flex-end; gap: 4px; height: 110px; margin-top: 16px;
+  display: flex; align-items: flex-end; gap: 3px; height: 110px; margin-top: 16px;
   border-left: 1px solid var(--g-hairline); border-bottom: 1px solid var(--g-hairline); padding-left: 6px;
 }
-.an-week-bars i { flex: 1; display: block; }
-.an-week-legend { display: flex; gap: 16px; margin-top: 10px; }
+.an-week-group { flex: 1; height: 100%; display: flex; align-items: flex-end; gap: 1px; }
+.an-week-group i { flex: 1; display: block; }
+.an-week-legend { display: flex; gap: 16px; row-gap: 6px; margin-top: 10px; flex-wrap: wrap; }
 .an-week-legend .sw { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 10px; letter-spacing: .12em; color: var(--g-ink-sec); }
 .an-week-legend .sw i { width: 14px; height: 2px; display: inline-block; }
+.gm-select-check { display: inline-block; width: 13px; color: var(--g-ink-bright); }
 
 /* 7. correlation */
 .an-corr-grid { display: grid; margin-top: 16px; width: fit-content; }

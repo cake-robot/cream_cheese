@@ -2278,7 +2278,10 @@ def api_analytics():
     callout = build_misalignment_callout(weight_vs_delivery)
 
     all_seasons = [r["season_year"] for r in conn.execute("SELECT DISTINCT season_year FROM games ORDER BY season_year").fetchall()]
-    by_week_seasons = [int(season)] if season else all_seasons
+    # Always every season, independent of the page's single-season filter --
+    # the by-week chart has its own multiselect on the client, defaulting to
+    # showing all of them at once as separate bars.
+    by_week_seasons = all_seasons
     by_week_season_type = int(season_type) if season_type != "all" else 2
     by_week_rows = conn.execute(f"""
         SELECT season_year, week, AVG(watchability_score) AS avg_score, COUNT(*) AS n
