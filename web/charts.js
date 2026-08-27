@@ -1071,6 +1071,91 @@ function driversWeighted(mount, metricsMap, registry, si) {
 }
 
 /* ---------------------------------------------------------------------
+ * radialScoreChart -- polar/radial-bar alternative view of the same rows
+ * driversWeighted draws (design_handoff_score_radar), toggled from the
+ * game-detail page rather than shown alongside. Half-weight metrics (Late
+ * volatility, Time spent close today) get a shorter ceiling wedge -- 105
+ * vs 150 -- so the whole slice reads as capped, not just its tip. Wedge
+ * count/order is data-driven (mirrors driversWeighted's own contribution
+ * sort) since a game can have fewer than 8 applicable metrics, unlike the
+ * static 8-wedge mock -- so label placement is computed generically by
+ * polar angle rather than the mock's hand-tuned per-wedge offsets.
+ * ------------------------------------------------------------------- */
+function radialScoreChart(mount, metricsMap, registry) {
+  const rows = registry
+    .map((r) => ({ ...r, v: metricsMap[r.name] }))
+    .filter((r) => r.v !== null)
+    .sort((a, b) => b.v.weighted - a.v.weighted);
+  const n = rows.length;
+  if (!n) return;
+  const maxWeight = Math.max(...registry.map((r) => r.weight));
+
+  const CX = 200, CY = 200, R_MAX = 150, R_CAP = 105, R_LABEL = 178;
+  const CEILING_FILL = "#161c1a", CEILING_STROKE = "#050706";
+  const VALUE_FILL = "#7d6e6a", VALUE_STROKE = "#050706";
+
+  const pt = (deg, r) => {
+    const rad = (deg * Math.PI) / 180;
+    return [CX + r * Math.cos(rad), CY + r * Math.sin(rad)];
+  };
+  const wedgePath = (lo, hi, r) => {
+    const [x1, y1] = pt(lo, r), [x2, y2] = pt(hi, r);
+    return `M${CX},${CY} L${x1.toFixed(2)},${y1.toFixed(2)} A${r},${r} 0 0 1 ${x2.toFixed(2)},${y2.toFixed(2)} Z`;
+  };
+  const arcPath = (lo, hi, r) => {
+    const [x1, y1] = pt(lo, r), [x2, y2] = pt(hi, r);
+    return `M${x1.toFixed(2)},${y1.toFixed(2)} A${r},${r} 0 0 1 ${x2.toFixed(2)},${y2.toFixed(2)}`;
+  };
+
+  const step = 360 / n;
+  const wedges = rows.map((r, i) => {
+    const axis = -90 + i * step;
+    const ceilingR = r.weight >= maxWeight ? R_MAX : R_CAP;
+    return { r, axis, lo: axis - step / 2, hi: axis + step / 2, ceilingR, valueR: Math.min(r.v.weighted * R_MAX, ceilingR) };
+  });
+
+  const chart = svg("svg", { viewBox: "-100 -20 600 440", width: "100%", height: "auto" });
+
+  chart.appendChild(svg("g", { fill: "none", stroke: "#4a5551", "stroke-opacity": "0.15" },
+    [50, 100, 150].map((r) => svg("circle", { cx: CX, cy: CY, r }))));
+
+  chart.appendChild(svg("g", { fill: CEILING_FILL, "fill-opacity": "0.7", stroke: CEILING_STROKE, "stroke-width": "2" },
+    wedges.map((w) => svg("path", { d: wedgePath(w.lo, w.hi, w.ceilingR) }))));
+
+  chart.appendChild(svg("g", { fill: VALUE_FILL, "fill-opacity": "0.9", stroke: VALUE_STROKE, "stroke-width": "1.5" },
+    wedges.map((w) => svg("path", { d: wedgePath(w.lo, w.hi, w.valueR) }))));
+
+  chart.appendChild(svg("g", { fill: "none", stroke: VALUE_FILL, "stroke-opacity": "0.6", "stroke-width": "1.25" },
+    wedges.map((w) => svg("path", { d: arcPath(w.lo, w.hi, w.ceilingR) }))));
+
+  wedges.forEach((w) => {
+    const [lx, ly] = pt(w.axis, R_LABEL);
+    const cosA = Math.cos((w.axis * Math.PI) / 180);
+    const anchor = cosA > 0.15 ? "start" : cosA < -0.15 ? "end" : "middle";
+    const capped = w.ceilingR < R_MAX;
+    chart.appendChild(svgText(lx.toFixed(1), ly.toFixed(1), w.r.label.toUpperCase() + (capped ? " *" : ""),
+      { "text-anchor": anchor, class: "rc-axis-label" }));
+    chart.appendChild(svgText(lx.toFixed(1), (ly + 13.5).toFixed(1), w.r.v.weighted.toFixed(3),
+      { "text-anchor": anchor, class: "rc-axis-value" }));
+  });
+
+  const wrap = el("div", { class: "rc-wrap" }, [
+    el("div", { class: "rc-chart" }, chart),
+    el("div", { class: "rc-legend" }, [
+      el("span", { class: "rc-legend-item" }, [el("span", { class: "rc-legend-sw rc-legend-sw-value" }), "This game"]),
+      el("span", { class: "rc-legend-item" }, [el("span", { class: "rc-legend-sw rc-legend-sw-ceiling" }), "Ceiling wedge"]),
+    ]),
+  ]);
+  if (wedges.some((w) => w.ceilingR < R_MAX)) {
+    wrap.appendChild(el("div", {
+      class: "rc-foot",
+      text: "Each metric is its own wedge. Half-weight metrics (*) get a shorter ceiling wedge, since the whole slice should read as capped, not just its tip.",
+    }));
+  }
+  mount.appendChild(wrap);
+}
+
+/* ---------------------------------------------------------------------
  * distributionRail -- "where this sits" rail card. Same 20-bin histogram
  * as /api/analytics' distribution.histogram, but styled as a dim bar field
  * with only the bucket containing this game lit, plus a marker line and

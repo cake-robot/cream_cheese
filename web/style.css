@@ -764,6 +764,28 @@ body[data-page="game"] .game-frame main {
 .g-integrity-strip .ok { color: var(--g-ink-sec2); }
 .g-integrity-strip .bad { color: var(--warning); }
 
+/* drivers card: bars/radial view toggle (design_handoff_score_radar) */
+.g-view-toggle { display: flex; gap: 2px; }
+.g-view-toggle button {
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+  padding: 5px 11px; cursor: pointer;
+  border: 1px solid var(--g-border-strong); background: transparent; color: var(--g-ink-sec);
+}
+.g-view-toggle button.active { color: var(--g-ink-bright); background: var(--g-track); border-color: var(--g-chip-border); }
+
+/* radial score chart (design_handoff_score_radar) */
+.rc-wrap { max-width: 420px; }
+.rc-chart { margin-top: 22px; }
+.rc-chart svg { width: 100%; display: block; }
+.rc-axis-label { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: .02em; fill: var(--g-ink-sec); }
+.rc-axis-value { font-family: var(--font-mono); font-size: 9.5px; fill: var(--g-ink-body); }
+.rc-legend { display: flex; gap: 18px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--g-hairline); }
+.rc-legend-item { display: flex; align-items: center; gap: 7px; font-family: var(--font-mono); font-size: 11px; color: var(--g-ink-sec); letter-spacing: .02em; }
+.rc-legend-sw { width: 12px; height: 12px; flex: none; }
+.rc-legend-sw-value { background: #7d6e6a; }
+.rc-legend-sw-ceiling { background: #161c1a; border: 1px solid #4a5551; }
+.rc-foot { font-family: var(--font-body); font-size: 11px; line-height: 1.5; color: var(--g-ink-dimmest); margin-top: 12px; }
+
 /* rail: distribution + provenance */
 .g-hist-wrap { position: relative; margin-top: 18px; }
 .g-hist-wrap svg { width: 100%; display: block; }

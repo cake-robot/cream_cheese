@@ -399,11 +399,35 @@ function renderScored(mount, detail) {
   }
 
   const driversCard = el("div", { class: "g-card g-card-pad" });
-  driversCard.appendChild(el("div", { class: "g-card-head" }, el("div", {}, [
-    el("div", { class: "g-card-title", text: "What drove this score" }),
-    el("div", { class: "g-card-sub", text: `Points contributed to the ${fmtScore(g.watchability_score)} composite, against each metric's ceiling.` }),
-  ])));
-  driversWeighted(driversCard, g.metrics, detail.registry, si);
+  const driversBody = el("div");
+  let driversView = sessionStorage.getItem("drivers-view") === "radial" ? "radial" : "bars";
+  const viewToggle = el("div", { class: "g-view-toggle" }, [
+    el("button", { type: "button", "data-view": "bars", text: "Bars" }),
+    el("button", { type: "button", "data-view": "radial", text: "Radial" }),
+  ]);
+  function renderDriversView() {
+    viewToggle.querySelectorAll("button").forEach((b) => b.classList.toggle("active", b.dataset.view === driversView));
+    driversBody.innerHTML = "";
+    if (driversView === "radial") radialScoreChart(driversBody, g.metrics, detail.registry);
+    else driversWeighted(driversBody, g.metrics, detail.registry, si);
+  }
+  viewToggle.querySelectorAll("button").forEach((b) => {
+    b.addEventListener("click", () => {
+      if (driversView === b.dataset.view) return;
+      driversView = b.dataset.view;
+      sessionStorage.setItem("drivers-view", driversView);
+      renderDriversView();
+    });
+  });
+  driversCard.appendChild(el("div", { class: "g-card-head" }, [
+    el("div", {}, [
+      el("div", { class: "g-card-title", text: "What drove this score" }),
+      el("div", { class: "g-card-sub", text: `Points contributed to the ${fmtScore(g.watchability_score)} composite, against each metric's ceiling.` }),
+    ]),
+    viewToggle,
+  ]));
+  driversCard.appendChild(driversBody);
+  renderDriversView();
   mainCol.appendChild(driversCard);
 
   const distCard = el("div", { class: "g-card g-card-pad-rail" });
