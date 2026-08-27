@@ -1861,8 +1861,15 @@ body[data-page="settings"] .settings-frame main {
   /* Touch targets: desktop's tighter chip/dropdown/button paddings (built
      for a mouse) don't carry over to mobile as-is -- bump every filter
      control to the mobile Games handoff's 34px (chips/dir) or 40px
-     (dropdown triggers/buttons) minimum tap height. */
-  .gm-chip, .gm-dir { min-height: 34px; padding: 0 11px; box-sizing: border-box; }
+     (dropdown triggers/buttons) minimum tap height. Both are plain <span>s
+     with just padding on desktop (no flex), so growing min-height alone
+     left the text sitting at its natural top-of-box position instead of
+     centered in the taller box -- display:flex + align-items:center fixes
+     that the same way the dropdown triggers/buttons already center theirs. */
+  .gm-chip, .gm-dir {
+    display: flex; align-items: center; justify-content: center;
+    min-height: 34px; padding: 0 11px; box-sizing: border-box;
+  }
   .gm-select-trigger { min-height: 40px; padding: 0 12px; box-sizing: border-box; }
   .gm-search { padding: 10px 12px; box-sizing: border-box; }
   .gm-reset {
