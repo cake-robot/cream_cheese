@@ -126,16 +126,6 @@ header.chrome {
   flex-wrap: wrap;
 }
 
-header.chrome::before {
-  content: "Watchability";
-  font-family: var(--font-display);
-  font-weight: 500;
-  font-size: 15px;
-  letter-spacing: .26em;
-  color: var(--ink-1);
-  text-transform: uppercase;
-}
-
 header.chrome nav {
   display: flex;
   gap: 22px;
@@ -1604,19 +1594,11 @@ body[data-page="settings"] .settings-frame main {
   right: 0;
   z-index: 30;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   height: 54px;
   padding: 0 16px;
   border-bottom: 1px solid var(--grid);
   background: var(--surface-1);
-}
-.mnav-word {
-  font-family: var(--font-display);
-  font-weight: 500;
-  font-size: 14px;
-  letter-spacing: .2em;
-  color: var(--ink-1);
-  text-transform: uppercase;
 }
 .mnav-trig {
   display: flex;
