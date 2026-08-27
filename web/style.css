@@ -1536,9 +1536,23 @@ body[data-page="settings"] .settings-frame main {
    carried unchanged (same bar height, trigger, drawer markup and tokens)
    to the other three per that file's own nav-decision note. Hidden above
    the phone breakpoint; swaps in for header.chrome below it. */
+/* `position: fixed`, not `sticky` -- every *-frame ancestor (.slate-frame,
+   .game-frame, etc.) sets `overflow: hidden` for its decorative noise
+   texture, which makes each frame a scroll container of its own. Since
+   that container never actually scrolls (it grows to fit its content; the
+   real page scrolling happens on the ancestor <html>/<body>), a sticky
+   child inside it never sees a scroll offset to react to and just sits
+   static. `fixed` sidesteps that -- it's viewport-relative regardless of
+   any ancestor's overflow, as long as no ancestor has a transform (none
+   here do). Content below it gets compensating top padding, see the
+   phone media query. */
 .mnav-bar {
   display: none;
-  position: relative;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 30;
   align-items: center;
   justify-content: space-between;
   height: 54px;
@@ -1670,12 +1684,19 @@ body[data-page="settings"] .settings-frame main {
   .mnav-bar { display: flex; }
 
   /* shared: page shell padding, footers -------------------------------- */
+  /* top padding is 54px (the now-fixed .mnav-bar's height) + the normal
+     16px shell padding -- .mnav-bar no longer occupies flow, so nothing
+     else pushes this content down from under it. .settings-frame main
+     had no mobile override before this and was left at its desktop
+     26px/34px; folded in here so it doesn't render under the fixed bar
+     the same as everyone else. */
   body[data-page="slate"] .slate-frame main,
   body[data-page="game"] .game-frame main,
   body[data-page="games"] .games-frame main,
   body[data-page="top"] .top-frame main,
-  body[data-page="analytics"] .analytics-frame main {
-    padding: 16px 16px 30px;
+  body[data-page="analytics"] .analytics-frame main,
+  body[data-page="settings"] .settings-frame main {
+    padding: 70px 16px 30px;
   }
   .slate-footer, .g-footer, .gm-footer, .t-footer {
     flex-direction: column;
