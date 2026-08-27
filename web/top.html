@@ -106,9 +106,49 @@
 <script>
 const STATE = { season: "all", seasonType: "all", limit: 50 };
 let SCORED_SEASONS = [];
+let REGISTRY = [];
 
 const RAMP12 = ["#e6e3d8", "#ddd5c7", "#d3c7b6", "#c9b9a5", "#bfab95", "#b59d85", "#ab8f76", "#a18268", "#97755b", "#8d6950", "#845e47", "#7b543f"];
 function rampColor(i) { return RAMP12[Math.min(i, RAMP12.length - 1)]; }
+
+// Compact "no leading zero" style for the expand panel's contribution/max
+// pair (".310 / 1", ".441 / .5") -- matches Games' own expand panel.
+function fmtNoLeadZero(v, digits) {
+  return v.toFixed(digits).replace(/^0\./, ".");
+}
+function fmtWeightMax(w) {
+  return w.toFixed(2).replace(/0+$/, "").replace(/\.$/, "").replace(/^0\./, ".");
+}
+
+// Same "Contribution by metric" panel as the Games page's row expand --
+// every /api/top result is a scored game (composite ranking requires
+// watchability_score IS NOT NULL), so unlike Games there's no null-score
+// branch to handle here. Reuses this page's existing RAMP12 (above),
+// already defined for the rank-position bar gradient.
+function renderExpandMetrics(container, g) {
+  container.appendChild(el("div", { class: "gm-expand-caption", text: "Contribution by metric" }));
+  const rowsWrap = el("div", { class: "gm-expand-rows" });
+  const maxWeight = Math.max(...REGISTRY.map((m) => m.weight));
+  const ordered = [
+    ...REGISTRY.filter((m) => m.weight >= maxWeight),
+    ...REGISTRY.filter((m) => m.weight < maxWeight),
+  ];
+  ordered.forEach((m) => {
+    const v = g.metrics[m.name];
+    if (v === null || v === undefined) return;
+    const color = RAMP12[Math.max(0, Math.min(9, Math.floor((1 - v.norm) * 9)))];
+    const trackPct = (m.weight / maxWeight) * 100;
+    rowsWrap.appendChild(el("div", { class: "gm-expand-row" }, [
+      el("span", { class: "gm-expand-label", text: m.label }),
+      el("div", { class: "gm-expand-bar", style: `width:${trackPct}%` }, el("i", { style: `width:${(v.norm * 100).toFixed(1)}%; background:${color}` })),
+      el("span", { class: "gm-expand-detail", text: `${fmtNoLeadZero(v.weighted, 3)} / ${fmtWeightMax(m.weight)}` }),
+    ]));
+  });
+  container.appendChild(rowsWrap);
+  if (g.uw_loss_bonus) {
+    container.appendChild(el("div", { class: "gm-expand-bonus", text: `+ UW loss bonus ${g.uw_loss_bonus.toFixed(3)}` }));
+  }
+}
 
 // This page's own chip grammar (9px / 2px 5px, UW-first sort) is
 // deliberately not app.js's shared renderChips()/gameChips() -- those draw
@@ -300,15 +340,29 @@ async function renderList() {
     }
     const fraction = span > 0 ? (g.watchability_score - min) / span : 1;
     const ruleWidth = (0.18 + 0.82 * fraction) * 100;
+    const chevron = el("span", { class: "gm-chevron", text: "⌄" });
     const row = el("div", { class: "t-row" }, [
       el("div", { class: `t-rank${r.rank <= 3 ? " top3" : ""}`, text: `#${r.rank}` }),
-      el("div", { class: "t-score", text: fmtScore(g.watchability_score) }),
+      el("div", { class: "t-score-line" }, [
+        el("div", { class: "t-score", text: fmtScore(g.watchability_score) }),
+        chevron,
+      ]),
       el("div", { class: "t-info" }, info),
       el("div", { class: "t-when", text: whenLabel }),
       el("div", { class: "t-rule", style: `width:${ruleWidth}%;background:${rampColor(idx)}` }),
     ]);
     row.addEventListener("click", () => goToGame(g.game_id));
     rowsMount.appendChild(row);
+
+    const expandEl = el("div", { class: "gm-expand", style: "display:none" });
+    rowsMount.appendChild(expandEl);
+    chevron.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      const showing = expandEl.style.display !== "none";
+      expandEl.style.display = showing ? "none" : "block";
+      chevron.classList.toggle("open", !showing);
+      if (!showing && expandEl.children.length === 0) renderExpandMetrics(expandEl, g);
+    });
   });
 
   const shown = data.results.length;
@@ -412,6 +466,8 @@ function refreshAll() {
   });
 
   await loadMeta();
+  const metricsResp = await api("/metrics");
+  REGISTRY = metricsResp.metrics;
   renderFilterChips();
   refreshAll();
 })();

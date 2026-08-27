@@ -926,6 +926,11 @@ body[data-page="top"] .top-frame main {
   font-family: var(--font-display); font-weight: 300; font-size: 28px; line-height: 1;
   color: var(--g-ink-bright); font-variant-numeric: tabular-nums;
 }
+/* Wraps .t-score + the row's expand chevron -- reuses .gm-chevron as-is
+   (both its small-glyph desktop style and 44x44 mobile touch box apply
+   correctly here too, since grid-area/justify-self are no-ops on a flex
+   child like this one, not a grid item). */
+.t-score-line { display: flex; align-items: center; gap: 8px; }
 .t-info { min-width: 0; }
 .t-matchup-line { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
 .t-matchup-text { font-family: var(--font-body); font-size: 14px; color: var(--g-ink-body2); }
@@ -1970,6 +1975,7 @@ body[data-page="settings"] .settings-frame main {
     padding: 14px 16px;
   }
   .t-score { font-size: 24px; }
+  .t-score-line { width: 100%; justify-content: space-between; }
   .t-when { text-align: left; }
   .t-show-more { padding: 14px 16px; }
   .t-list-footer { padding: 12px 16px; }
