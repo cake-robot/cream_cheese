@@ -430,7 +430,15 @@ function renderExpandMetrics(container, g) {
   // only ever contribute half as much" at a glance, not just a shorter
   // fill inside a track that looks identical to every full-weight metric's.
   const maxWeight = Math.max(...REGISTRY.map((m) => m.weight));
-  REGISTRY.forEach((m) => {
+  // Half-weight metrics (a shorter track, above) sort to the bottom of the
+  // list too -- same "full-weight metrics first" ordering as the radial
+  // chart's wedge order, so the shorter tracks don't interrupt the
+  // full-weight ones while scanning top to bottom.
+  const ordered = [
+    ...REGISTRY.filter((m) => m.weight >= maxWeight),
+    ...REGISTRY.filter((m) => m.weight < maxWeight),
+  ];
+  ordered.forEach((m) => {
     const v = g.metrics[m.name];
     if (v === null || v === undefined) return;
     const color = RAMP12[Math.max(0, Math.min(9, Math.floor((1 - v.norm) * 9)))];
