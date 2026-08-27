@@ -442,6 +442,13 @@ function renderRows(data) {
     const top3 = (data.offset + i) < 3;
     const pi = postseasonInfo(g);
     const wkText = pi ? pi.short : (g.season_type === 3 ? "Post" : (g.week !== null ? String(g.week) : "—"));
+    // Mobile-only: desktop shows Wk/Date as separate labeled grid columns,
+    // but the mobile handoff reads them as one flush-left line ("Wk 2 ·
+    // Sep 13, 2026"). Only prefix "Wk " for a plain numeric week -- pi.short
+    // is already a descriptive label (e.g. "SF · Rose Bowl", or a full
+    // non-CFP bowl name), where prepending "Wk " would read oddly.
+    const dateText = fmtDate(g.game_date);
+    const metaText = (!pi && g.season_type !== 3 && g.week !== null) ? `Wk ${wkText} · ${dateText}` : `${wkText} · ${dateText}`;
 
     const scored = g.watchability_score !== null;
     const scoreCell = el("div", { class: "gm-score-block" }, scored ? [
@@ -468,8 +475,9 @@ function renderRows(data) {
         ]),
         ...gmChips(g),
       ]),
-      el("span", { class: "gm-date", text: fmtDate(g.game_date) }),
+      el("span", { class: "gm-date", text: dateText }),
       el("span", {}),
+      el("span", { class: "gm-meta", title: pi ? pi.label : null, text: metaText }),
       scoreCell,
       chevron,
     ]);

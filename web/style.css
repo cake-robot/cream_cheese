@@ -1718,6 +1718,11 @@ body[data-page="settings"] .settings-frame main {
    way around. */
 .gm-filter-groups { display: contents; }
 .gm-mobile-toggle { display: none; }
+/* Mobile-only combined "Wk 2 · Sep 13, 2026" line -- see .gm-row's mobile
+   rule. Hidden by default so it isn't counted as an 8th implicit grid item
+   in desktop's un-named-areas .gm-row grid (which positions its 7 real
+   children purely by DOM order). */
+.gm-meta { display: none; }
 
 @media (max-width: 680px) {
   header.chrome { display: none; }
@@ -1879,24 +1884,29 @@ body[data-page="settings"] .settings-frame main {
 
   .gm-header-row { display: none; }
   .gm-row {
-    /* Fixed 90px (not "auto") on purpose -- a plain (non-CFP) bowl name in
-       .gm-wk can run 40+ characters ("San Diego County Credit Union Holiday
-       Bowl") with no reasonable abbreviation available. An "auto" column
-       sizes to that text's un-wrapped max-content width regardless of
-       whether it visually wraps once rendered, which blew the column wide
-       and shoved .gm-matchup's column off toward the row's right edge. A
-       fixed width forces long wk text to wrap within it instead, matching
-       desktop's own 90px .gm-wk column (see the non-mobile .gm-header-row
-       grid-template-columns above) rather than reinventing a number here. */
-    grid-template-columns: 90px 1fr;
-    grid-template-areas: "rank matchup" "wk date" "score score";
+    /* Handoff calls for rank sitting tight against matchup text on one
+       line (not parked in a fixed 90px column with dead space before the
+       matchup starts) and wk+date read together as one flush-left meta
+       line ("Wk 2 · Sep 13, 2026"), not split to opposite ends of a row.
+       Rank gets its own content-sized ("auto") column instead of a fixed
+       one; wk/date (still needed as separate elements for desktop's grid)
+       are hidden here in favor of .gm-meta, a mobile-only element with
+       both already combined into one string by renderRows() -- CSS can't
+       merge two sibling elements' text onto one line without one
+       containing the other, so this needed a small JS change rather than
+       a grid-area trick. .gm-meta spans both columns so it starts flush
+       against the row's left edge like the mock, independent of rank's
+       column width. */
+    grid-template-columns: auto 1fr;
+    grid-template-areas: "rank matchup" "meta meta" "score score";
+    column-gap: 8px;
     row-gap: 6px;
     padding: 14px 16px;
   }
   .gm-rank { grid-area: rank; align-self: start; }
-  .gm-wk { grid-area: wk; }
   .gm-matchup { grid-area: matchup; }
-  .gm-date { grid-area: date; text-align: right; }
+  .gm-wk, .gm-date { display: none; }
+  .gm-meta { grid-area: meta; display: block; font-family: var(--font-mono); font-size: 11px; color: var(--g-ink-muted); }
   /* .gm-score-block and .gm-chevron share the "score" area (score at the
      start, chevron pushed to the end via justify-self) rather than sitting
      in separate rank/wk-style columns -- .gm-score-block's own fixed-width
