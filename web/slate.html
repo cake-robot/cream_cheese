@@ -55,7 +55,7 @@
   <div id="completed-section"></div>
 
   <div class="section-title">
-    <span>Kickoff soon</span><span class="rule"></span><span class="meta">NOT SCORED</span>
+    <span id="upcoming-title">Upcoming</span><span class="rule"></span><span class="meta">NOT SCORED</span>
   </div>
   <div id="upcoming-section"></div>
 
@@ -381,9 +381,21 @@ function renderCompletedSection(games) {
 
 // ---- upcoming section ----------------------------------------------------------
 
+// Section title reads "Kickoff soon" only once the nearest game in this
+// list is actually imminent (within an hour) -- otherwise "Upcoming" is
+// the more honest label for a list that might span a whole week's Thursday
+// games sitting hours or days out.
+const KICKOFF_SOON_MS = 60 * 60 * 1000;
+
 function renderUpcomingSection(games) {
   const wrap = document.getElementById("upcoming-section");
   wrap.innerHTML = "";
+  const title = document.getElementById("upcoming-title");
+  const soon = games.some((g) => {
+    const msUntil = new Date(g.game_date).getTime() - Date.now();
+    return msUntil >= 0 && msUntil <= KICKOFF_SOON_MS;
+  });
+  title.textContent = soon ? "Kickoff soon" : "Upcoming";
   if (!games.length) {
     wrap.appendChild(el("div", { class: "empty-state", text: "Nothing left to kick off in this window." }));
     return;
