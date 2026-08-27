@@ -1871,7 +1871,7 @@ body[data-page="settings"] .settings-frame main {
     min-height: 34px; padding: 0 11px; box-sizing: border-box;
   }
   .gm-select-trigger { min-height: 40px; padding: 0 12px; box-sizing: border-box; }
-  .gm-search { padding: 10px 12px; box-sizing: border-box; }
+  .gm-search { min-height: 44px; padding: 10px 12px; box-sizing: border-box; }
   .gm-reset {
     display: flex; align-items: center; justify-content: center;
     width: 100%; min-height: 40px; margin-top: 4px; box-sizing: border-box;
