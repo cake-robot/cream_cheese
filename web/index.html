@@ -410,6 +410,17 @@ function renderSummaryStrip(data) {
 
 // ---- table ---------------------------------------------------------------
 
+// Compact "no leading zero" style for the expand panel's contribution/max
+// pair (".310 / 1", ".441 / .5") -- distinct from fmtScore's "0.665"
+// elsewhere on the page, since this label sits in a tight 100px column
+// next to another number and doesn't need the leading zero to read clearly.
+function fmtNoLeadZero(v, digits) {
+  return v.toFixed(digits).replace(/^0\./, ".");
+}
+function fmtWeightMax(w) {
+  return w.toFixed(2).replace(/0+$/, "").replace(/\.$/, "").replace(/^0\./, ".");
+}
+
 function renderExpandMetrics(container, g) {
   container.appendChild(el("div", { class: "gm-expand-caption", text: "Contribution by metric" }));
   const rowsWrap = el("div", { class: "gm-expand-rows" });
@@ -427,7 +438,7 @@ function renderExpandMetrics(container, g) {
     rowsWrap.appendChild(el("div", { class: "gm-expand-row" }, [
       el("span", { class: "gm-expand-label", text: m.label }),
       el("div", { class: "gm-expand-bar", style: `width:${trackPct}%` }, el("i", { style: `width:${(v.norm * 100).toFixed(1)}%; background:${color}` })),
-      el("span", { class: "gm-expand-detail", text: `raw ${v.raw.toFixed(2)} · wt ${(m.weight * 100).toFixed(0)}%` }),
+      el("span", { class: "gm-expand-detail", text: `${fmtNoLeadZero(v.weighted, 3)} / ${fmtWeightMax(m.weight)}` }),
     ]));
   });
   container.appendChild(rowsWrap);
