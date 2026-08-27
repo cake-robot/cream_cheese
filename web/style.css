@@ -1186,6 +1186,24 @@ body[data-page="games"] .games-frame main {
 .gm-chip-tag.uw { color: #e0ddd2; border-color: var(--g-accent); background: var(--g-accent-ground); }
 
 .gm-expand { padding: 16px 24px 20px; background: var(--g-expand-ground); border-bottom: 1px solid var(--g-row-hairline); }
+/* A row's own border-bottom is the separator between it and whatever
+   comes next -- normally the following row, but its own .gm-expand panel
+   (always its very next sibling, `display:none` until opened) sits there
+   instead once expanded. Without this, both the row's border AND the now-
+   visible expand panel's border render, leaving a stray line between the
+   row's content and "Contribution by metric" -- suppress the row's own
+   border while its own expand panel is open, so the only visible line is
+   the expand panel's, after the bar chart. Toggled alongside the chevron
+   in renderRows()/renderList()'s click handler (both index.html + top.html). */
+.gm-row.expanded, .t-row.expanded { border-bottom: none; }
+/* .t-rule (Top Games only -- Games has no equivalent) is a rank-position
+   indicator bar, absolutely positioned to .t-row's own bottom edge. It's
+   a separate element from the border-bottom above, so hiding just the
+   border while expanded wasn't enough -- .t-rule kept rendering right
+   where the border used to be, between the row and .gm-expand. Hide it
+   too while expanded; .gm-expand's own border-bottom is the only
+   separator needed once the panel is open. */
+.t-row.expanded .t-rule { display: none; }
 .gm-expand-caption { font-family: var(--font-mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--g-ink-dimmest); margin-bottom: 10px; }
 .gm-expand-rows { display: flex; flex-direction: column; gap: 8px; }
 .gm-expand-row { display: grid; grid-template-columns: 150px 1fr 100px; gap: 12px; align-items: center; }
@@ -1974,6 +1992,14 @@ body[data-page="settings"] .settings-frame main {
     gap: 4px;
     padding: 14px 16px;
   }
+  /* DOM order stays rank/score-line/info/when (desktop's grid positions
+     each by that order, with no named areas to reorder against) -- mobile
+     reorders visually only, matching Games' card shape: rank, then teams,
+     then date, then score last. */
+  .t-rank { order: 1; }
+  .t-info { order: 2; }
+  .t-when { order: 3; }
+  .t-score-line { order: 4; }
   .t-score { font-size: 24px; }
   .t-score-line { width: 100%; justify-content: space-between; }
   .t-when { text-align: left; }

@@ -361,6 +361,7 @@ async function renderList() {
       const showing = expandEl.style.display !== "none";
       expandEl.style.display = showing ? "none" : "block";
       chevron.classList.toggle("open", !showing);
+      row.classList.toggle("expanded", !showing);
       if (!showing && expandEl.children.length === 0) renderExpandMetrics(expandEl, g);
     });
   });
