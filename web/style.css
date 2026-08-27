@@ -1690,7 +1690,7 @@ body[data-page="settings"] .settings-frame main {
   .date-nav input[type="date"] { flex: 1 1 auto; min-width: 0; }
   .date-nav button { min-height: 44px; min-width: 44px; }
   .date-label { flex: 1 1 100%; order: 3; }
-  #feed-pill { flex: 0 0 auto; margin-left: auto; order: 4; }
+  #feed-pill { flex: 0 0 auto; order: 4; }
 
   .section-title { margin: 26px 0 14px; }
 
