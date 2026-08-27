@@ -100,7 +100,7 @@ METRIC_COPY = {
         ),
     },
     "comeback_erosion": {
-        "label": "Comeback erosion",
+        "label": "Comeback",
         "description": (
             "Credit for a commanding lead getting torn down -- measured once per "
             "lead-change arc, in coin-flip-normalized win-probability terms, so a "
