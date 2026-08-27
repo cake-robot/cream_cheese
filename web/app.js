@@ -371,12 +371,16 @@ function initMobileNav() {
       text: a.textContent,
     }));
   });
+  const backdrop = el("div", { class: "mnav-backdrop" });
+  document.body.appendChild(backdrop);
   function setOpen(open) {
     drawer.hidden = !open;
     trig.setAttribute("aria-expanded", String(open));
     if (chev) chev.classList.toggle("up", open);
+    backdrop.classList.toggle("on", open);
   }
   trig.addEventListener("click", () => setOpen(drawer.hidden));
+  backdrop.addEventListener("click", () => setOpen(false));
 }
 
 document.addEventListener("DOMContentLoaded", () => {

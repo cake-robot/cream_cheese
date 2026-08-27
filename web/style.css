@@ -1634,6 +1634,24 @@ body[data-page="settings"] .settings-frame main {
    follow UA styles), so without this it silently overrides `hidden` and
    the drawer renders open by default. This wins on specificity instead. */
 .mnav-drawer[hidden] { display: none; }
+/* Dims whatever page content is currently in view behind the open drawer --
+   z-index sits between the fixed bar (30) and the drawer (40) so both stay
+   crisp on top while everything else recedes, instead of the drawer's
+   opaque panel just sitting on top of unrelated content with no visual
+   separation. */
+.mnav-backdrop {
+  position: fixed;
+  top: 54px;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 35;
+  background: rgba(0, 0, 0, 0.55);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .15s;
+}
+.mnav-backdrop.on { opacity: 1; pointer-events: auto; }
 .mnav-item {
   display: flex;
   align-items: center;
