@@ -386,10 +386,19 @@ function renderCompletedSection(games) {
 // games sitting hours or days out.
 const KICKOFF_SOON_MS = 60 * 60 * 1000;
 
-function renderUpcomingSection(games) {
+function renderUpcomingSection(unsortedGames) {
   const wrap = document.getElementById("upcoming-section");
   wrap.innerHTML = "";
   const title = document.getElementById("upcoming-title");
+  // Kickoff time ascending, then (for same-time slots) the better-ranked
+  // team in the game first -- the lower of home/away rank, unranked teams
+  // (null) sorting last.
+  const games = unsortedGames.slice().sort((a, b) => {
+    const dateDiff = new Date(a.game_date) - new Date(b.game_date);
+    if (dateDiff !== 0) return dateDiff;
+    const bestRank = (g) => Math.min(g.home.rank ?? Infinity, g.away.rank ?? Infinity);
+    return bestRank(a) - bestRank(b);
+  });
   const soon = games.some((g) => {
     const msUntil = new Date(g.game_date).getTime() - Date.now();
     return msUntil >= 0 && msUntil <= KICKOFF_SOON_MS;
