@@ -931,6 +931,12 @@ body[data-page="top"] .top-frame main {
    correctly here too, since grid-area/justify-self are no-ops on a flex
    child like this one, not a grid item). */
 .t-score-line { display: flex; align-items: center; gap: 8px; }
+/* The meter (reused from Games' .gm-score-meter) is mobile-only -- desktop's
+   84px score column has no room for a 56px meter next to the score digits
+   without it running into .t-info's matchup text. Scoped to .t-score-line
+   specifically so this doesn't touch Games' own .gm-score-block meter,
+   which stays visible on both breakpoints there. */
+.t-score-line .gm-score-meter { display: none; }
 .t-info { min-width: 0; }
 .t-matchup-line { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
 .t-matchup-text { font-family: var(--font-body); font-size: 14px; color: var(--g-ink-body2); }
@@ -2001,7 +2007,11 @@ body[data-page="settings"] .settings-frame main {
   .t-when { order: 3; }
   .t-score-line { order: 4; }
   .t-score { font-size: 24px; }
-  .t-score-line { width: 100%; justify-content: space-between; }
+  /* No justify-content needed -- .gm-score-meter's own mobile rule
+     (flex:1 1 auto) already consumes all remaining row width, pushing
+     the chevron to the end the same way Games' score row does. */
+  .t-score-line { width: 100%; }
+  .t-score-line .gm-score-meter { display: block; }
   .t-when { text-align: left; }
   .t-show-more { padding: 14px 16px; }
   .t-list-footer { padding: 12px 16px; }

@@ -341,10 +341,16 @@ async function renderList() {
     const fraction = span > 0 ? (g.watchability_score - min) / span : 1;
     const ruleWidth = (0.18 + 0.82 * fraction) * 100;
     const chevron = el("span", { class: "gm-chevron", text: "⌄" });
+    // Same meter as Games' .gm-score-block (reused as-is, both breakpoints
+    // already styled there) -- same 0.87 reference max, flat BAR_COLOR
+    // fill rather than Games' rank-position gradient, matching this page's
+    // own already-decluttered bars (.t-rule, .t-team-fill).
+    const meterPct = Math.min(100, (g.watchability_score / 0.87) * 100);
     const row = el("div", { class: "t-row" }, [
       el("div", { class: `t-rank${r.rank <= 3 ? " top3" : ""}`, text: `#${r.rank}` }),
       el("div", { class: "t-score-line" }, [
         el("div", { class: "t-score", text: fmtScore(g.watchability_score) }),
+        el("div", { class: "gm-score-meter" }, el("i", { style: `width:${meterPct}%; background:${BAR_COLOR}` })),
         chevron,
       ]),
       el("div", { class: "t-info" }, info),
