@@ -359,6 +359,7 @@ async function initAccountMenu() {
 }
 
 function initMobileNav() {
+  const bar = document.getElementById("mnav-bar");
   const drawer = document.getElementById("mnav-drawer");
   const trig = document.getElementById("mnav-trig");
   const chev = document.getElementById("mnav-chev");
@@ -371,8 +372,17 @@ function initMobileNav() {
       text: a.textContent,
     }));
   });
+  // Inserted as a child of .mnav-bar (before the drawer), not document.body --
+  // .mnav-bar is `position:fixed` and establishes its own stacking context,
+  // so a same-z-index-scale sibling of .mnav-bar (like a body-level backdrop)
+  // compares against .mnav-bar's OWN z-index (30), not the drawer's (40)
+  // nested inside it -- painting over the whole bar+drawer group regardless
+  // of the drawer's nominally higher z-index. Keeping the backdrop inside
+  // .mnav-bar puts it in the same stacking context as the drawer, so 35 vs
+  // 40 compares correctly; `position:fixed` still covers the full viewport
+  // either way since .mnav-bar has no transform.
   const backdrop = el("div", { class: "mnav-backdrop" });
-  document.body.appendChild(backdrop);
+  bar.insertBefore(backdrop, drawer);
   function setOpen(open) {
     drawer.hidden = !open;
     trig.setAttribute("aria-expanded", String(open));
