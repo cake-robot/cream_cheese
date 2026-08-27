@@ -1071,24 +1071,29 @@ function driversWeighted(mount, metricsMap, registry, si) {
 }
 
 /* ---------------------------------------------------------------------
- * radialScoreChart -- polar/radial-bar alternative view of the same rows
- * driversWeighted draws (design_handoff_score_radar), toggled from the
- * game-detail page rather than shown alongside. Half-weight metrics (Late
- * volatility, Time spent close today) get a shorter ceiling wedge -- 105
- * vs 150 -- so the whole slice reads as capped, not just its tip. Wedge
- * count/order is data-driven (mirrors driversWeighted's own contribution
- * sort) since a game can have fewer than 8 applicable metrics, unlike the
- * static 8-wedge mock -- so label placement is computed generically by
- * polar angle rather than the mock's hand-tuned per-wedge offsets.
+ * radialScoreChart -- polar/radial-bar alternative view of the same
+ * metrics driversWeighted draws (design_handoff_score_radar), toggled from
+ * the game-detail page rather than shown alongside. Half-weight metrics
+ * (Late volatility, Time spent close) get a shorter ceiling wedge -- 105
+ * vs 150 -- so the whole slice reads as capped, not just its tip.
+ *
+ * Deliberately NOT sorted by contribution like driversWeighted's bars --
+ * a fixed wedge order (registry order, half-weight metrics pushed to the
+ * end) keeps each metric's angular position stable game to game, which
+ * matters for a shape you're meant to recognize at a glance across games.
+ * Wedge count still varies with which metrics are applicable to a given
+ * game, unlike the static 8-wedge mock -- so label placement is computed
+ * generically by polar angle rather than the mock's hand-tuned offsets.
  * ------------------------------------------------------------------- */
 function radialScoreChart(mount, metricsMap, registry) {
-  const rows = registry
-    .map((r) => ({ ...r, v: metricsMap[r.name] }))
-    .filter((r) => r.v !== null)
-    .sort((a, b) => b.v.weighted - a.v.weighted);
+  const maxWeight = Math.max(...registry.map((r) => r.weight));
+  const applicable = registry.map((r) => ({ ...r, v: metricsMap[r.name] })).filter((r) => r.v !== null);
+  const rows = [
+    ...applicable.filter((r) => r.weight >= maxWeight),
+    ...applicable.filter((r) => r.weight < maxWeight),
+  ];
   const n = rows.length;
   if (!n) return;
-  const maxWeight = Math.max(...registry.map((r) => r.weight));
 
   const CX = 200, CY = 200, R_MAX = 150, R_CAP = 105, R_LABEL = 178;
   const CEILING_FILL = "#161c1a", CEILING_STROKE = "#050706";
