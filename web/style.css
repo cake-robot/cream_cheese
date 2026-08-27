@@ -957,6 +957,13 @@ body[data-page="top"] .top-frame main {
 }
 .t-chip-tag.uw { color: #e0ddd2; border-color: var(--g-accent); background: var(--g-accent-ground); }
 .t-rule { position: absolute; left: 0; bottom: 0; height: 1px; opacity: .5; }
+/* A second copy lives inside .gm-expand (see the chevron handler in
+   top.html) so the expanded state's separator matches the same visually-
+   prominent bar collapsed rows show, instead of just .gm-expand's own
+   subtle 1px hairline border. Normal flow here, not absolute -- there's
+   no "row's own bottom edge" to pin to inside the panel, it just sits
+   after the last metric row. */
+.gm-expand .t-rule { position: static; margin-top: 14px; }
 
 .t-show-more {
   display: flex; align-items: center; justify-content: center; gap: 14px; padding: 16px 24px;

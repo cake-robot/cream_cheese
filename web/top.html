@@ -368,7 +368,17 @@ async function renderList() {
       expandEl.style.display = showing ? "none" : "block";
       chevron.classList.toggle("open", !showing);
       row.classList.toggle("expanded", !showing);
-      if (!showing && expandEl.children.length === 0) renderExpandMetrics(expandEl, g);
+      if (!showing && expandEl.children.length === 0) {
+        renderExpandMetrics(expandEl, g);
+        // .t-rule on the row itself is hidden while expanded (CSS) since
+        // it's pinned to the row's own bottom edge, which now sits above
+        // the expand panel instead of before the next game -- append a
+        // matching copy as the panel's last child (normal flow, not
+        // absolute -- see .gm-expand .t-rule override) so the same
+        // visually-prominent separator the user is used to between
+        // collapsed cards still shows, just after the bar chart instead.
+        expandEl.appendChild(el("div", { class: "t-rule", style: `width:${ruleWidth}%;background:${BAR_COLOR}` }));
+      }
     });
   });
 
