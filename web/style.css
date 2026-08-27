@@ -476,10 +476,16 @@ body[data-page="slate"] .slate-frame main {
 
 .date-nav { display: flex; align-items: center; gap: 4px; }
 .date-nav button {
-  font-family: var(--font-display); font-size: 14px; line-height: 1;
-  padding: 6px 10px; cursor: pointer; border: 1px solid var(--axis); background: var(--page); color: var(--ink-2);
+  display: inline-flex; align-items: center; justify-content: center;
+  font-family: var(--font-display); font-size: 14px; line-height: 1; height: 28px;
+  padding: 0 10px; cursor: pointer; border: 1px solid var(--axis); background: var(--page); color: var(--ink-2);
+  box-sizing: border-box;
 }
 .date-nav button:hover { background: var(--ink-2); color: var(--page); }
+/* Chrome's native date control has its own internal minimum height that
+   ignores padding math, so it has to be pinned explicitly to match the
+   chevron buttons rather than relying on the shared .filters input rule. */
+.date-nav input[type="date"] { height: 28px; box-sizing: border-box; }
 
 .feed-pill {
   display: inline-flex; align-items: center; gap: 8px;
@@ -1687,8 +1693,8 @@ body[data-page="settings"] .settings-frame main {
   #scope-toggle button { flex: 1; min-height: 44px; }
   .filters .spacer { display: none; }
   .date-nav { flex: 1 1 auto; }
-  .date-nav input[type="date"] { flex: 1 1 auto; min-width: 0; }
-  .date-nav button { min-height: 44px; min-width: 44px; }
+  .date-nav input[type="date"] { flex: 1 1 auto; min-width: 0; height: 44px; }
+  .date-nav button { height: 44px; min-width: 44px; }
   .date-label { flex: 1 1 100%; order: 3; }
   #feed-pill { flex: 0 0 auto; order: 4; }
 
