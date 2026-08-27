@@ -142,13 +142,25 @@ const CFP_ROUND_ABBR = { "First Round": "R1", "Quarterfinal": "QF", "Semifinal":
 // not the bowl name itself.
 function postseasonInfo(g) {
   if (g.season_type !== 3 || !g.event_note) return null;
-  const note = g.event_note.replace(/\s+Presented by\b.*$/i, "").trim();
-  const isCFP = /college football playoff/i.test(note);
+  // Sponsor suffix appears as both spelled-out ("Presented by Prudential")
+  // and abbreviated ("Pres. by AT&T", "pres. by Prudential") depending on
+  // season -- strip either so it doesn't leak into the bowl name below.
+  const note = g.event_note.replace(/\s+(presented|pres\.?)\s+by\b.*$/i, "").trim();
+  // 4-team era (2022/2023) notes are the short form "CFP <round> ..."; the
+  // 12-team era (2024+) spells out "College Football Playoff <round> ...".
+  // Missing the short form here left those games' `short` falling through
+  // to the raw, unabbreviated note below -- long enough to blow out the
+  // fixed-width mobile grid column it renders in (see Games page mobile
+  // layout, gm-wk).
+  const isCFP = /college football playoff|\bcfp\b/i.test(note);
   if (!isCFP) return { isCFP: false, label: note, short: note };
   const roundMatch = note.match(/First Round|Quarterfinal|Semifinal|National Championship/i);
   const round = roundMatch ? roundMatch[0] : "Playoff";
   const bowlMatch = note.match(/at the (.+)$/i);
-  const bowl = bowlMatch ? bowlMatch[1].trim() : null;
+  // A handful of notes append a qualifier after the bowl name itself (e.g.
+  // "Allstate Sugar Bowl - Rescheduled from Jan 1") -- drop it so it doesn't
+  // balloon `short`/`label` the same way the missing short-CFP-form case did.
+  const bowl = bowlMatch ? bowlMatch[1].replace(/\s+-\s+.*$/, "").trim() : null;
   const abbr = CFP_ROUND_ABBR[round] || round;
   return {
     isCFP: true,
