@@ -1923,7 +1923,16 @@ body[data-page="settings"] .settings-frame main {
      the rank/week content actually was, shoving .gm-matchup's whole column
      far right on every row. Spanning both columns here removes it from that
      column's width calculation entirely. */
-  .gm-score-block { grid-area: score; }
+  /* score-block stretches to the full card width by default (a grid item
+     with no explicit width defaults to justify-self:stretch), but its own
+     children didn't use that space -- the meter stayed at desktop's fixed
+     56px, leaving most of the row empty. flex:1 lets it fill whatever
+     room is left between the score value and the percentile; padding-
+     right reserves the chevron's own 44px zone (a separate grid item
+     sharing this same "score" area, pinned to the end) so the meter never
+     grows underneath it. */
+  .gm-score-block { grid-area: score; padding-right: 48px; box-sizing: border-box; }
+  .gm-score-meter { flex: 1 1 auto; width: auto; height: 4px; }
   .gm-chevron {
     grid-area: score; justify-self: end;
     width: 44px; height: 44px; display: flex; align-items: center; justify-content: flex-end;
