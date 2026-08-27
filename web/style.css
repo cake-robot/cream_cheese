@@ -1673,7 +1673,8 @@ body[data-page="settings"] .settings-frame main {
   body[data-page="slate"] .slate-frame main,
   body[data-page="game"] .game-frame main,
   body[data-page="games"] .games-frame main,
-  body[data-page="top"] .top-frame main {
+  body[data-page="top"] .top-frame main,
+  body[data-page="analytics"] .analytics-frame main {
     padding: 16px 16px 30px;
   }
   .slate-footer, .g-footer, .gm-footer, .t-footer {
@@ -1847,4 +1848,32 @@ body[data-page="settings"] .settings-frame main {
   .t-list-footer { padding: 12px 16px; }
   .t-peaks-head { padding: 16px 16px 0; }
   .t-peaks-body { padding: 14px 16px 20px; }
+
+  /* ---- Analytics (never got a mobile pass) ----------------------------
+     Three grids kept their desktop column widths and squeezed: the wvd
+     head/rows share a column spec so narrowing both identically keeps
+     the Delta header lined up with its own values; the leaderboard row
+     drops its fixed-width matchup column for a full-width row beneath
+     rank+value, same pattern as Games' .gm-row; the correlation matrix
+     gets its own horizontal scroller instead of shrinking 9 columns
+     into one screen width. */
+  .an-card-pad { padding: 16px; }
+
+  .an-wvd-head, .an-wvd-row { grid-template-columns: 70px 1fr 1fr 44px; gap: 8px; }
+  .an-wvd-label { font-size: 11px; }
+  .an-wvd-delta { font-size: 10px; }
+
+  .an-lb-row {
+    grid-template-columns: auto 1fr;
+    grid-template-areas: "rank raw" "matchup matchup" "chip chip";
+    row-gap: 6px;
+    padding: 12px 6px;
+  }
+  .an-lb-rank { grid-area: rank; }
+  .an-lb-raw { grid-area: raw; justify-self: end; }
+  .an-lb-matchup { grid-area: matchup; }
+  .an-lb-row > *:nth-child(4) { grid-area: chip; justify-self: start; }
+
+  .an-corr-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin-top: 16px; }
+  .an-corr-grid { margin-top: 0; min-width: 560px; }
 }
