@@ -1857,8 +1857,17 @@ body[data-page="settings"] .settings-frame main {
 
   .gm-header-row { display: none; }
   .gm-row {
-    grid-template-columns: auto 1fr;
-    grid-template-areas: "rank matchup" "wk date" "score chev";
+    /* Fixed 90px (not "auto") on purpose -- a plain (non-CFP) bowl name in
+       .gm-wk can run 40+ characters ("San Diego County Credit Union Holiday
+       Bowl") with no reasonable abbreviation available. An "auto" column
+       sizes to that text's un-wrapped max-content width regardless of
+       whether it visually wraps once rendered, which blew the column wide
+       and shoved .gm-matchup's column off toward the row's right edge. A
+       fixed width forces long wk text to wrap within it instead, matching
+       desktop's own 90px .gm-wk column (see the non-mobile .gm-header-row
+       grid-template-columns above) rather than reinventing a number here. */
+    grid-template-columns: 90px 1fr;
+    grid-template-areas: "rank matchup" "wk date" "score score";
     row-gap: 6px;
     padding: 14px 16px;
   }
@@ -1866,9 +1875,18 @@ body[data-page="settings"] .settings-frame main {
   .gm-wk { grid-area: wk; }
   .gm-matchup { grid-area: matchup; }
   .gm-date { grid-area: date; text-align: right; }
+  /* .gm-score-block and .gm-chevron share the "score" area (score at the
+     start, chevron pushed to the end via justify-self) rather than sitting
+     in separate rank/wk-style columns -- .gm-score-block's own fixed-width
+     children (a 56px meter bar, a 44px-min-width value) used to live in the
+     SAME auto-sized column as .gm-rank/.gm-wk, so their combined intrinsic
+     width (~150px) forced that "auto" column wide regardless of how short
+     the rank/week content actually was, shoving .gm-matchup's whole column
+     far right on every row. Spanning both columns here removes it from that
+     column's width calculation entirely. */
   .gm-score-block { grid-area: score; }
   .gm-chevron {
-    grid-area: chev; justify-self: end;
+    grid-area: score; justify-self: end;
     width: 44px; height: 44px; display: flex; align-items: center; justify-content: flex-end;
   }
   .gm-expand { padding: 14px 16px 18px; }
