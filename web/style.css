@@ -1188,6 +1188,11 @@ body[data-page="games"] .games-frame main {
 .gm-expand-bar { height: 6px; background: var(--g-track); position: relative; }
 .gm-expand-bar > i { position: absolute; left: 0; top: 0; bottom: 0; }
 .gm-expand-detail { font-family: var(--font-mono); font-size: 10.5px; color: var(--g-ink-muted); text-align: right; white-space: nowrap; }
+/* Capped rows' detail cell carries an extra "⚠ AT CAP" chip -- let it wrap
+   onto its own line under the raw/wt text instead of overflowing the
+   fixed 100px column (nowrap is fine for every other row, which is just
+   "raw X · wt Y%" and always fits on one line). */
+.gm-expand-row.capped .gm-expand-detail { white-space: normal; }
 .gm-expand-bonus { margin-top: 12px; font-family: var(--font-mono); font-size: 10.5px; color: var(--g-uw-bonus-clay); }
 
 .gm-empty { padding: 40px 24px; text-align: center; font-family: var(--font-mono); font-size: 12px; color: var(--g-ink-sec); }
