@@ -774,7 +774,7 @@ body[data-page="game"] .game-frame main {
 .g-view-toggle button.active { color: var(--g-ink-bright); background: var(--g-track); border-color: var(--g-chip-border); }
 
 /* radial score chart (design_handoff_score_radar) */
-.rc-wrap { max-width: 420px; }
+.rc-wrap { max-width: 504px; }
 .rc-chart { margin-top: 22px; }
 .rc-chart svg { width: 100%; display: block; }
 .rc-axis-label { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: .02em; fill: var(--g-ink-sec); }
