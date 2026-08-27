@@ -907,14 +907,6 @@ body[data-page="top"] .top-frame main {
 .t-rail-card-pad { padding: 22px 24px 20px; }
 
 /* ranked list */
-.t-list-head {
-  padding: 20px 24px 16px; border-bottom: 1px solid var(--g-hairline);
-  display: flex; align-items: flex-end; justify-content: space-between; gap: 20px;
-}
-.t-list-rule-note {
-  font-family: var(--font-mono); font-size: 10px; letter-spacing: .14em; color: var(--g-ink-dimmest);
-  text-align: right; white-space: nowrap;
-}
 .t-row {
   display: grid; grid-template-columns: 46px 84px minmax(0, 1fr) auto; gap: 16px; align-items: center;
   padding: 13px 24px; border-bottom: 1px solid var(--g-row-hairline); cursor: pointer; position: relative;
@@ -1996,8 +1988,6 @@ body[data-page="settings"] .settings-frame main {
   .t-body-grid, .t-rail { gap: 20px; }
   .t-body-grid { margin-top: 20px; }
   .t-rail-card-pad { padding: 18px 16px 18px; }
-  .t-list-head { padding: 16px 16px 14px; flex-direction: column; align-items: flex-start; gap: 8px; }
-  .t-list-rule-note { text-align: left; }
   .t-row {
     display: flex;
     flex-direction: column;

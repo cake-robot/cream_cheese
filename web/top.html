@@ -48,13 +48,6 @@
 
   <div class="t-body-grid">
     <div class="g-card">
-      <div class="t-list-head">
-        <div>
-          <div class="g-card-title">Ranked by composite</div>
-          <div class="g-card-sub">Watchability score, highest first. The two metrics that contributed most are named on each row.</div>
-        </div>
-        <div class="t-list-rule-note" id="t-rule-note"></div>
-      </div>
       <div id="t-rows"></div>
       <div id="t-show-more"></div>
       <div class="t-list-footer">Click any row to open that game. Ranks reflect the spoiler-visible corpus only.</div>
@@ -310,20 +303,17 @@ async function renderList() {
 
   const rowsMount = document.getElementById("t-rows");
   const showMoreMount = document.getElementById("t-show-more");
-  const ruleNote = document.getElementById("t-rule-note");
   rowsMount.innerHTML = "";
   showMoreMount.innerHTML = "";
 
   if (!data.results.length) {
-    ruleNote.textContent = "";
     rowsMount.appendChild(el("div", { class: "t-empty", text: "No scored games match these filters." }));
     return;
   }
 
   const scores = data.results.map((r) => r.game.watchability_score);
-  const max = Math.max(...scores), min = Math.min(...scores);
-  const span = max - min;
-  ruleNote.textContent = `Rule width = score against #1 (${fmtScore(max)})`;
+  const min = Math.min(...scores);
+  const span = Math.max(...scores) - min;
 
   data.results.forEach((r, idx) => {
     const g = r.game;
