@@ -1495,14 +1495,8 @@ body[data-page="settings"] .settings-frame main {
 .s-card-pad { padding: 20px 24px 22px; }
 .s-card-sub-wide { line-height: 1.7; max-width: 72ch; }
 
-/* 1. title block + explainer + status line */
+/* 1. title block + status line */
 .s-title-block { padding-bottom: 22px; border-bottom: 1px solid var(--g-border); }
-.s-explainer {
-  margin-top: 14px; font-family: var(--font-body); font-size: 13.5px; color: var(--g-ink-body);
-  line-height: 1.6; max-width: 74ch;
-}
-.s-explainer a { color: inherit; border-bottom: 1px solid var(--g-border-strong2); text-decoration: none; }
-.s-explainer a:hover { color: var(--g-ink-bright); }
 .s-status { margin-top: 18px; font-family: var(--font-mono); font-size: 12px; color: var(--g-ink-body); min-height: 16px; }
 .s-status.error { color: var(--critical); }
 
