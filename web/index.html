@@ -393,7 +393,7 @@ function renderSummaryStrip(data) {
   if (data.spoiler_excluded && data.spoiler_excluded.count) {
     strip.appendChild(el("span", { class: "spoiler" }, [
       `⚠ ${data.spoiler_excluded.count} games spoiler-protected — see `,
-      el("a", { href: "/slate.html", text: "Slate" }),
+      el("a", { href: "/settings.html", text: "Settings" }),
     ]));
   }
   const from = data.offset + 1, to = Math.min(data.offset + data.limit, data.total);
