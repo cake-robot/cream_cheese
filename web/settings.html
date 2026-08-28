@@ -49,10 +49,6 @@
     <div class="s-row">
       <span class="s-row-text">Hide from</span>
       <select id="f-default-season"></select>
-      <select id="f-default-type">
-        <option value="2">Regular</option>
-        <option value="3">Postseason</option>
-      </select>
       <select id="f-default-week"></select>
       <span class="s-row-text">onward</span>
       <button class="s-btn" id="btn-save-default">Save</button>
@@ -65,10 +61,6 @@
     <div class="g-card-sub">Beats the default, in either direction, for one (season, type, week).</div>
     <div class="s-row">
       <select id="f-week-season"></select>
-      <select id="f-week-type">
-        <option value="2">Regular</option>
-        <option value="3">Postseason</option>
-      </select>
       <select id="f-week-week"></select>
       <select id="f-week-state">
         <option value="hidden">Hidden</option>
@@ -144,7 +136,7 @@ async function loadMeta() {
   years.add(maxKnown + 2);
   const yearList = Array.from(years).sort((a, b) => a - b);
   defaultSeasonSel.innerHTML = yearList.map((y) => `<option value="${y}">${y}</option>`).join("");
-  refreshDefaultWeekOptions();
+  populateDefaultWeekOptions();
 
   const weekSeasonSel = document.getElementById("f-week-season");
   weekSeasonSel.innerHTML = META.seasons.slice().sort((a, b) => a - b)
@@ -152,23 +144,32 @@ async function loadMeta() {
   refreshWeekWeekOptions();
 }
 
-function refreshDefaultWeekOptions() {
-  const seasonType = document.getElementById("f-default-type").value;
+// Combines season-type + week into one dropdown -- "2-<n>" for regular
+// season weeks, "3-1" for postseason (postseason games are always stored
+// under week=1, see pipeline.py). Static/built once: the Default
+// threshold has to be settable for a season that doesn't exist in the DB
+// yet (see this file's other STANDARD_WEEKS comment), so it can't depend
+// on real per-season data the way the week-override row below does.
+function populateDefaultWeekOptions() {
   const weekSel = document.getElementById("f-default-week");
-  const current = weekSel.value;
-  const weeks = seasonType === "3" ? [1] : STANDARD_WEEKS;
-  weekSel.innerHTML = weeks.map((w) => `<option value="${w}">${w}</option>`).join("");
-  if (weeks.includes(Number(current))) weekSel.value = current;
+  const opts = STANDARD_WEEKS.map((w) => ({ value: `2-${w}`, label: `Week ${w}` }));
+  opts.push({ value: "3-1", label: "Postseason" });
+  weekSel.innerHTML = opts.map((o) => `<option value="${o.value}">${o.label}</option>`).join("");
 }
 
+// Same combined season-type + week dropdown as populateDefaultWeekOptions(),
+// but options come from weeksForSeason() (real per-season data) since a
+// week override always targets actual games -- re-run on season change,
+// unlike the Default row's static list. Postseason is only offered once
+// weeksForSeason confirms this season actually has postseason games.
 function refreshWeekWeekOptions() {
   const season = document.getElementById("f-week-season").value;
-  const seasonType = document.getElementById("f-week-type").value;
   const weekSel = document.getElementById("f-week-week");
   const current = weekSel.value;
-  const weeks = weeksForSeason(META, season, seasonType);
-  weekSel.innerHTML = weeks.map((w) => `<option value="${w}">${w}</option>`).join("");
-  if (weeks.includes(Number(current))) weekSel.value = current;
+  const opts = weeksForSeason(META, season, "2").map((w) => ({ value: `2-${w}`, label: `Week ${w}` }));
+  if (weeksForSeason(META, season, "3").length) opts.push({ value: "3-1", label: "Postseason" });
+  weekSel.innerHTML = opts.map((o) => `<option value="${o.value}">${o.label}</option>`).join("");
+  if (opts.some((o) => o.value === current)) weekSel.value = current;
 }
 
 function overrideLabel(o) {
@@ -240,9 +241,7 @@ async function refreshPolicy() {
   const policy = sp.policy;
   const hf = policy.hidden_from;
   document.getElementById("f-default-season").value = String(hf.season_year);
-  document.getElementById("f-default-type").value = String(hf.season_type);
-  refreshDefaultWeekOptions();
-  document.getElementById("f-default-week").value = String(hf.week);
+  document.getElementById("f-default-week").value = `${hf.season_type}-${hf.week}`;
   document.getElementById("btn-reset-default").disabled = hf.season_year === STOCK_DEFAULT.season_year
     && hf.season_type === STOCK_DEFAULT.season_type && hf.week === STOCK_DEFAULT.week;
   await renderOverrides(sp.active_overrides);
@@ -254,11 +253,9 @@ async function refreshPolicy() {
 
 // ---- default ----------------------------------------------------------------
 
-document.getElementById("f-default-type").addEventListener("change", refreshDefaultWeekOptions);
 document.getElementById("btn-save-default").addEventListener("click", () => {
   const season_year = Number(document.getElementById("f-default-season").value);
-  const season_type = Number(document.getElementById("f-default-type").value);
-  const week = Number(document.getElementById("f-default-week").value);
+  const [season_type, week] = document.getElementById("f-default-week").value.split("-").map(Number);
   runWrite(
     () => apiPost("/spoilers/default", { season_year, season_type, week }),
     `Default set to hide from ${defaultLabel({ season_year, season_type, week })} onward.`,
@@ -271,11 +268,9 @@ document.getElementById("btn-reset-default").addEventListener("click", () => {
 // ---- week override ------------------------------------------------------------
 
 document.getElementById("f-week-season").addEventListener("change", refreshWeekWeekOptions);
-document.getElementById("f-week-type").addEventListener("change", refreshWeekWeekOptions);
 document.getElementById("btn-save-week").addEventListener("click", () => {
   const season_year = Number(document.getElementById("f-week-season").value);
-  const season_type = Number(document.getElementById("f-week-type").value);
-  const week = Number(document.getElementById("f-week-week").value);
+  const [season_type, week] = document.getElementById("f-week-week").value.split("-").map(Number);
   const stateVal = document.getElementById("f-week-state").value;
   const hidden = stateVal === "default" ? null : stateVal === "hidden";
   const label = `${season_year} ${season_type === 3 ? "postseason" : "week " + week}`;
