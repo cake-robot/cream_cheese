@@ -446,7 +446,7 @@ async function loadAndRenderGame() {
   const mount = document.getElementById("body-mount");
   const neighborNav = document.getElementById("neighbor-nav");
   if (!id) { mount.textContent = "No game id provided."; return; }
-  document.getElementById("footer-id").textContent = `Watchability // game ${id}`;
+  document.getElementById("footer-id").textContent = `// game ${id}`;
 
   let detail;
   try {
