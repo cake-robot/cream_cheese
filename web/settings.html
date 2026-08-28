@@ -33,7 +33,7 @@
   <div id="status-line" class="s-status"></div>
 
   <div class="g-card s-card-pad">
-    <div class="g-card-title">Default</div>
+    <div class="g-card-title">Baseline</div>
     <div class="g-card-sub s-card-sub-wide">
       Every game from this point in the season calendar onward is protected -- a later season
       entirely, or this season from the chosen week on -- unless a week or game override below
@@ -46,20 +46,20 @@
       <select id="f-default-week"></select>
       <span class="s-row-text">onward</span>
       <button class="s-btn" id="btn-save-default">Save</button>
-      <button class="s-btn" id="btn-reset-default">Reset to default</button>
+      <button class="s-btn" id="btn-reset-default">Reset to baseline</button>
     </div>
   </div>
 
   <div class="g-card s-card-pad">
     <div class="g-card-title">Week overrides</div>
-    <div class="g-card-sub">Beats the default, in either direction, for one (season, type, week).</div>
+    <div class="g-card-sub">Beats the baseline, in either direction, for one (season, type, week).</div>
     <div class="s-row">
       <select id="f-week-season"></select>
       <select id="f-week-week"></select>
       <select id="f-week-state">
         <option value="hidden">Hidden</option>
         <option value="shown">Revealed</option>
-        <option value="default">Default</option>
+        <option value="default">Baseline</option>
       </select>
       <button class="s-btn" id="btn-save-week">Save</button>
     </div>
@@ -69,7 +69,7 @@
   <div class="g-card s-card-pad">
     <div class="g-card-title">Game overrides</div>
     <div class="g-card-sub s-card-sub-wide">
-      Beats both the default and any week override, for one specific game -- the strongest tier.
+      Beats both the baseline and any week override, for one specific game -- the strongest tier.
       Games tab search excludes protected games, so search here instead; it deliberately doesn't.
     </div>
     <div class="s-row">
@@ -252,11 +252,11 @@ document.getElementById("btn-save-default").addEventListener("click", () => {
   const [season_type, week] = document.getElementById("f-default-week").value.split("-").map(Number);
   runWrite(
     () => apiPost("/spoilers/default", { season_year, season_type, week }),
-    `Default set to hide from ${defaultLabel({ season_year, season_type, week })} onward.`,
+    `Baseline set to hide from ${defaultLabel({ season_year, season_type, week })} onward.`,
   );
 });
 document.getElementById("btn-reset-default").addEventListener("click", () => {
-  runWrite(() => apiPost("/spoilers/default", { season_year: null }), `Default reset to ${defaultLabel(STOCK_DEFAULT)}.`);
+  runWrite(() => apiPost("/spoilers/default", { season_year: null }), `Baseline reset to ${defaultLabel(STOCK_DEFAULT)}.`);
 });
 
 // ---- week override ------------------------------------------------------------
