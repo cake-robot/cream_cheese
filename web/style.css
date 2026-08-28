@@ -1589,11 +1589,19 @@ body[data-page="settings"] .settings-frame main {
   right: 0;
   z-index: 30;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
   height: 54px;
   padding: 0 16px;
   border-bottom: 1px solid var(--grid);
   background: var(--surface-1);
+}
+.mnav-page-title {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 14px;
+  letter-spacing: .2em;
+  color: var(--ink-1);
+  text-transform: uppercase;
 }
 .mnav-trig {
   display: flex;
@@ -1847,7 +1855,10 @@ body[data-page="settings"] .settings-frame main {
      .gm-filter-groups is `display: contents` above this breakpoint (see
      the shared block below), so it's invisible to desktop's flex row and
      these rules only take effect here. */
-  .gm-title { font-size: 30px; }
+  /* The page's own big title is redundant with .mnav-page-title now
+     showing it in the corner nav bar -- hide it here rather than just
+     shrinking it. */
+  .gm-title { display: none; }
   .gm-filter-bar { flex-direction: column; align-items: stretch; gap: 14px; margin-top: 16px; padding-bottom: 16px; }
   .gm-search-group { order: -1; }
   .gm-search-row { gap: 8px; }
@@ -1960,7 +1971,10 @@ body[data-page="settings"] .settings-frame main {
      order (rank, score, info, when) that matches the mock's plain block
      layout, so no grid-area juggling is needed there, just a column flow. */
   .t-title-row { flex-direction: column; align-items: stretch; gap: 16px; padding-bottom: 18px; }
-  .t-title { font-size: 30px; }
+  /* Shared by Top games/Analytics/Settings -- redundant with
+     .mnav-page-title now showing it in the corner nav bar. */
+  .t-title { display: none; }
+  .s-title-block { display: none; }
   .t-filters { gap: 18px; }
   .t-body-grid, .t-rail { gap: 20px; }
   .t-body-grid { margin-top: 20px; }
