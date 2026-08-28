@@ -1001,6 +1001,7 @@ body[data-page="top"] .top-frame main {
 .t-peaks-callout {
   position: absolute; font-family: var(--font-mono); font-size: 10px; letter-spacing: .06em; color: var(--g-accent);
   white-space: nowrap; padding-bottom: 8px; transform: translate(-50%, -100%);
+  text-align: center; line-height: 1.35;
 }
 .t-peaks-caption { margin-top: 20px; font-family: var(--font-mono); font-size: 10px; color: var(--g-ink-dimmest); line-height: 1.6; }
 

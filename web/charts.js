@@ -1453,8 +1453,10 @@ function weeklyPeaksChart(mount, byWeek) {
     const callout = el("div", {
       class: "t-peaks-callout",
       style: `left:${(xOf(weekIdx[peak.week]) / 1000) * 100}%;top:${(yOf(peak.watchability_score) / 250) * 100}%`,
-      text: `${s} · ${peak.watchability_score.toFixed(3)}`,
-    });
+    }, [
+      el("div", { text: s }),
+      el("div", { text: peak.watchability_score.toFixed(3) }),
+    ]);
     overlay.appendChild(callout);
     calloutEls.push(callout);
   });
