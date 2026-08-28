@@ -1428,6 +1428,7 @@ function weeklyPeaksChart(mount, byWeek) {
   root.appendChild(svg("line", { x1: PAD_L, x2: RIGHT, y1: BASELINE, y2: BASELINE, stroke: "var(--g-border-strong2)", "stroke-width": "1" }));
 
   const overlay = el("div", { class: "t-peaks-plot" }, root);
+  const calloutEls = [];
 
   const seasonsNewestFirst = seasons.slice().reverse();
   seasonsNewestFirst.forEach((s, rankFromNewest) => {
@@ -1449,11 +1450,13 @@ function weeklyPeaksChart(mount, byWeek) {
         stroke: "var(--g-card)", "stroke-width": "1",
       }));
     });
-    overlay.appendChild(el("div", {
+    const callout = el("div", {
       class: "t-peaks-callout",
       style: `left:${(xOf(weekIdx[peak.week]) / 1000) * 100}%;top:${(yOf(peak.watchability_score) / 250) * 100}%`,
       text: `${s} · ${peak.watchability_score.toFixed(3)}`,
-    }));
+    });
+    overlay.appendChild(callout);
+    calloutEls.push(callout);
   });
 
   [0.9, 0.8, 0.7, 0.6, 0.55].forEach((v) => {
@@ -1464,5 +1467,25 @@ function weeklyPeaksChart(mount, byWeek) {
   });
 
   mount.appendChild(overlay);
+  // Multiple seasons' peaks can land in nearby weeks -- worse on a narrow
+  // mobile width, where the horizontal gap between weeks shrinks but each
+  // callout's text doesn't, so two labels can garble together. Needs real
+  // layout (getBoundingClientRect, after the elements are actually in the
+  // DOM via the appendChild above) rather than an estimated text width,
+  // since the labels aren't monospace-uniform-width text alone -- "·" and
+  // varying season/score digit counts all move the true rendered width.
+  // Left-to-right row assignment (classic Gantt-style label stacking):
+  // each label claims the first row whose already-placed labels it
+  // doesn't horizontally overlap, or a new row above all existing ones.
+  const placed = calloutEls
+    .map((elx) => ({ el: elx, rect: elx.getBoundingClientRect() }))
+    .sort((a, b) => a.rect.left - b.rect.left);
+  const rowRightEdge = [];
+  placed.forEach(({ el: calloutEl, rect }) => {
+    let row = rowRightEdge.findIndex((rightEdge) => rect.left > rightEdge + 4);
+    if (row === -1) { row = rowRightEdge.length; rowRightEdge.push(-Infinity); }
+    rowRightEdge[row] = rect.right;
+    if (row > 0) calloutEl.style.marginTop = `-${row * (rect.height + 3)}px`;
+  });
   mount.appendChild(el("div", { class: "t-peaks-caption", text: "One point per week: the single highest composite of that week. Oxblood marks each season's highest week. Postseason weeks are excluded from this view." }));
 }
