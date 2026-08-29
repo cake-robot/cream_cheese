@@ -122,18 +122,27 @@ assert set(METRIC_COPY) == set(scoring.METRICS_BY_NAME), (
 # the retrospective METRIC_COPY/METRICS that the scored corpus depends on.
 # ---------------------------------------------------------------------------
 
+# naLabel: shown in place of a value when the metric fn returns None for a
+# live game (see live.py's per-metric None gates). Only metrics that can
+# actually go null carry one -- each reason is specific to that metric's own
+# gate, since "not applicable" during a live game is almost never about
+# overtime (only late_volatility_rate/clutch_finish gate on the late-game
+# window, and even that's "before the 4th quarter", not "in overtime").
 LIVE_METRIC_COPY = {
     "wp_volatility_rate": {"label": "WP volatility (rate)", "description":
         "Sum of absolute win-probability swings so far, divided by how much of the game has "
-        "elapsed -- lets an early-game hot streak be compared fairly against a full 60 minutes."},
+        "elapsed -- lets an early-game hot streak be compared fairly against a full 60 minutes.",
+        "naLabel": "not applicable yet -- too early in the game"},
     "lead_change_rate": {"label": "Lead changes (rate)", "description":
-        "Lead/tie changes so far, divided by elapsed progress."},
+        "Lead/tie changes so far, divided by elapsed progress.",
+        "naLabel": "not applicable yet -- too early in the game"},
     "comeback_magnitude": {"label": "Comeback magnitude", "description":
         "The largest win-probability recovery either team has made from its own low point so "
         "far -- doesn't require the comeback to have been completed."},
     "upset_in_progress": {"label": "Upset in progress", "description":
         "How far the pregame favorite's win probability has already fallen from its opening "
-        "line, scaled by the better-ranked team's tier."},
+        "line, scaled by the better-ranked team's tier.",
+        "naLabel": "not applicable -- no pregame line available"},
     "team_profile": {"label": "Team profile", "description":
         "Credit for ranked teams playing -- identical to the retrospective metric of the same name."},
     "upset_risk": {"label": "Upset risk", "description":
@@ -141,18 +150,23 @@ LIVE_METRIC_COPY = {
         "retrospective metric of the same name."},
     "late_volatility_rate": {"label": "Late volatility (rate)", "description":
         "WP swings in the 4th quarter or overtime so far, divided by how much of the late-game "
-        "window has elapsed. Not applicable until that window opens."},
+        "window has elapsed. Not applicable until that window opens.",
+        "naLabel": "not applicable yet -- before the 4th quarter"},
     "clutch_finish": {"label": "Clutch finish", "description":
         "Credit for a decisive score in the final minute of regulation, or reaching overtime. "
-        "Not applicable until the 4th quarter starts."},
+        "Not applicable until the 4th quarter starts.",
+        "naLabel": "not applicable yet -- before the 4th quarter"},
     "tension_now": {"label": "Tension right now", "description":
         "How close the win probability is at this exact moment, weighted up sharply the later "
-        "in the game it is -- the core 'is this worth turning on right now' signal."},
+        "in the game it is -- the core 'is this worth turning on right now' signal.",
+        "naLabel": "not applicable -- no live win probability yet"},
     "upset_finish_potential": {"label": "Upset finish potential", "description":
         "How much upset the pregame favorite could still lose by from here, weighted by rank "
-        "quality and lateness."},
+        "quality and lateness.",
+        "naLabel": "not applicable -- no live win probability yet"},
     "recent_volatility": {"label": "Recent swings", "description":
-        "Win-probability volatility over just the last 20 plays -- momentum, not the whole game."},
+        "Win-probability volatility over just the last 20 plays -- momentum, not the whole game.",
+        "naLabel": "not applicable yet -- not enough recent plays"},
     "ot_live": {"label": "Overtime", "description":
         "A game already in overtime is guaranteed more drama from here; grows with each "
         "additional OT period."},
@@ -1225,12 +1239,16 @@ def api_slate_registry():
     so_far = [{
         "name": m["name"], "half": "so_far", "label": LIVE_METRIC_COPY[m["name"]]["label"],
         "short_label": live.LIVE_METRIC_LABELS[m["name"]],
-        "description": LIVE_METRIC_COPY[m["name"]]["description"], "weight": m["weight"], "cap": m["cap"],
+        "description": LIVE_METRIC_COPY[m["name"]]["description"],
+        "naLabel": LIVE_METRIC_COPY[m["name"]].get("naLabel"),
+        "weight": m["weight"], "cap": m["cap"],
     } for m in live.LIVE_SO_FAR_METRICS]
     from_here = [{
         "name": m["name"], "half": "from_here", "label": LIVE_METRIC_COPY[m["name"]]["label"],
         "short_label": live.LIVE_METRIC_LABELS[m["name"]],
-        "description": LIVE_METRIC_COPY[m["name"]]["description"], "weight": m["weight"], "cap": m["cap"],
+        "description": LIVE_METRIC_COPY[m["name"]]["description"],
+        "naLabel": LIVE_METRIC_COPY[m["name"]].get("naLabel"),
+        "weight": m["weight"], "cap": m["cap"],
     } for m in live.LIVE_FROM_HERE_METRICS]
     return jsonify({
         "weights": {"so_far": live.LIVE_W_SO_FAR, "from_here": live.LIVE_W_FROM_HERE},
