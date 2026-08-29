@@ -3,7 +3,7 @@ import logging
 import sys
 from datetime import date
 
-from src import db, espn, fox, fox_match, fox_reconcile, live, live_replay, scoring
+from src import db, espn, fox, fox_match, fox_reconcile, fox_wp, live, live_replay, scoring
 from src.config import DEFAULT_SEASON, FOX_SEASON_ANCHORS, FOX_SCAN_OVERRUN
 
 
@@ -514,6 +514,12 @@ def fox_reconcile_run(conn, season=None, week=None, season_type=2):
     print(f"Reconciled {len(results)} game(s): {summary}")
 
 
+def fox_synthesize_wp_run(conn, season=None, week=None, season_type=2):
+    candidates, synthesized = fox_wp.synthesize_missing_wp(conn, season=season, week=week, season_type=season_type)
+    print(f"Fox WP synthesis: {candidates} candidate(s) (no ESPN WP, Fox-matched), "
+          f"{synthesized} synthesized. Run --score-only next to score them.")
+
+
 def main():
     parser = argparse.ArgumentParser(description="CFB data pipeline")
     parser.add_argument("--season", type=int, default=DEFAULT_SEASON)
@@ -555,6 +561,9 @@ def main():
                          help="Reconcile ESPN vs Fox score sequences for matched games in --season/--week")
     parser.add_argument("--fox-reconcile-report", action="store_true",
                          help="Reconcile and print a full diff/unusable report")
+    parser.add_argument("--fox-synthesize-wp", action="store_true",
+                         help="Synthesize win_probability rows (score_diff + elapsed regression) "
+                              "for --season/--week games with zero ESPN WP but a Fox match")
     parser.add_argument("--live", action="store_true",
                          help="Run the live/in-progress poll loop (long-running)")
     parser.add_argument("--live-once", action="store_true",
@@ -684,6 +693,10 @@ def main():
 
     if args.fox_reconcile_report:
         fox_reconcile.print_report(conn, season=args.season, week=args.week, season_type=args.season_type)
+        sys.exit(0)
+
+    if args.fox_synthesize_wp:
+        fox_synthesize_wp_run(conn, season=args.season, week=args.week, season_type=args.season_type)
         sys.exit(0)
 
     if args.compute_sequences:

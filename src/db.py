@@ -1,6 +1,12 @@
 import sqlite3
 from .config import DB_PATH
 
+# win_probability.source: 'espn' (default, real ESPN WP data) or this --
+# rows synthesized by src/fox_wp.py from Fox score-sequence data for games
+# ESPN has no WP for at all. Kept as its own constant (not just a literal
+# string) so db.py and src/fox_wp.py can't drift on the tag.
+SYNTHETIC_WP_SOURCE = "fox_synthetic"
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS teams (
     team_id      TEXT PRIMARY KEY,
@@ -85,6 +91,7 @@ CREATE TABLE IF NOT EXISTS win_probability (
     away_score              INTEGER,
 
     play_sequence           INTEGER,
+    source                  TEXT NOT NULL DEFAULT 'espn',
 
     FOREIGN KEY (game_id) REFERENCES games(game_id),
     UNIQUE (game_id, play_id)
@@ -292,6 +299,8 @@ def init_db(path=None):
     cols = {row[1] for row in conn.execute("PRAGMA table_info(win_probability)")}
     if "play_sequence" not in cols:
         conn.execute("ALTER TABLE win_probability ADD COLUMN play_sequence INTEGER")
+    if "source" not in cols:
+        conn.execute("ALTER TABLE win_probability ADD COLUMN source TEXT NOT NULL DEFAULT 'espn'")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_wp_game_play_seq ON win_probability(game_id, play_sequence)")
 
     fox_event_cols = {row[1] for row in conn.execute("PRAGMA table_info(fox_events)")}
@@ -494,6 +503,57 @@ def upsert_win_probability(conn, rows):
             :home_score, :away_score
         )
     """, rows)
+
+
+def replace_synthetic_wp(conn, game_id, home_team_id, away_team_id, rows):
+    """
+    Replace this game's fox-synthetic win_probability rows wholesale
+    (source=SYNTHETIC_WP_SOURCE) -- idempotent on a re-run. Only deletes
+    rows carrying that source, so a real ESPN pull backfilling this game
+    later (upsert_win_probability, source defaults to 'espn') coexists
+    untouched rather than being clobbered by this.
+
+    rows: from fox_wp.build_synthetic_wp_rows() -- each a dict with
+    home_win_pct, home_score, away_score, period_number,
+    clock_seconds_elapsed. Ordered already (chronological), so play_sequence
+    is assigned directly from list position rather than needing a separate
+    compute_play_sequences() pass.
+    """
+    conn.execute(
+        "DELETE FROM win_probability WHERE game_id = ? AND source = ?",
+        (game_id, SYNTHETIC_WP_SOURCE),
+    )
+    conn.executemany("""
+        INSERT INTO win_probability (
+            game_id, play_id, sequence_number, play_sequence,
+            home_win_pct, tie_pct,
+            clock_seconds_elapsed, period_number, clock_display,
+            home_team_id, away_team_id,
+            home_score, away_score, source
+        ) VALUES (
+            :game_id, :play_id, :sequence_number, :play_sequence,
+            :home_win_pct, 0.0,
+            :clock_seconds_elapsed, :period_number, NULL,
+            :home_team_id, :away_team_id,
+            :home_score, :away_score, :source
+        )
+    """, [
+        {
+            "game_id": game_id,
+            "play_id": f"fox-synth-{i}",
+            "sequence_number": i,
+            "play_sequence": i,
+            "home_win_pct": r["home_win_pct"],
+            "clock_seconds_elapsed": r["clock_seconds_elapsed"],
+            "period_number": r["period_number"],
+            "home_team_id": home_team_id,
+            "away_team_id": away_team_id,
+            "home_score": r["home_score"],
+            "away_score": r["away_score"],
+            "source": SYNTHETIC_WP_SOURCE,
+        }
+        for i, r in enumerate(rows, 1)
+    ])
 
 
 def update_watchability_score(conn, game_id, score):
