@@ -202,9 +202,7 @@ def save_policy(policy):
 
 def is_hidden_row(row, policy):
     """row must support __getitem__ for game_id/season_year/season_type/
-    week -- a sqlite3.Row or a plain dict both work. Does NOT account for a
-    session reveal opt-in; callers combine this with their own revealed-id
-    set (see serve.py's spoiler_ctx())."""
+    week -- a sqlite3.Row or a plain dict both work."""
     game_id = row["game_id"]
     games = policy.get("games", {})
     if game_id in games:
@@ -446,12 +444,16 @@ def redact_live(live):
 # rank contiguous and closes the sort/filter leak channels).
 # ---------------------------------------------------------------------------
 
-def visible_sql(policy, alias="g", revealed_ids=None):
+def visible_sql(policy, alias="g"):
     """Returns (sql_fragment, params) -- a boolean SQL expression that is
     true exactly when a game should be INCLUDED. Mirrors is_hidden_row's
-    precedence (game override > week override > default), plus a
-    `revealed_ids` tier that wins over everything (a session reveal
-    re-includes a game that's otherwise hidden).
+    precedence exactly (game override > week override > default) -- there
+    used to be a `revealed_ids` tier above even a game override (a session
+    reveal, opt-in and client-side, that won over everything including an
+    explicit "hidden" game override); that's gone now that "Reveal this
+    game" just POSTs a real hidden:false game override through the same
+    set_user_game() path Settings' game-override card already used, so the
+    ordinary game-override tier below already covers it.
 
     Built as small IN-lists for whichever override tiers are non-empty,
     falling back to _default_hidden_sql()'s ordinal comparison against
@@ -459,7 +461,6 @@ def visible_sql(policy, alias="g", revealed_ids=None):
     idx_games_season(season_year, season_type, week), so the common case
     (no explicit overrides in play) stays sargable rather than degrading
     into a big IN scan."""
-    revealed_ids = list(revealed_ids or [])
     weeks = policy.get("weeks", {})
     games = policy.get("games", {})
     hidden_from = policy.get("hidden_from", DEFAULT_HIDDEN_FROM)
@@ -478,8 +479,6 @@ def visible_sql(policy, alias="g", revealed_ids=None):
         whens.append(f"WHEN {expr} IN ({','.join('?' * len(values))}) THEN {result}")
         params.extend(values)
 
-    if revealed_ids:
-        _in_clause(f"{alias}.game_id", revealed_ids, 0)
     if hidden_game_ids:
         _in_clause(f"{alias}.game_id", hidden_game_ids, 1)
     if shown_game_ids:

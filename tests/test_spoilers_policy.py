@@ -156,7 +156,7 @@ class TestRedactGame(unittest.TestCase):
             "has_fox_correction": False, "has_manual_correction": False,
             "metrics": {"wp_volatility": {"raw": 9.1, "norm": 0.9, "weighted": 0.9, "at_cap": False, "applicable": True}},
             "applicable_weight": 7.0,
-            "spoiler_hidden": True, "spoiler_revealed": False,
+            "spoiler_hidden": True,
         }
 
     def test_redacted_fields_are_null_not_missing(self):
@@ -247,7 +247,7 @@ class TestRedactLive(unittest.TestCase):
 
 
 class TestVisibleSql(PolicyFileTestCase):
-    def _run(self, policy, rows, revealed_ids=None):
+    def _run(self, policy, rows):
         """Evaluate visible_sql against an in-memory sqlite table shaped
         like `games` -- exercises the actual SQL, not a Python
         reimplementation of it."""
@@ -259,7 +259,7 @@ class TestVisibleSql(PolicyFileTestCase):
             "INSERT INTO games VALUES (?,?,?,?,?)",
             [(r["game_id"], r["season_year"], r["season_type"], r["week"], 0.5) for r in rows],
         )
-        clause, params = spoilers.visible_sql(policy, alias="g", revealed_ids=revealed_ids)
+        clause, params = spoilers.visible_sql(policy, alias="g")
         rows_out = conn.execute(f"SELECT game_id FROM games g WHERE {clause}", params).fetchall()
         conn.close()
         return {r[0] for r in rows_out}
@@ -283,12 +283,6 @@ class TestVisibleSql(PolicyFileTestCase):
             {"game_id": "new_other", "season_year": 2026, "season_type": 2, "week": 1},
         ]
         self.assertEqual(self._run(policy, rows), {"old_other_week", "new"})
-
-    def test_revealed_ids_win_over_everything(self):
-        spoilers.set_game("new", True)
-        policy = spoilers.load_policy()
-        rows = [{"game_id": "new", "season_year": 2026, "season_type": 2, "week": 1}]
-        self.assertEqual(self._run(policy, rows, revealed_ids=["new"]), {"new"})
 
 
 class TestAtomicWrite(PolicyFileTestCase):

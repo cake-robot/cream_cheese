@@ -595,31 +595,25 @@ def _assert_no_spoiler_leaks(resp):
 # Shared helpers
 # ---------------------------------------------------------------------------
 
-def _csv_strs(args, name):
-    """Same shape as _csv_ints (further down, used by /api/games' integer
-    filters) but for opaque string ids -- the `reveal` param takes
-    game_id strings, not integers."""
-    vals = []
-    for v in args.getlist(name):
-        vals.extend(v.split(","))
-    return [v.strip() for v in vals if v.strip()]
-
-
 def spoiler_ctx():
-    """(policy, revealed_ids) for the current request, computed once and
+    """The current request's per-user spoiler policy, computed once and
     cached on flask.g -- mirrors get_db()'s per-request caching pattern.
-    `reveal=<game_id>` (repeatable/comma-separated) is the entire opt-in
-    contract: no `reveal=all`, so a stray param can never blanket-unhide
-    the corpus.
 
     Policy is per-user (src/spoilers.py's get_user_policy(), backed by
     data/users.db) rather than the single shared data/spoilers.json this
     used to read -- current_user() is guaranteed non-None here because
     every route that reaches this point already passed the _require_auth
-    gate above, which is registered before any view function runs."""
+    gate above, which is registered before any view function runs.
+
+    Used to return (policy, revealed_ids) -- a `reveal=<game_id>` query
+    param that won over every policy tier, including an explicit "hidden"
+    game override, for the current browser session only. Replaced by
+    game.html's "Reveal this game" POSTing a real hidden:false game
+    override (the same /api/spoilers/game route Settings' game-override
+    card already used) -- one mechanism, visible and undoable from
+    Settings, instead of two."""
     if "spoiler_ctx" not in g:
-        policy = spoilers.get_user_policy(current_user()["user_id"], conn=get_users_db())
-        g.spoiler_ctx = (policy, _csv_strs(request.args, "reveal"))
+        g.spoiler_ctx = spoilers.get_user_policy(current_user()["user_id"], conn=get_users_db())
     return g.spoiler_ctx
 
 
@@ -632,8 +626,8 @@ def ranked_cte(alias="g"):
     params); params must be spliced into the query's param list ahead of
     the rest of that query's own WHERE params, since the CTE is first in
     the WITH clause."""
-    policy, revealed = spoiler_ctx()
-    visible_clause, params = spoilers.visible_sql(policy, alias=alias, revealed_ids=revealed)
+    policy = spoiler_ctx()
+    visible_clause, params = spoilers.visible_sql(policy, alias=alias)
     cte_sql = f"""
         ranked AS (
             SELECT game_id,
@@ -791,11 +785,9 @@ def shape_game(row, metrics_map, rank=None, n_scored=None, has_fox_correction=Fa
         "metrics": metrics_map if scored else {},
         "applicable_weight": (applicable_weight_of(metrics_map) if scored else None),
     }
-    policy, revealed = spoiler_ctx()
-    protected = spoilers.is_hidden_row(row, policy)
-    hidden = protected and row["game_id"] not in revealed
+    policy = spoiler_ctx()
+    hidden = spoilers.is_hidden_row(row, policy)
     out["spoiler_hidden"] = hidden
-    out["spoiler_revealed"] = protected and not hidden
     return spoilers.redact_game(out) if hidden else out
 
 
@@ -1774,8 +1766,8 @@ def api_games():
     # also what keeps sort=margin, ot=0/1, and sort=metric:* leak-free:
     # they can no longer surface a hidden game's outcome shape because
     # the game simply never appears in the result set.
-    policy, revealed = spoiler_ctx()
-    visible_clause, visible_params = spoilers.visible_sql(policy, alias="g", revealed_ids=revealed)
+    policy = spoiler_ctx()
+    visible_clause, visible_params = spoilers.visible_sql(policy, alias="g")
 
     where = where_schedule + where_outcome + [visible_clause]
     params = params_schedule + params_outcome + visible_params
@@ -1877,18 +1869,8 @@ def api_game_detail(game_id):
     # live/live_history) needs its own guard here. When hidden, the
     # underlying queries are skipped outright rather than computed and then
     # discarded -- there's nothing to compute a spoiler-safe value from.
-    policy, revealed = spoiler_ctx()
-    # Detail-route-only sugar: ?reveal=1 means "this game" without having
-    # to know/repeat its own id in the query string. Mutate the cached
-    # g.spoiler_ctx (not just the local `revealed`), since shape_game()
-    # below independently calls spoiler_ctx() again to compute
-    # game.spoiler_hidden -- without this, that second call would miss
-    # the extension and the game object would still come back redacted.
-    if request.args.get("reveal") == "1" and game_id not in revealed:
-        revealed = revealed + [game_id]
-        g.spoiler_ctx = (policy, revealed)
-    protected = spoilers.is_hidden_row(row, policy)
-    hidden = protected and row["game_id"] not in revealed
+    policy = spoiler_ctx()
+    hidden = spoilers.is_hidden_row(row, policy)
 
     if hidden:
         is_ot = None
@@ -1953,7 +1935,7 @@ def api_game_detail(game_id):
         # otherwise a visible game's "rank X of N" would silently include
         # hidden games in N, and would disagree with what the Games tab
         # shows for the same game.
-        visible_clause, visible_params = spoilers.visible_sql(policy, alias="g", revealed_ids=revealed)
+        visible_clause, visible_params = spoilers.visible_sql(policy, alias="g")
         rank_rows = conn.execute(f"""
             SELECT game_id,
                    RANK() OVER (ORDER BY watchability_score DESC) AS rnk_g,
@@ -2152,8 +2134,8 @@ def api_top():
     # that /api/games' ot/min_score filters would.
     where_schedule_sql = " AND ".join(where)
     params_schedule = list(params)
-    policy, revealed = spoiler_ctx()
-    visible_clause, visible_params = spoilers.visible_sql(policy, alias="g", revealed_ids=revealed)
+    policy = spoiler_ctx()
+    visible_clause, visible_params = spoilers.visible_sql(policy, alias="g")
     excluded_count = conn.execute(
         f"SELECT COUNT(*) AS n FROM games g WHERE {where_schedule_sql} AND NOT ({visible_clause})",
         params_schedule + visible_params,
@@ -2270,8 +2252,8 @@ def api_top_teams():
     # Excluded from the aggregate entirely -- otherwise avg_watchability
     # would be pulled by hidden games' scores, and best_game could point
     # at one.
-    policy, revealed = spoiler_ctx()
-    visible_clause, visible_params = spoilers.visible_sql(policy, alias="games", revealed_ids=revealed)
+    policy = spoiler_ctx()
+    visible_clause, visible_params = spoilers.visible_sql(policy, alias="games")
     where.append(visible_clause)
     params.extend(visible_params)
     where_sql = " AND ".join(where)
@@ -2340,9 +2322,9 @@ def api_weekly_peaks():
 
     # Excluded from both the peak computation and the outer match -- a
     # hidden game must never become "the" peak for its week.
-    policy, revealed = spoiler_ctx()
-    visible_g, visible_params_g = spoilers.visible_sql(policy, alias="g", revealed_ids=revealed)
-    visible_inner, visible_params_inner = spoilers.visible_sql(policy, alias="games", revealed_ids=revealed)
+    policy = spoiler_ctx()
+    visible_g, visible_params_g = spoilers.visible_sql(policy, alias="g")
+    visible_inner, visible_params_inner = spoilers.visible_sql(policy, alias="games")
 
     rows = conn.execute(f"""
         SELECT g.week, g.game_id, g.watchability_score, g.home_team_abbr, g.away_team_abbr,
@@ -2734,7 +2716,7 @@ def _spoiler_active_overrides(policy):
 
 @app.route("/api/spoilers")
 def api_spoilers_get():
-    policy, _revealed = spoiler_ctx()
+    policy = spoiler_ctx()
     return jsonify({"policy": policy, "active_overrides": _spoiler_active_overrides(policy)})
 
 

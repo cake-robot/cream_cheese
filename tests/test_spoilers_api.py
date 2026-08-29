@@ -295,27 +295,40 @@ class TestSlateOrdering(SpoilerApiTestCase):
         self.assertEqual(hidden_order, revealed_order)
 
 
-class TestReveal(SpoilerApiTestCase):
-    def test_reveal_unredacts_only_the_named_game(self):
+class TestGameOverrideUnhide(SpoilerApiTestCase):
+    """Replaces the old client-side session-reveal mechanism (a `reveal=`
+    query param, opt-in per browser session, that won over every policy
+    tier including an explicit game override -- see git history). Revealing
+    a game is now just an ordinary hidden:false game override through the
+    same /api/spoilers/game route Settings' game-override card uses, so
+    it's real, persistent, and manageable from Settings -- not a special
+    tier of its own."""
+
+    def test_game_override_unhides_only_the_named_game(self):
         self.post("/api/spoilers/week", {"season_year": 2025, "season_type": 2, "week": 5, "hidden": True})
         data = self.get("/api/games", season=2025, week=5, scored="all")
         self.assertEqual(data["games"], [])
 
         gid = self._any_2025_week5_game_id()
+        self.post("/api/spoilers/game", {"game_id": gid, "hidden": False})
 
-        detail = self.get(f"/api/games/{gid}", reveal=1)
+        detail = self.get(f"/api/games/{gid}")
         self.assertFalse(detail["game"]["spoiler_hidden"])
-        self.assertTrue(detail["game"]["spoiler_revealed"])
         self.assertIsNotNone(detail["game"]["watchability_score"])
 
-        data2 = self.get("/api/games", season=2025, week=5, scored="all", reveal=gid)
+        data2 = self.get("/api/games", season=2025, week=5, scored="all")
         ids = [g["game_id"] for g in data2["games"]]
         self.assertEqual(ids, [gid])
 
-    def test_reveal_all_does_nothing(self):
-        self.post("/api/spoilers/week", {"season_year": 2025, "season_type": 2, "week": 5, "hidden": True})
-        data = self.get("/api/games", season=2025, week=5, scored="all", reveal="all")
-        self.assertEqual(data["games"], [])
+    def test_game_override_is_visible_and_clearable_via_active_overrides(self):
+        gid = self._any_2025_week5_game_id()
+        self.post("/api/spoilers/game", {"game_id": gid, "hidden": False})
+        overrides = self.get("/api/spoilers")["active_overrides"]
+        self.assertIn({"type": "game", "game_id": gid, "hidden": False}, overrides)
+
+        self.post("/api/spoilers/game", {"game_id": gid, "hidden": None})
+        overrides2 = self.get("/api/spoilers")["active_overrides"]
+        self.assertNotIn(gid, [o["game_id"] for o in overrides2 if o["type"] == "game"])
 
 
 class TestSpoilersSearch(SpoilerApiTestCase):

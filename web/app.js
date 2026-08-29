@@ -6,17 +6,7 @@ const API = "/api";
 
 async function api(path, params) {
   const url = new URL(API + path, location.origin);
-  // Every GET automatically carries this session's revealed game ids as
-  // `reveal=` params -- the entire opt-in contract is an id list (no
-  // `reveal=all`), so this can never blanket-unhide anything; it just
-  // means a Reveal click on the game page sticks across back-navigation
-  // to the list, with no per-page wiring.
   const merged = { ...(params || {}) };
-  const revealed = revealedIds();
-  if (revealed.length) {
-    const existing = merged.reveal ? [].concat(merged.reveal) : [];
-    merged.reveal = Array.from(new Set([...existing, ...revealed]));
-  }
   for (const [k, v] of Object.entries(merged)) {
     if (v === undefined || v === null || v === "") continue;
     if (Array.isArray(v)) v.forEach((item) => url.searchParams.append(k, item));
@@ -296,35 +286,6 @@ function tableTwin(summaryText, headers, rows) {
     el("summary", { text: summaryText }),
     el("div", { class: "twin-scroll" }, table),
   ]);
-}
-
-// ---- spoiler control ---------------------------------------------------------
-//
-// This is a manual, not algorithmic, control: the user decides when a
-// week/game stops needing spoiler protection (e.g. "it's week 3, I don't
-// care about week 1 anymore"), nothing here infers that. revealedIds()/
-// addRevealed() are session-only per-game reveal opt-in, read automatically
-// by every api() call above. Actually changing the policy happens on the
-// dedicated /settings.html page (also the site root).
-
-const REVEAL_KEY = "spoiler-revealed";
-
-function revealedIds() {
-  try {
-    const raw = sessionStorage.getItem(REVEAL_KEY);
-    const ids = raw ? JSON.parse(raw) : [];
-    return Array.isArray(ids) ? ids : [];
-  } catch (e) {
-    return [];
-  }
-}
-
-function addRevealed(gameId) {
-  const ids = revealedIds();
-  if (!ids.includes(gameId)) {
-    ids.push(gameId);
-    sessionStorage.setItem(REVEAL_KEY, JSON.stringify(ids));
-  }
 }
 
 // ---- account menu (logout) + mobile nav drawer ------------------------------
