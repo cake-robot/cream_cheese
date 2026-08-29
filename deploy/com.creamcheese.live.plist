@@ -7,7 +7,7 @@
 
     <!-- Runs unbounded -- no --live-until, no StartCalendarInterval window.
          Cadence is derived at runtime from the kickoff times already in
-         `games` (src/live.py's _schedule_interval): ~60s while a game is
+         `games` (src/live.py's _schedule_interval): ~10min while a game is
          live or within ~15min of kickoff, sleeping up to 30min otherwise.
          The process also manages its own `caffeinate -i` child, asserted
          only from ~3h before the day's first kickoff through the last game
