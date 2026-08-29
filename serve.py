@@ -906,6 +906,30 @@ def _fox_clock_display(period, elapsed_seconds):
     return f"{remaining // 60}:{remaining % 60:02d}"
 
 
+def _fold_try_into_touchdown(score_changes, is_try_of_prev):
+    """Collapse a made PAT/two-point-try entry into its preceding touchdown
+    entry so the score ladder/chart draws one mark per real scoring
+    possession, not one per WP/score-feed row -- ESPN's and Fox's feeds are
+    each inconsistent about whether the try gets its own row versus already
+    being folded into the touchdown's by the time it's recorded, so without
+    this the same TD+PAT can render as one bar in one game and two in
+    another. `is_try_of_prev(prev, cur)` decides whether `cur` is the try
+    belonging to `prev`'s touchdown."""
+    folded = []
+    for sc in score_changes:
+        if folded and is_try_of_prev(folded[-1], sc):
+            prev = folded[-1]
+            prev["delta"] += sc["delta"]
+            prev["home"] = sc["home"]
+            prev["away"] = sc["away"]
+            prev["i"] = sc["i"]
+            if "exact" in prev and "exact" in sc:
+                prev["exact"] = prev["exact"] and sc["exact"]
+        else:
+            folded.append(dict(sc))
+    return folded
+
+
 def build_wp_payload(wp_rows, game_row):
     """Parallel-array WP series for the game-detail chart. See serve.py's
     module docstring notes / the design plan for why: play-ordinal x-axis
@@ -955,6 +979,19 @@ def build_wp_payload(wp_rows, game_row):
                 delta, team = as_ - pa, "away"
             score_changes.append({"i": idx, "home": hs, "away": as_, "delta": delta, "team": team})
             ph, pa = hs, as_
+
+    def _espn_is_try_of_prev(prev, cur):
+        # The real game clock is stopped for the whole try attempt, so a
+        # made PAT/two-point try shares its touchdown's clock reading --
+        # same signal fox.py's _assign_elapsed_seconds uses to pin a try's
+        # elapsed_seconds to its touchdown's. A real safety (also delta 2)
+        # never immediately follows that same team's own touchdown, so this
+        # doesn't collide with one.
+        if cur["team"] != prev["team"] or prev["delta"] != 6 or cur["delta"] not in (1, 2):
+            return False
+        return elapsed[cur["i"]] is not None and elapsed[cur["i"]] == elapsed[prev["i"]]
+
+    score_changes = _fold_try_into_touchdown(score_changes, _espn_is_try_of_prev)
 
     elapsed_monotonic = True
     prev_e = None
@@ -1069,7 +1106,15 @@ def build_fox_score_payload(conn, game_id, game_row):
         score_changes.append({
             "i": len(home_score) - 1, "home": h, "away": a,
             "delta": s["delta"], "team": espn_team, "exact": bool(s["exact"]),
+            "clock_pinned": bool(s["clock_pinned"]),
         })
+
+    # clock_pinned is already exactly "this step is a made PAT/two-point
+    # try pinned to the immediately preceding touchdown's clock" (see
+    # fox.py's _assign_elapsed_seconds) -- no need to re-derive it here.
+    score_changes = _fold_try_into_touchdown(score_changes, lambda prev, cur: cur["clock_pinned"])
+    for sc in score_changes:
+        sc.pop("clock_pinned", None)
 
     period_starts = []
     prev = None
