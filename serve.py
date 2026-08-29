@@ -136,9 +136,10 @@ LIVE_METRIC_COPY = {
     "lead_change_rate": {"label": "Lead changes (rate)", "description":
         "Lead/tie changes so far, divided by elapsed progress.",
         "naLabel": "not applicable yet -- too early in the game"},
-    "comeback_magnitude": {"label": "Comeback magnitude", "description":
-        "The largest win-probability recovery either team has made from its own low point so "
-        "far -- doesn't require the comeback to have been completed."},
+    "comeback_erosion_live": {"label": "Comeback", "description":
+        "Credit for a commanding lead already eroding, in coin-flip-normalized win-probability "
+        "terms -- same basis as the retrospective Comeback metric, except a material swing away "
+        "from the current lead doesn't require an actual tie or lead change to count yet."},
     "upset_in_progress": {"label": "Upset in progress", "description":
         "How far the pregame favorite's win probability has already fallen from its opening "
         "line, scaled by the better-ranked team's tier.",

@@ -121,7 +121,14 @@ class FixtureTests(unittest.TestCase):
 
         final = rows[-1]
         self.assertLess(final["drama_from_here"], 0.05)
-        self.assertGreater(final["quality_so_far"], final["drama_from_here"] + 0.1)
+        # Margin re-measured at 0.05 (was 0.1) after comeback_erosion_live
+        # replaced comeback_magnitude: the old raw-WP metric gave this game
+        # a nonzero "comeback" credit for UCLA's favorite-pulling-away climb
+        # (never a real coin-flip-commanding UNM lead getting undone), which
+        # comeback_erosion_live correctly zeroes -- quality_so_far is smaller
+        # now but still ~160x drama_from_here, so the underlying "one metric
+        # stays elevated while the other collapses" property still holds.
+        self.assertGreater(final["quality_so_far"], final["drama_from_here"] + 0.05)
 
     def test_upset_in_progress_away_favorite(self):
         # ALA (ranked #1, away) loses at unranked Vanderbilt, 2024 w6.
@@ -142,14 +149,52 @@ class FixtureTests(unittest.TestCase):
         self.assertTrue(late)
         self.assertLess(late[-1]["wp_now"], 0.5, "home favorite should be trailing late in this upset")
 
-    def test_comeback_magnitude(self):
-        # BC @ MSU, 2025 -- full 0->1 WP swing.
+    def test_comeback_erosion_live_matches_retrospective_when_consummated(self):
+        # BC @ MSU, 2025 -- a real, completed comeback (lead change). Once an
+        # arc actually ends, comeback_erosion_live shouldn't diverge from
+        # comeback_erosion -- crediting the open arc on top of an
+        # already-scored closed one would double-count.
         wp_rows = self.conn.execute(
             "SELECT home_win_pct, home_score, away_score, period_number, clock_seconds_elapsed "
             "FROM win_probability WHERE game_id = ? ORDER BY play_sequence, id",
             ("401752816",),
         ).fetchall()
-        self.assertGreaterEqual(scoring.comeback_magnitude(wp_rows), 0.6)
+        self.assertGreaterEqual(scoring.comeback_erosion_live(wp_rows), 0.4)
+        self.assertAlmostEqual(
+            scoring.comeback_erosion_live(wp_rows), scoring.comeback_erosion(wp_rows),
+        )
+
+    def test_comeback_erosion_live_credits_unconsummated_comeback(self):
+        # FSU @ LSU, 2022 w1 -- FSU built as much as a ~95% coin-flip win
+        # probability, then LSU clawed back to trailing by just 1 at the
+        # final whistle without ever tying or taking the lead. The arc never
+        # "ends" (no lead change/tie), so the retrospective metric -- which
+        # only credits erosion once an arc closes -- correctly scores this
+        # 0.0. comeback_erosion_live must credit the in-progress recovery
+        # anyway, per the "unconsummated comebacks still count" requirement.
+        wp_rows = self.conn.execute(
+            "SELECT home_win_pct, home_score, away_score, period_number, clock_seconds_elapsed "
+            "FROM win_probability WHERE game_id = ? ORDER BY play_sequence, id",
+            ("401403867",),
+        ).fetchall()
+        self.assertEqual(scoring.comeback_erosion(wp_rows), 0.0)
+        self.assertGreaterEqual(scoring.comeback_erosion_live(wp_rows), 0.3)
+
+    def test_comeback_erosion_live_rejects_favorite_pulling_away(self):
+        # UVA (56% pregame favorite) building a clean, never-threatened 17-0
+        # lead over NC State was the case that motivated this metric: raw WP
+        # climbs steadily off a near-coinflip line even though NC State never
+        # had a lead or a real WP edge to come back from. Coin-flip
+        # normalization means that climb never reaches
+        # COMEBACK_EROSION_THRESHOLD, unlike the old comeback_magnitude
+        # (which scored this ~0.35 on raw WP alone).
+        wp_rows = [
+            {"home_win_pct": 0.5641, "home_score": 0, "away_score": 0, "period_number": 1, "clock_seconds_elapsed": 6},
+            {"home_win_pct": 0.6447, "home_score": 3, "away_score": 0, "period_number": 1, "clock_seconds_elapsed": 589},
+            {"home_win_pct": 0.7927, "home_score": 10, "away_score": 0, "period_number": 1, "clock_seconds_elapsed": 743},
+            {"home_win_pct": 0.9056, "home_score": 17, "away_score": 0, "period_number": 2, "clock_seconds_elapsed": 1107},
+        ]
+        self.assertEqual(scoring.comeback_erosion_live(wp_rows), 0.0)
 
     def test_severe_score_corruption_no_crash(self):
         # home_score goes negative (-38 / -3) for dozens of consecutive rows
@@ -215,7 +260,7 @@ class UniversalInvariantTests(unittest.TestCase):
         # (wp_volatility_rate, lead_change_rate, weight 1.0 each) and the
         # two window-gated metrics (late_volatility_rate, clutch_finish,
         # weight 0.5 + 1.0) are all None -- only team_profile (1.0),
-        # upset_risk (0.5), comeback_magnitude (1.0), and upset_in_progress
+        # upset_risk (0.5), comeback_erosion_live (1.0), and upset_in_progress
         # (1.0) can be applicable, for a max applicable weight of 3.5 of
         # 7.0. The latter two are deliberately NOT elapsed-gated (they're
         # legitimately small/near-zero early rather than undefined -- see

@@ -228,45 +228,6 @@ def team_profile(home_rank, away_rank):
     return _rank_tier(home_rank) + _rank_tier(away_rank)
 
 
-def _smooth_wp(wps, window=3):
-    """3-play median smoothing of a home-WP series. Defends against isolated
-    garbage rows the same way lead_changes()/clutch_finish() sanitize scores --
-    ESPN's WP series occasionally has a single spike/drop-to-zero row (verified
-    on 15/1828 completed games, e.g. a final row of 0.000 in a game that wasn't
-    remotely decided). A raw max-drawdown/drawup pass would read that spike as
-    a full-magnitude comeback; the median filter absorbs a lone bad row while
-    leaving genuine multi-play swings intact."""
-    if len(wps) < window:
-        return list(wps)
-    half = window // 2
-    out = []
-    for i in range(len(wps)):
-        lo, hi = max(0, i - half), min(len(wps), i + half + 1)
-        out.append(sorted(wps[lo:hi])[(hi - lo) // 2])
-    return out
-
-
-def comeback_magnitude(wp_rows):
-    """Largest win-probability recovery by either side: the biggest run-up in
-    home WP from a prior trough, or the biggest run-up in away WP (a run-down
-    in home WP), whichever is larger. Classic max-drawup/max-drawdown over the
-    (smoothed) series, one O(n) pass.
-
-    Deliberately outcome-blind -- it measures how far a team climbed back from
-    its own low point, not whether that team went on to win. Doesn't need
-    consummation: identical whether the recovering team completed the comeback
-    or fell just short, which is the property requested for this metric.
-    """
-    wps = _smooth_wp([r["home_win_pct"] for r in wp_rows])
-    if len(wps) < 2:
-        return 0.0
-    best = 0.0
-    lo = hi = wps[0]
-    for w in wps:
-        best = max(best, w - lo, hi - w)
-        lo = min(lo, w)
-        hi = max(hi, w)
-    return best
 
 
 def upset_in_progress(current_home_wp, initial_home_wp, home_rank, away_rank):
@@ -277,7 +238,7 @@ def upset_in_progress(current_home_wp, initial_home_wp, home_rank, away_rank):
 
     Distinct from upset_risk (pregame skew only, blind to what's actually
     happened) -- this tracks the favorite's in-game slide, and like
-    comeback_magnitude it doesn't require the upset to actually land: a
+    comeback_erosion_live it doesn't require the upset to actually land: a
     favorite that slid from 85% to 40% and then recovered still gets credit
     for how real the threat was.
 
@@ -379,6 +340,45 @@ def _sanitized_score_events(wp_rows):
     return events
 
 
+def _comeback_erosion_walk(wp_rows, credit_open_arc):
+    """Shared arc-walk for comeback_erosion/comeback_erosion_live: segments
+    _sanitized_score_events into "arcs" (stretches between lead changes),
+    tracking each arc's coin-flip-normalized WP extreme (lo/hi) via
+    wp_baseline.coinflip_wp_elapsed. See comeback_erosion's docstring for why
+    coin-flip normalization and arc segmentation both matter.
+
+    credit_open_arc controls whether the current (still-open, not yet ended
+    by a lead change/tie) arc's own running lo/hi is also checked against the
+    current point on every event, not just at the moment an arc ends -- see
+    comeback_erosion_live's docstring.
+    """
+    events = _sanitized_score_events(wp_rows)
+    if not events:
+        return 0.0
+    best = 0.0
+    lo = hi = 0.5
+    state = 0  # -1 away ahead, +1 home ahead, 0 tied
+    for elapsed, sd in events:
+        w = wp_baseline.coinflip_wp_elapsed(elapsed, sd)
+        new_state = 1 if sd > 0 else (-1 if sd < 0 else 0)
+        if new_state != state:
+            if hi >= COMEBACK_EROSION_THRESHOLD:
+                best = max(best, hi - w)
+            if lo <= 1 - COMEBACK_EROSION_THRESHOLD:
+                best = max(best, w - lo)
+            lo = hi = w
+            state = new_state
+        else:
+            lo = min(lo, w)
+            hi = max(hi, w)
+            if credit_open_arc:
+                if hi >= COMEBACK_EROSION_THRESHOLD:
+                    best = max(best, hi - w)
+                if lo <= 1 - COMEBACK_EROSION_THRESHOLD:
+                    best = max(best, w - lo)
+    return best
+
+
 def comeback_erosion(wp_rows):
     """
     Did a real, commanding lead get torn down -- credited once per "arc"
@@ -409,27 +409,46 @@ def comeback_erosion(wp_rows):
     buckets, so it evaluates Q4/OT rows too -- extrapolating
     wp_baseline.ELAPSED_MODEL (fit on Q1-3 only) past its trained range,
     same accepted-but-unverified tradeoff as elsewhere in wp_baseline.
+
+    Only credits an arc once it *ends* (a lead change or tie) -- an ongoing
+    comeback attempt that hasn't yet flipped the game gets zero credit here,
+    even in the final, still-open arc of a completed game. That's correct
+    for the retrospective corpus (the outcome is known, so "erosion" that
+    never actually happened isn't real erosion). See comeback_erosion_live
+    for the in-progress counterpart that credits this case.
     """
-    events = _sanitized_score_events(wp_rows)
-    if not events:
-        return 0.0
-    best = 0.0
-    lo = hi = 0.5
-    state = 0  # -1 away ahead, +1 home ahead, 0 tied
-    for elapsed, sd in events:
-        w = wp_baseline.coinflip_wp_elapsed(elapsed, sd)
-        new_state = 1 if sd > 0 else (-1 if sd < 0 else 0)
-        if new_state != state:
-            if hi >= COMEBACK_EROSION_THRESHOLD:
-                best = max(best, hi - w)
-            if lo <= 1 - COMEBACK_EROSION_THRESHOLD:
-                best = max(best, w - lo)
-            lo = hi = w
-            state = new_state
-        else:
-            lo = min(lo, w)
-            hi = max(hi, w)
-    return best
+    return _comeback_erosion_walk(wp_rows, credit_open_arc=False)
+
+
+def comeback_erosion_live(wp_rows):
+    """
+    Live counterpart to comeback_erosion for a game still in progress: same
+    coin-flip-normalized, arc-segmented, COMEBACK_EROSION_THRESHOLD-gated
+    logic, except a material swing away from the current arc's own extreme
+    is credited as soon as it happens, not only once a lead change or tie
+    actually ends that arc.
+
+    Replaces the earlier comeback_magnitude metric, which measured raw
+    (non-coin-flip-normalized) WP drawup/drawdown over the whole game with no
+    arc segmentation and no "commanding" threshold -- exposing it to the
+    exact anti-pattern comeback_erosion was hardened against: a mild pregame
+    favorite (e.g. 56%) that just builds a comfortable, never-threatened lead
+    reads as a "big comeback" purely because raw WP climbs, even though the
+    trailing team never had a lead or a real WP advantage to come back from
+    (confirmed case: UVA 17-0 over NC State, comeback_magnitude=0.35 off a
+    56% pregame line and a lead that was never really in question).
+
+    Unlike comeback_erosion, an ongoing arc's own lo/hi is checked against
+    the current point on every event (see _comeback_erosion_walk's
+    credit_open_arc), not just at the arc's end -- the whole point of a live
+    "so far" signal is to catch a real comeback attempt while it's still
+    unresolved, per the explicit request that this not require consummation.
+    A lead change or tie still resets lo/hi to start a fresh arc, so a team
+    that completes a comeback and keeps running up the score gets no extra
+    credit for that -- same protection as comeback_erosion, just also
+    evaluated before an arc formally ends.
+    """
+    return _comeback_erosion_walk(wp_rows, credit_open_arc=True)
 
 
 def uw_loss_bonus(home_team_id, away_team_id, home_score, away_score):

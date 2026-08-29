@@ -132,8 +132,8 @@ def replay_curve_ascii(rows, width=72):
     """
     Fixed-width ASCII plot of live_score / quality_so_far / drama_from_here
     against progress, with period-change markers underneath -- the tool for
-    actually setting LIVE_W_SO_FAR, LATENESS_POWER, and MAX_COMEBACK by eye,
-    not just asserting on them after the fact.
+    actually setting LIVE_W_SO_FAR, LATENESS_POWER, and MAX_UPSET_IN_PROGRESS
+    by eye, not just asserting on them after the fact.
     """
     if not rows:
         return "(no rows)"

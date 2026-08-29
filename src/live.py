@@ -44,14 +44,13 @@ LIVE_W_FROM_HERE = 0.60
 # Below this much game-clock elapsed, a "rate" (count / progress) is one or
 # two plays extrapolated over sixty minutes -- meaningless, and liable to
 # read as a false 1.0. Only gates the two rate metrics; proportions/maxima
-# (comeback_magnitude, upset_in_progress) degrade gracefully on their own.
+# (comeback_erosion_live, upset_in_progress) degrade gracefully on their own.
 LIVE_MIN_ELAPSED_SECONDS = 300
 # Floor on the rate denominator so a wild opening sequence can't alone
 # saturate a rate metric's cap.
 LIVE_MIN_PROGRESS = 0.15
 
 # --- New live-only metric caps ---
-MAX_COMEBACK = 0.80
 MAX_UPSET_IN_PROGRESS = 0.60
 MAX_RECENT_VOLATILITY = 1.5
 LIVE_RECENT_WINDOW = 20  # trailing WP rows considered by recent_volatility
@@ -296,8 +295,8 @@ def clutch_finish_live(ctx):
     return scoring.clutch_finish(ctx["wp_rows"])
 
 
-def comeback_magnitude_ctx(ctx):
-    return scoring.comeback_magnitude(ctx["wp_rows"])
+def comeback_erosion_live_ctx(ctx):
+    return scoring.comeback_erosion_live(ctx["wp_rows"])
 
 
 def upset_in_progress_ctx(ctx):
@@ -313,14 +312,14 @@ def upset_risk_ctx(ctx):
 
 
 LIVE_SO_FAR_METRICS = [
-    {"name": "wp_volatility_rate",   "fn": wp_volatility_rate,     "weight": 1.0, "cap": scoring.MAX_VOLATILITY},
-    {"name": "lead_change_rate",     "fn": lead_change_rate,       "weight": 1.0, "cap": scoring.MAX_LEAD_CHANGES},
-    {"name": "comeback_magnitude",   "fn": comeback_magnitude_ctx, "weight": 1.0, "cap": MAX_COMEBACK},
-    {"name": "upset_in_progress",    "fn": upset_in_progress_ctx,  "weight": 1.0, "cap": MAX_UPSET_IN_PROGRESS},
-    {"name": "team_profile",         "fn": team_profile_ctx,       "weight": 1.0, "cap": scoring.MAX_TEAM_PROFILE},
-    {"name": "upset_risk",           "fn": upset_risk_ctx,         "weight": 0.5, "cap": None},
-    {"name": "late_volatility_rate", "fn": late_volatility_rate,   "weight": 0.5, "cap": scoring.MAX_LATE_VOLATILITY},
-    {"name": "clutch_finish",        "fn": clutch_finish_live,     "weight": 1.0, "cap": scoring.MAX_CLUTCH_FINISH},
+    {"name": "wp_volatility_rate",    "fn": wp_volatility_rate,        "weight": 1.0, "cap": scoring.MAX_VOLATILITY},
+    {"name": "lead_change_rate",      "fn": lead_change_rate,          "weight": 1.0, "cap": scoring.MAX_LEAD_CHANGES},
+    {"name": "comeback_erosion_live", "fn": comeback_erosion_live_ctx, "weight": 1.0, "cap": None},
+    {"name": "upset_in_progress",     "fn": upset_in_progress_ctx,     "weight": 1.0, "cap": MAX_UPSET_IN_PROGRESS},
+    {"name": "team_profile",          "fn": team_profile_ctx,          "weight": 1.0, "cap": scoring.MAX_TEAM_PROFILE},
+    {"name": "upset_risk",            "fn": upset_risk_ctx,            "weight": 0.5, "cap": None},
+    {"name": "late_volatility_rate",  "fn": late_volatility_rate,      "weight": 0.5, "cap": scoring.MAX_LATE_VOLATILITY},
+    {"name": "clutch_finish",         "fn": clutch_finish_live,        "weight": 1.0, "cap": scoring.MAX_CLUTCH_FINISH},
 ]
 
 
@@ -369,7 +368,7 @@ LIVE_METRIC_LABELS = {
     "ot_live": "overtime",
     "wp_volatility_rate": "back-and-forth action",
     "lead_change_rate": "frequent lead changes",
-    "comeback_magnitude": "a big comeback",
+    "comeback_erosion_live": "a big comeback",
     "upset_in_progress": "an upset in progress",
     "team_profile": "a ranked matchup",
     "upset_risk": "a live upset bid",
