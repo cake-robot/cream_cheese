@@ -260,11 +260,6 @@ function wpDualCard(mount, wp, game) {
   const ladderSection = el("div", { class: "g-ladder-section" }, [
     el("div", { class: "g-ladder-label-row" }, el("span", { class: "g-ladder-label", text: "NET SCORE — ONE BAR PER SCORING PLAY" })),
     ladderWrap,
-    el("div", {
-      class: "g-ladder-caption",
-      text: "Each bar runs from the margin before the score to the margin after it — the chevron points the way the margin moved, "
-        + `so its length is the points scored and its tip is the new margin. Bone = ${homeAbbr} scored, oxblood = ${awayAbbr}. Dashed = margin holding until the next score.`,
-    }),
   ]);
   mount.appendChild(ladderSection);
 
