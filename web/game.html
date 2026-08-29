@@ -140,47 +140,6 @@ function renderProvenance(mount, detail) {
 let REGISTRY_LABEL = {};
 let LIVE_REGISTRY = { so_far: [], from_here: [] };
 
-// Score progression card: ESPN's play-by-play chart, plus a source toggle
-// to Fox's independently-collected score ladder when a match exists --
-// lets a bad/ambiguous ESPN score sequence (like a long OT game) be
-// visually cross-checked against a second source instead of just trusted.
-function renderScoreCard(detail, g) {
-  const sources = { espn: () => espnScoreSeries(detail.wp) };
-  if (detail.fox_score) sources.fox = () => foxScoreSeries(detail.fox_score);
-  const hasFox = !!detail.fox_score;
-
-  const titleRow = el("div", { style: "display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap" }, [
-    el("h2", { text: `Score progression — ${g.away.name} at ${g.home.name}` }),
-  ]);
-  const sub = el("div", { class: "card-sub" });
-  const chartMount = el("div");
-  const card = el("div", { class: "card" }, [titleRow, sub, chartMount]);
-
-  function draw(key) {
-    chartMount.innerHTML = "";
-    sub.textContent = key === "espn"
-      ? `Running score across ${detail.wp.n} plays, from ESPN's play-by-play.`
-      : `Running score across ${detail.fox_score.n} scoring events, from Fox's play-by-play -- time-aligned by game clock.`;
-    scoreChart(chartMount, sources[key](), g);
-  }
-
-  if (hasFox) {
-    const toggle = el("div", { class: "theme-toggle" });
-    const btns = { espn: el("button", { text: "ESPN", "aria-pressed": "true" }), fox: el("button", { text: "Fox", "aria-pressed": "false" }) };
-    Object.entries(btns).forEach(([key, btn]) => {
-      btn.addEventListener("click", () => {
-        Object.entries(btns).forEach(([k, b]) => b.setAttribute("aria-pressed", String(k === key)));
-        draw(key);
-      });
-      toggle.appendChild(btn);
-    });
-    titleRow.appendChild(toggle);
-  }
-
-  draw("espn");
-  return card;
-}
-
 function renderLive(mount, detail) {
   const g = detail.game;
   const live = detail.live;
@@ -223,14 +182,21 @@ function renderLive(mount, detail) {
   mount.appendChild(halvesCard);
 
   if (detail.wp) {
-    const wpCard = el("div", { class: "card" }, [
-      el("h2", { text: `Win probability (live) — ${g.away.name} at ${g.home.name}` }),
-      el("div", { class: "card-sub", text: `Home win probability across ${detail.wp.n} plays so far.` }),
-    ]);
-    wpChart(wpCard, detail.wp, g);
+    const wpCard = el("div", { class: "g-card" });
+    wpCard.appendChild(el("div", { class: "g-card-head g-wp-head" }, [
+      el("div", {}, [
+        el("div", { class: "g-card-title", text: "Win probability (live)" }),
+        el("div", { class: "g-card-sub", text: `${g.home.name} win probability and the score ladder so far, across ${detail.wp.n} plays.` }),
+      ]),
+      el("div", { class: "g-wp-legend" }, [
+        el("span", { class: "sw" }, [el("i", { style: "background:var(--g-ink-bright)" }), g.home.name.toUpperCase()]),
+        el("span", { class: "sw" }, [el("i", { style: "background:var(--g-accent)" }), g.away.name.toUpperCase()]),
+      ]),
+    ]));
+    const wpBody = el("div", { class: "g-wp-body" });
+    wpDualCard(wpBody, detail.wp, g);
+    wpCard.appendChild(wpBody);
     mount.appendChild(wpCard);
-
-    mount.appendChild(renderScoreCard(detail, g));
   }
 
   const contribCard = el("div", { class: "card" }, [el("h2", { text: "What's driving this" })]);

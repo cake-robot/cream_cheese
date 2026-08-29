@@ -150,27 +150,6 @@ header.chrome nav a[aria-current="page"] {
   border-bottom-color: var(--series-1);
 }
 
-.theme-toggle {
-  display: flex;
-  gap: 2px;
-  border: 1px solid var(--hairline);
-  border-radius: 6px;
-  overflow: hidden;
-}
-.theme-toggle button {
-  background: var(--surface-1);
-  border: none;
-  color: var(--ink-2);
-  padding: 5px 9px;
-  cursor: pointer;
-  font-size: 13px;
-}
-.theme-toggle button[aria-pressed="true"] {
-  background: var(--page);
-  color: var(--ink-1);
-  font-weight: 700;
-}
-
 /* ---- status line (login/signup; spoiler settings has its own .s-status) ---- */
 
 .status-line {
