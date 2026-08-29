@@ -245,9 +245,7 @@ function renderLive(mount, detail) {
       el("h2", { text: "Live score so far" }),
       el("div", { class: "card-sub", text: "How the recommendation has moved through the game." }),
     ]);
-    multiLine(histCard, {
-      "live score": detail.live_history.map((r, i) => ({ week: i + 1, avg_score: r.live_score, n: 1 })),
-    });
+    liveScoreChart(histCard, detail.live_history);
     mount.appendChild(histCard);
   }
 
