@@ -1094,7 +1094,7 @@ body[data-page="games"] .games-frame main {
 .gm-search-row { display: flex; align-items: center; gap: 8px; }
 .gm-search {
   width: 100%; box-sizing: border-box; background: var(--g-card); border: 1px solid var(--g-border-strong);
-  color: var(--g-ink-bright); font-family: var(--font-mono); font-size: 12px; padding: 6px 10px; outline: none;
+  color: var(--g-ink-bright); font-family: var(--font-mono); font-size: 11px; line-height: 1.45; padding: 5px 10px; outline: none;
 }
 .gm-search:focus { border-color: var(--g-chip-border); }
 .gm-team-chip {
@@ -1111,7 +1111,7 @@ body[data-page="games"] .games-frame main {
 }
 .gm-reset {
   font-family: var(--font-display); font-size: 11px; letter-spacing: .18em; text-transform: uppercase;
-  padding: 6px 14px; cursor: pointer; color: var(--g-ink-sec); background: transparent; border: 1px solid var(--g-border-strong);
+  padding: 5px 14px; cursor: pointer; color: var(--g-ink-sec); background: transparent; border: 1px solid var(--g-border-strong);
 }
 .gm-reset:hover { color: var(--g-ink-bright); border-color: var(--g-chip-border); }
 
@@ -1150,12 +1150,12 @@ body[data-page="games"] .games-frame main {
 /* table card */
 .gm-table-card { border: 1px solid var(--g-border); background: var(--g-card); }
 .gm-header-row {
-  display: grid; grid-template-columns: 44px 90px minmax(0, 1fr) 100px 70px 160px 26px; gap: 14px;
+  display: grid; grid-template-columns: 44px 90px minmax(0, 1fr) 70px minmax(160px, 1fr) 26px; gap: 14px;
   align-items: center; padding: 11px 24px; border-bottom: 1px solid var(--g-border);
   font-family: var(--font-mono); font-size: 10px; letter-spacing: .16em; text-transform: uppercase; color: var(--g-ink-dimmest);
 }
 .gm-row {
-  display: grid; grid-template-columns: 44px 90px minmax(0, 1fr) 100px 70px 160px 26px; gap: 14px;
+  display: grid; grid-template-columns: 44px 90px minmax(0, 1fr) 70px minmax(160px, 1fr) 26px; gap: 14px;
   align-items: center; padding: 13px 24px; border-bottom: 1px solid var(--g-row-hairline); cursor: pointer; position: relative;
 }
 .gm-row:hover { background: var(--g-card-inset); }
@@ -1165,11 +1165,10 @@ body[data-page="games"] .games-frame main {
 .gm-matchup { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; min-width: 0; }
 .gm-matchup-text { font-family: var(--font-body); font-size: 14px; color: var(--g-ink-body2); }
 .gm-matchup-side { white-space: nowrap; }
-.gm-date { font-family: var(--font-mono); font-size: 11px; color: var(--g-ink-muted); white-space: nowrap; }
 .gm-score-block { display: flex; align-items: center; gap: 8px; }
 .gm-score-val { font-family: var(--font-display); font-weight: 300; font-size: 18px; min-width: 44px; color: var(--g-ink-bright); font-variant-numeric: tabular-nums; }
 .gm-score-val.null { color: var(--g-ink-dim); }
-.gm-score-meter { width: 56px; height: 3px; background: var(--g-track); flex: none; position: relative; }
+.gm-score-meter { flex: 1 1 auto; width: auto; min-width: 56px; max-width: 420px; height: 3px; background: #26312d; position: relative; }
 .gm-score-meter > i { position: absolute; left: 0; top: 0; bottom: 0; }
 .gm-pctile { font-family: var(--font-mono); font-size: 9.5px; color: var(--g-ink-dimmest); }
 .gm-chevron { font-family: var(--font-mono); font-size: 12px; color: var(--g-ink-dim); display: inline-block; transition: transform .15s; }
@@ -1204,7 +1203,7 @@ body[data-page="games"] .games-frame main {
 .gm-expand-rows { display: flex; flex-direction: column; gap: 8px; }
 .gm-expand-row { display: grid; grid-template-columns: 150px 1fr 100px; gap: 12px; align-items: center; }
 .gm-expand-label { font-family: var(--font-mono); font-size: 11px; color: var(--g-ink-body); }
-.gm-expand-bar { height: 6px; background: var(--g-track); position: relative; }
+.gm-expand-bar { height: 6px; background: #2a3733; position: relative; }
 .gm-expand-bar > i { position: absolute; left: 0; top: 0; bottom: 0; }
 .gm-expand-detail { font-family: var(--font-mono); font-size: 10.5px; color: var(--g-ink-muted); text-align: right; white-space: nowrap; }
 .gm-expand-bonus { margin-top: 12px; font-family: var(--font-mono); font-size: 10.5px; color: var(--g-uw-bonus-clay); }
@@ -1521,7 +1520,7 @@ body[data-page="settings"] .settings-frame main {
 /* override lists (week + game cards) */
 .s-list { display: flex; flex-direction: column; gap: 6px; margin-top: 16px; }
 .s-override-row {
-  display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  display: flex; align-items: center; gap: 10px;
   font-family: var(--font-mono); font-size: 12px; color: var(--g-ink-strong);
   padding: 6px 0; border-bottom: 1px solid var(--g-row-hairline);
 }
@@ -1887,6 +1886,13 @@ body[data-page="settings"] .settings-frame main {
     min-height: 34px; padding: 0 11px; box-sizing: border-box;
   }
   .gm-select-trigger { min-height: 40px; padding: 0 12px; box-sizing: border-box; }
+  /* Top games' Type chips sit directly beside the Season dropdown, so they
+     match its 40px height instead of the 34px used by filter chips
+     elsewhere (e.g. Games page). */
+  .t-chip {
+    display: flex; align-items: center; justify-content: center;
+    min-height: 40px; padding: 0 11px; box-sizing: border-box;
+  }
   .gm-search { min-height: 44px; padding: 10px 12px; box-sizing: border-box; }
   .gm-reset {
     display: flex; align-items: center; justify-content: center;
@@ -1910,25 +1916,26 @@ body[data-page="settings"] .settings-frame main {
     /* Handoff calls for rank sitting tight against matchup text on one
        line (not parked in a fixed 90px column with dead space before the
        matchup starts) and wk+date read together as one flush-left meta
-       line ("Wk 2 · Sep 13, 2026"), not split to opposite ends of a row.
-       Rank gets its own content-sized ("auto") column instead of a fixed
-       one; wk/date (still needed as separate elements for desktop's grid)
-       are hidden here in favor of .gm-meta, a mobile-only element with
-       both already combined into one string by renderRows() -- CSS can't
-       merge two sibling elements' text onto one line without one
-       containing the other, so this needed a small JS change rather than
-       a grid-area trick. .gm-meta spans both columns so it starts flush
-       against the row's left edge like the mock, independent of rank's
-       column width. */
+       line ("2026 wk 2 · Sep 13, 2026"), not split to opposite ends of a
+       row. Rank gets its own content-sized ("auto") column instead of a
+       fixed one; wk (still needed as a separate element for desktop's
+       grid -- desktop dropped its own separate date column once wk
+       started carrying the year) is hidden here in favor of .gm-meta, a
+       mobile-only element with wk+date already combined into one string
+       by renderRows() -- CSS can't merge two sibling elements' text onto
+       one line without one containing the other, so this needed a small
+       JS change rather than a grid-area trick. .gm-meta sits only in the
+       matchup column (the "." in the meta row leaves rank's column empty)
+       so it lines up under the matchup text instead of the rank number. */
     grid-template-columns: auto 1fr;
-    grid-template-areas: "rank matchup" "meta meta" "score score";
+    grid-template-areas: "rank matchup" ". meta" ". score";
     column-gap: 8px;
     row-gap: 6px;
     padding: 14px 16px;
   }
   .gm-rank { grid-area: rank; align-self: start; }
   .gm-matchup { grid-area: matchup; }
-  .gm-wk, .gm-date { display: none; }
+  .gm-wk { display: none; }
   .gm-meta { grid-area: meta; display: block; font-family: var(--font-mono); font-size: 11px; color: var(--g-ink-muted); }
   /* .gm-score-block and .gm-chevron share the "score" area (score at the
      start, chevron pushed to the end via justify-self) rather than sitting
@@ -1937,8 +1944,11 @@ body[data-page="settings"] .settings-frame main {
      SAME auto-sized column as .gm-rank/.gm-wk, so their combined intrinsic
      width (~150px) forced that "auto" column wide regardless of how short
      the rank/week content actually was, shoving .gm-matchup's whole column
-     far right on every row. Spanning both columns here removes it from that
-     column's width calculation entirely. */
+     far right on every row. The "." in the score row leaves rank's column
+     empty, same trick as .gm-meta above, so the score value/bar start
+     lined up under the matchup text instead of flush with the row's left
+     edge -- the area's right edge is still the row's right edge either
+     way, so this only pulls in the left/start side, not the chevron. */
   /* score-block stretches to the full card width by default (a grid item
      with no explicit width defaults to justify-self:stretch), but its own
      children didn't use that space -- the meter stayed at desktop's fixed

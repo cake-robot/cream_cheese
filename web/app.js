@@ -153,7 +153,7 @@ function postseasonInfo(g) {
   // fixed-width mobile grid column it renders in (see Games page mobile
   // layout, gm-wk).
   const isCFP = /college football playoff|\bcfp\b/i.test(note);
-  if (!isCFP) return { isCFP: false, label: note, short: note };
+  if (!isCFP) return { isCFP: false, label: note, short: `'${String(g.season_year).slice(-2)} ${note}` };
   const roundMatch = note.match(/First Round|Quarterfinal|Semifinal|National Championship/i);
   const round = roundMatch ? roundMatch[0] : "Playoff";
   const bowlMatch = note.match(/at the (.+)$/i);
@@ -162,12 +162,16 @@ function postseasonInfo(g) {
   // balloon `short`/`label` the same way the missing short-CFP-form case did.
   const bowl = bowlMatch ? bowlMatch[1].replace(/\s+-\s+.*$/, "").trim() : null;
   const abbr = CFP_ROUND_ABBR[round] || round;
+  const yy = String(g.season_year).slice(-2);
   return {
     isCFP: true,
     round,
     bowl,
     label: bowl ? `CFP ${round} · ${bowl}` : `CFP ${round}`,
-    short: bowl ? `${abbr} · ${bowl}` : abbr,
+    // "'YY CFP - X" (X = R1/QF/SF/NCG), matching the "'YY wk X" format used
+    // for regular-season games elsewhere -- drops the bowl name that used
+    // to sit here so playoff and regular-season rows read consistently.
+    short: `'${yy} CFP - ${abbr}`,
   };
 }
 

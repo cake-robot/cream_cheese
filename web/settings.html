@@ -19,7 +19,7 @@
   </nav>
 </header>
 <div class="mnav-bar" id="mnav-bar">
-  <span class="mnav-page-title">Spoiler settings</span>
+  <span class="mnav-page-title">Settings</span>
   <button type="button" class="mnav-trig" id="mnav-trig" aria-expanded="false" aria-controls="mnav-drawer">
     <span class="t">Menu</span><span class="c" id="mnav-chev">⌄</span>
   </button>
@@ -169,7 +169,7 @@ function overrideLabel(o) {
 function renderOverrideRow(o, labelText, onClear) {
   const removeBtn = el("span", { class: "s-override-clear", text: "✕", title: "Clear this override" });
   removeBtn.addEventListener("click", onClear);
-  return el("div", { class: "s-override-row" }, [el("span", { text: labelText }), removeBtn]);
+  return el("div", { class: "s-override-row" }, [removeBtn, el("span", { text: labelText })]);
 }
 
 async function renderOverrides(overrides) {
@@ -206,13 +206,13 @@ async function renderOverrides(overrides) {
         ? `${fmtMatchup(g)} — ${seasonWeekLabel(g)} — ${o.hidden ? "hidden" : "revealed"}`
         : overrideLabel(o);
       row.innerHTML = "";
-      row.appendChild(el("a", { href: `/game.html?id=${o.game_id}`, text: labelText }));
       const removeBtn = el("span", { class: "s-override-clear", text: "✕", title: "Clear this override" });
       removeBtn.addEventListener("click", () => runWrite(
         () => apiPost("/spoilers/game", { game_id: o.game_id, hidden: null }),
         `Cleared the override for ${labelText}.`,
       ));
       row.appendChild(removeBtn);
+      row.appendChild(el("a", { href: `/game.html?id=${o.game_id}`, text: labelText }));
     });
   });
 }

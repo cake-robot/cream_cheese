@@ -1011,7 +1011,7 @@ function contributionBars(mount, metricsMap, registry, applicableWeight, uwLossB
  * spelling out the same arithmetic the bars just drew.
  * ------------------------------------------------------------------- */
 function driversWeighted(mount, metricsMap, registry, si) {
-  const RAMP = ["#e6e3d8", "#d6cfc0", "#c5b7a6", "#b69c8b", "#a88170", "#9b6656", "#8d5a4c", "#7d4a41"];
+  const RAMP = ["#ffffff", "#f1e1e0", "#e2c2c0", "#d4a4a1", "#c58682", "#b76863", "#a84943", "#9a2b24"];
   const bonus = si.uw_loss_bonus || 0;
   const rows = registry
     .map((r) => ({ ...r, v: metricsMap[r.name] }))
@@ -1021,7 +1021,7 @@ function driversWeighted(mount, metricsMap, registry, si) {
 
   const wrap = el("div", { class: "g-drivers-rows" });
   rows.forEach((r, k) => {
-    const color = RAMP[k % RAMP.length];
+    const color = RAMP[RAMP.length - 1 - (k % RAMP.length)];
     const weightText = r.weight.toFixed(1).replace(/\.0$/, "");
     const row = el("div", { class: "g-drivers-row" }, [
       el("span", { class: "label", text: r.label }),
