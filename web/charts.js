@@ -880,7 +880,7 @@ function contributionBars(mount, metricsMap, registry, applicableWeight, uwLossB
     const row = el("div", { class: rich ? "contrib-row rich" : "contrib-row" });
     row.appendChild(el("div", { class: "label", text: r.label }));
     if (r.v === null) {
-      row.appendChild(el("div", { class: "na", text: `not applicable — overtime game` }));
+      row.appendChild(el("div", { class: "na", text: r.naLabel || "not applicable" }));
       row.appendChild(el("div"));
       if (rich) { row.appendChild(el("div")); row.appendChild(el("div")); }
       row.appendChild(el("div", { class: "contrib-value", text: "—" }));
@@ -971,10 +971,10 @@ function contributionBars(mount, metricsMap, registry, applicableWeight, uwLossB
   if (rich) {
     if (bonus <= 0) {
       let footerText = `Σ ${weightedSum.toFixed(3)} ÷ applicable weight ${applicableWeight.toFixed(1)} = ${base.toFixed(3)}`;
-      if (naRows.length) footerText += ` · ${excludedNames} excluded (overtime)`;
+      if (naRows.length) footerText += ` · ${excludedNames} excluded`;
       wrap.appendChild(el("div", { class: "contrib-footer", text: footerText }));
     } else if (naRows.length) {
-      wrap.appendChild(el("div", { class: "contrib-footer", text: `${excludedNames} excluded (overtime)` }));
+      wrap.appendChild(el("div", { class: "contrib-footer", text: `${excludedNames} excluded` }));
     }
     const legend = el("div", { class: "legend" });
     legend.appendChild(el("span", {}, [el("i", { style: "background:var(--track)" }), "max possible (weight share)"]));
@@ -984,7 +984,7 @@ function contributionBars(mount, metricsMap, registry, applicableWeight, uwLossB
     wrap.appendChild(legend);
   } else {
     const footerText = `Σ ${weightedSum.toFixed(3)} ÷ applicable weight ${applicableWeight.toFixed(1)} = ${base.toFixed(3)}`
-      + (naRows.length ? ` · ${excludedNames} excluded (overtime)` : "");
+      + (naRows.length ? ` · ${excludedNames} excluded` : "");
     wrap.appendChild(el("div", { class: "contrib-footer", text: footerText }));
   }
 
