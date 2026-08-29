@@ -2002,7 +2002,7 @@ def api_game_detail(game_id):
         wp_rows = conn.execute(
             "SELECT play_id, sequence_number, home_win_pct, clock_seconds_elapsed, period_number, "
             "clock_display, home_score, away_score, play_sequence FROM win_probability "
-            "WHERE game_id=? ORDER BY play_sequence, id",
+            "WHERE game_id=? AND period_number IS NOT NULL ORDER BY play_sequence, id",
             (game_id,),
         ).fetchall()
         wp_payload = build_wp_payload(wp_rows, row)
@@ -2014,7 +2014,7 @@ def api_game_detail(game_id):
         wp_rows = conn.execute(
             "SELECT play_id, sequence_number, home_win_pct, clock_seconds_elapsed, period_number, "
             "clock_display, home_score, away_score, play_sequence FROM win_probability "
-            "WHERE game_id=? ORDER BY play_sequence, id",
+            "WHERE game_id=? AND period_number IS NOT NULL ORDER BY play_sequence, id",
             (game_id,),
         ).fetchall()
         if wp_rows:
