@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Feed — Watchability</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body data-page="feed">
+
+<div class="feed-frame">
+<header class="chrome">
+  <nav>
+    <a href="/slate.html">Slate</a>
+    <a href="/top.html">Top games</a>
+    <a href="/index.html">Games</a>
+    <a href="/settings.html">Settings</a>
+    <a href="/analytics.html">Analytics</a>
+    <a href="/feed.html" aria-current="page" data-admin-only>Feed</a>
+  </nav>
+</header>
+<div class="mnav-bar" id="mnav-bar">
+  <span class="mnav-page-title">Feed</span>
+  <button type="button" class="mnav-trig" id="mnav-trig" aria-expanded="false" aria-controls="mnav-drawer">
+    <span class="t">Menu</span><span class="c" id="mnav-chev">⌄</span>
+  </button>
+  <div class="mnav-drawer" id="mnav-drawer" hidden></div>
+</div>
+
+<main>
+  <div class="t-title-row">
+    <div>
+      <div class="t-title">Feed</div>
+      <div class="t-result-line" id="fd-result-line"></div>
+    </div>
+  </div>
+
+  <div class="g-card an-card-pad">
+    <div class="g-card-title">Poller status</div>
+    <div class="g-card-sub">The live poller's own last-declared cycle and schedule decision (src/live.py's _schedule_interval).</div>
+    <div class="fd-status" id="fd-status"></div>
+  </div>
+
+  <div class="g-card an-card-pad">
+    <div class="g-card-title">On deck</div>
+    <div class="g-card-sub" id="fd-ondeck-sub"></div>
+    <div class="fd-ondeck" id="fd-ondeck"></div>
+  </div>
+
+  <div class="g-card an-card-pad">
+    <div class="g-card-title">Activity (24h)</div>
+    <div class="g-card-sub">Requests per 5 minutes, by source. Errors shown in the accent color.</div>
+    <div class="fd-activity-bars" id="fd-activity-bars"></div>
+    <table class="an-table fd-source-table">
+      <thead><tr>
+        <th>Source</th><th class="num">Reqs</th><th class="num">Errors</th>
+        <th class="num">p50 ms</th><th class="num">p95 ms</th><th>Last OK</th><th>Last error</th>
+      </tr></thead>
+      <tbody id="fd-source-body"></tbody>
+    </table>
+  </div>
+
+  <div class="g-card an-card-pad">
+    <div class="fd-log-head">
+      <div class="g-card-title">Recent requests</div>
+      <div class="fd-filters" id="fd-filters"></div>
+    </div>
+    <div class="fd-table-scroll">
+      <table class="an-table fd-log-table">
+        <thead><tr>
+          <th>Time</th><th>Source</th><th>Kind</th><th>Caller</th><th>Cycle</th>
+          <th>Game</th><th class="num">Status</th><th class="num">Latency</th><th class="num">Bytes</th><th>Error</th>
+        </tr></thead>
+        <tbody id="fd-log-body"></tbody>
+      </table>
+    </div>
+    <div class="fd-log-footer">
+      <span id="fd-log-count"></span>
+      <button class="s-btn" id="fd-load-more">Load more</button>
+    </div>
+  </div>
+
+  <div class="t-footer">
+    <span>// feed</span><span>Auto-refreshes every 10s while this tab is visible</span>
+  </div>
+</main>
+</div>
+
+<script src="/app.js"></script>
+<script>
+const REFRESH_MS = 10000;
+let LOG_FILTERS = { ok: "", source: "" };
+let OLDEST_LOG_ID = null;
+let LOG_ROWS_SHOWN = 0;
+
+function _durationLabel(abs) {
+  return abs < 60 ? `${Math.round(abs)}s`
+    : abs < 3600 ? `${Math.round(abs / 60)}m`
+    : `${(abs / 3600).toFixed(1)}h`;
+}
+// seconds_since_last_cycle: always >= 0 (a cycle already happened).
+function fmtRelative(seconds) {
+  if (seconds === null || seconds === undefined) return "—";
+  return `${_durationLabel(Math.abs(seconds))} ago`;
+}
+// seconds_to_next_wake: positive = still in the future, negative = the
+// poller is overdue (a real signal worth calling out, not just "ago").
+function fmtCountdown(seconds) {
+  if (seconds === null || seconds === undefined) return "—";
+  return seconds >= 0 ? `in ${_durationLabel(seconds)}` : `${_durationLabel(-seconds)} overdue`;
+}
+
+function fmtClock(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function fmtBytes(n) {
+  if (n === null || n === undefined) return "—";
+  if (n < 1024) return `${n} B`;
+  return `${(n / 1024).toFixed(1)} KB`;
+}
+
+// ---- poller status card -----------------------------------------------------
+
+function renderStatus(data) {
+  const mount = document.getElementById("fd-status");
+  mount.innerHTML = "";
+  const p = data.poller;
+  if (!p) {
+    mount.appendChild(el("div", { class: "fd-empty", text: "The poller has never reported in -- run pipeline.py --live at least once." }));
+    document.getElementById("fd-result-line").textContent = "no poller data yet";
+    return;
+  }
+  const state = data.stale ? ["stale", "STALE"] : !data.running ? ["stopped", "STOPPED"] : ["live", "RUNNING"];
+  document.getElementById("fd-result-line").textContent =
+    `${state[1].toLowerCase()} · cycle ${p.cycle_seq ?? "—"} · last cycle ${fmtRelative(data.seconds_since_last_cycle)}`;
+
+  mount.appendChild(el("div", { class: `fd-dot-row fd-${state[0]}` }, [
+    el("span", { class: "fd-dot" }),
+    el("span", { class: "fd-dot-label", text: state[1] }),
+    el("span", { class: "fd-dot-sub", text: `pid ${p.pid ?? "—"} · mode ${p.mode ?? "—"}` }),
+  ]));
+
+  const rows = [
+    ["Cycle", p.cycle_seq ?? "—"],
+    ["Last cycle", `${fmtRelative(data.seconds_since_last_cycle)} · ${p.last_cycle_ms ?? "—"}ms · ${p.last_cycle_reqs ?? "—"} req`],
+    ["Slate", `${p.slate_in ?? 0} in · ${p.slate_post ?? 0} post · ${p.slate_pre ?? 0} pre`],
+    ["Next poll", fmtCountdown(data.seconds_to_next_wake)],
+    ["Interval reason", p.interval_reason ?? "—"],
+  ];
+  if (p.last_cycle_error) rows.push(["Last cycle error", p.last_cycle_error]);
+  if (p.stopped_at) rows.push(["Stopped at", fmtClock(p.stopped_at)]);
+
+  const table = el("div", { class: "fd-kv" });
+  rows.forEach(([k, v]) => {
+    table.appendChild(el("div", { class: "fd-kv-row" }, [
+      el("span", { class: "fd-kv-key", text: k }),
+      el("span", { class: "fd-kv-val", text: String(v) }),
+    ]));
+  });
+  mount.appendChild(table);
+}
+
+// ---- on deck card -----------------------------------------------------------
+
+function gameLabel(g) {
+  return `${g.away_team_abbr} @ ${g.home_team_abbr}`;
+}
+
+function renderOnDeck(data) {
+  const mount = document.getElementById("fd-ondeck");
+  mount.innerHTML = "";
+  document.getElementById("fd-ondeck-sub").textContent =
+    `${data.live_games.length} live · ${data.upcoming.length} upcoming · ${data.refresh_queue.length} queued for refresh`;
+
+  const section = (title, rows) => {
+    mount.appendChild(el("div", { class: "fd-ondeck-label", text: title }));
+    if (!rows.length) {
+      mount.appendChild(el("div", { class: "fd-empty", text: "None." }));
+      return;
+    }
+    rows.forEach((r) => mount.appendChild(r));
+  };
+
+  section("Live now", data.live_games.map((g) => el("div", { class: "fd-ondeck-row" }, [
+    el("a", { href: `/game.html?id=${g.game_id}`, text: gameLabel(g) }),
+    el("span", { class: "fd-ondeck-when fd-badge-live", text: "LIVE" }),
+  ])));
+
+  section("Upcoming kickoffs", data.upcoming.map((g) => el("div", { class: "fd-ondeck-row" }, [
+    el("a", { href: `/game.html?id=${g.game_id}`, text: gameLabel(g) }),
+    el("span", { class: "fd-ondeck-when", text: fmtKickoff(g.game_date) }),
+  ])));
+
+  if (data.refresh_queue.length) {
+    mount.appendChild(el("div", { class: "fd-ondeck-label", text: "Refresh queue (Tier 2, most overdue first)" }));
+    mount.appendChild(el("div", { class: "fd-queue", text: data.refresh_queue.join(", ") }));
+  }
+}
+
+// ---- activity card ------------------------------------------------------------
+
+function renderActivity(data) {
+  const mount = document.getElementById("fd-activity-bars");
+  mount.innerHTML = "";
+  const buckets = data.buckets;
+  const max = Math.max(1, ...buckets.map((b) => b.ok + b.error));
+  buckets.forEach((b) => {
+    const total = b.ok + b.error;
+    const col = el("div", { class: "fd-bar-col", title: `${fmtClock(b.bucket_start)} — ${b.ok} ok, ${b.error} error` });
+    const okH = total ? (b.ok / max) * 100 : 0;
+    const errH = total ? (b.error / max) * 100 : 0;
+    if (b.error) col.appendChild(el("i", { class: "fd-bar-error", style: `height:${errH}%` }));
+    if (b.ok) col.appendChild(el("i", { class: "fd-bar-ok", style: `height:${okH}%` }));
+    mount.appendChild(col);
+  });
+}
+
+function renderSources(data) {
+  const body = document.getElementById("fd-source-body");
+  body.innerHTML = "";
+  if (!data.sources_24h.length) {
+    body.appendChild(el("tr", {}, el("td", { text: "No requests in the last 24h.", colspan: "7" })));
+    return;
+  }
+  data.sources_24h.forEach((s) => {
+    body.appendChild(el("tr", {}, [
+      el("td", { text: s.source }),
+      el("td", { class: "num", text: String(s.n) }),
+      el("td", { class: "num", text: String(s.n_error) }),
+      el("td", { class: "num", text: s.p50_latency_ms ?? "—" }),
+      el("td", { class: "num", text: s.p95_latency_ms ?? "—" }),
+      el("td", { text: fmtClock(s.last_ok_at) }),
+      el("td", { text: fmtClock(s.last_error_at) }),
+    ]));
+  });
+}
+
+// ---- recent requests card ------------------------------------------------------
+
+const FILTER_OPTIONS = [
+  { key: "source", label: "Source", options: [["", "All"], ["espn", "ESPN"], ["fox", "Fox"]] },
+  { key: "ok", label: "Status", options: [["", "All"], ["0", "Errors only"]] },
+];
+
+function renderFilters() {
+  const mount = document.getElementById("fd-filters");
+  mount.innerHTML = "";
+  FILTER_OPTIONS.forEach((f) => {
+    const wrap = el("div", { class: "t-filter-options" });
+    f.options.forEach(([value, label]) => {
+      const chip = el("span", {
+        class: "t-chip" + (LOG_FILTERS[f.key] === value ? " active" : ""),
+        text: label,
+      });
+      chip.addEventListener("click", () => {
+        LOG_FILTERS[f.key] = value;
+        OLDEST_LOG_ID = null;
+        renderFilters();
+        loadLog(false);
+      });
+      wrap.appendChild(chip);
+    });
+    mount.appendChild(wrap);
+  });
+}
+
+function logRow(r) {
+  return el("tr", {}, [
+    el("td", { text: fmtClock(r.requested_at) }),
+    el("td", { text: r.source }),
+    el("td", { text: r.endpoint_kind }),
+    el("td", { text: r.caller || "—" }),
+    el("td", { text: r.cycle_seq ?? "—" }),
+    el("td", {}, r.game_id ? el("a", { href: `/game.html?id=${r.game_id}`, text: r.game_id }) : "—"),
+    el("td", { class: "num" + (r.ok ? "" : " fd-err"), text: r.http_status ?? "—" }),
+    el("td", { class: "num", text: r.latency_ms !== null ? `${r.latency_ms}ms` : "—" }),
+    el("td", { class: "num", text: fmtBytes(r.bytes) }),
+    el("td", { class: "fd-err-text", text: r.error || "" }),
+  ]);
+}
+
+async function loadLog(append) {
+  const params = { limit: 100 };
+  if (LOG_FILTERS.source) params.source = LOG_FILTERS.source;
+  if (LOG_FILTERS.ok) params.ok = LOG_FILTERS.ok;
+  if (append && OLDEST_LOG_ID) params.before_id = OLDEST_LOG_ID;
+  const data = await api("/feed/log", params);
+  const body = document.getElementById("fd-log-body");
+  if (!append) { body.innerHTML = ""; LOG_ROWS_SHOWN = 0; }
+  if (!data.rows.length && !append) {
+    body.appendChild(el("tr", {}, el("td", { text: "No requests match this filter.", colspan: "10" })));
+  }
+  data.rows.forEach((r) => body.appendChild(logRow(r)));
+  LOG_ROWS_SHOWN += data.rows.length;
+  if (data.rows.length) OLDEST_LOG_ID = data.rows[data.rows.length - 1].id;
+  document.getElementById("fd-load-more").disabled = data.rows.length < params.limit;
+  document.getElementById("fd-log-count").textContent = `${LOG_ROWS_SHOWN} shown`;
+}
+
+document.getElementById("fd-load-more").addEventListener("click", () => loadLog(true));
+
+// ---- orchestration --------------------------------------------------------------
+
+async function refreshAll() {
+  const [feed, activity] = await Promise.all([api("/feed"), api("/feed/activity", { hours: 24 })]);
+  renderStatus(feed);
+  renderOnDeck(feed);
+  renderSources(feed);
+  renderActivity(activity);
+}
+
+async function tick() {
+  if (document.visibilityState !== "visible") return;
+  try {
+    await refreshAll();
+  } catch (e) {
+    document.getElementById("fd-result-line").textContent = `Failed to refresh: ${e.message}`;
+  }
+}
+
+(async function init() {
+  renderFilters();
+  try {
+    await refreshAll();
+    await loadLog(false);
+  } catch (e) {
+    document.getElementById("fd-result-line").textContent = `Failed to load: ${e.message}`;
+  }
+  setInterval(tick, REFRESH_MS);
+})();
+</script>
+</body>
+</html>

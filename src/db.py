@@ -281,6 +281,69 @@ CREATE TABLE IF NOT EXISTS live_score_history (
     PRIMARY KEY (game_id, computed_at)
 );
 CREATE INDEX IF NOT EXISTS idx_live_hist_game ON live_score_history(game_id, computed_at);
+
+-- One row per outbound HTTP request to an external data source. The only two
+-- functions in the repo that touch the network (src/espn.py's fetch_json and
+-- src/fox.py's fetch_event) both write here, so this is a complete record by
+-- construction -- a third source added later is logged by calling
+-- fetchlog.record() from its own fetch helper.
+--
+-- No FK on game_id on purpose: the Fox id-walk probes event ids that map to no
+-- game at all, and a scoreboard can return a game not yet in `games`. A logging
+-- table must never be able to reject a write (PRAGMA foreign_keys is ON).
+--
+-- Retained indefinitely -- ~2 req/min while polling works out to roughly 50k
+-- rows and ~7MB a season, which is not worth a pruning job.
+CREATE TABLE IF NOT EXISTS fetch_log (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    requested_at   TEXT NOT NULL,        -- ISO8601 UTC, ms precision
+    source         TEXT NOT NULL,        -- 'espn' | 'fox'
+    endpoint_kind  TEXT NOT NULL,        -- 'scoreboard' | 'summary' | 'teams' | 'schedule' | 'event'
+    url            TEXT NOT NULL,        -- API key redacted, see fetchlog._redact
+    caller         TEXT,                 -- 'live' | 'discover' | 'detail' | 'fox-scan' | ...
+    cycle_seq      INTEGER,              -- live poller cycle, NULL outside the poller
+    game_id        TEXT,                 -- ESPN game id when the call is about one game
+    source_ref     TEXT,                 -- source-native id (e.g. the Fox event id)
+    attempt        INTEGER NOT NULL DEFAULT 1,   -- 1-based; Fox retries produce >1
+    ok             INTEGER NOT NULL,     -- 1 = usable response returned to the caller
+    http_status    INTEGER,              -- NULL on a connection/timeout error
+    latency_ms     INTEGER,
+    bytes          INTEGER,
+    error          TEXT                  -- exception class + message, truncated
+);
+CREATE INDEX IF NOT EXISTS idx_fetch_log_time ON fetch_log(requested_at DESC);
+CREATE INDEX IF NOT EXISTS idx_fetch_log_game ON fetch_log(game_id, requested_at DESC);
+CREATE INDEX IF NOT EXISTS idx_fetch_log_bad  ON fetch_log(ok, requested_at DESC);
+
+-- Current intent of a long-running poller: not history (that's fetch_log) but
+-- "what is it about to do", which nothing else in the schema can answer.
+-- src/live.py's _schedule_interval already computes the interval and a
+-- human-readable reason for the log line; this persists that decision so the
+-- Feed page can show it. One row, keyed by poller name.
+--
+-- A dead poller is detected by now() > next_wake_at + slack: run_forever writes
+-- this every cycle, so a stale row IS the outage signal. stopped_at is set on a
+-- clean shutdown to distinguish "deliberately stopped" from "crashed".
+CREATE TABLE IF NOT EXISTS poller_state (
+    poller            TEXT PRIMARY KEY,  -- 'live'
+    pid               INTEGER,
+    mode              TEXT,              -- 'normal' | 'shadow' | 'dry_run'
+    started_at        TEXT,
+    stopped_at        TEXT,              -- non-NULL only after a clean exit
+    cycle_seq         INTEGER,
+    last_cycle_at     TEXT,
+    last_cycle_ms     INTEGER,
+    last_cycle_reqs   INTEGER,
+    last_cycle_error  TEXT,              -- traceback summary if the cycle raised
+    slate_in          INTEGER,
+    slate_post        INTEGER,
+    slate_pre         INTEGER,
+    next_wake_at      TEXT,
+    interval_seconds  REAL,
+    interval_reason   TEXT,              -- verbatim from _schedule_interval
+    hold_awake        INTEGER,
+    updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 
@@ -816,6 +879,41 @@ def append_live_history(conn, game_id, result):
         ) VALUES (?, datetime('now'), ?, ?, ?, ?)
     """, (game_id, result.get("progress"), result.get("live_score"),
           result.get("quality_so_far"), result.get("drama_from_here")))
+
+
+def insert_fetch_log(conn, row):
+    """row: dict with fetch_log's columns (requested_at/source/endpoint_kind/
+    url/ok are the only required keys -- everything else defaults to NULL).
+    Plain INSERT -- there's nothing to conflict on, every request is its own
+    row. Used exclusively by src/fetchlog.py, which owns its own connection
+    and swallows any exception this raises (a logging table must never be
+    able to take down the thing it's observing)."""
+    cols = list(row.keys())
+    placeholders = ", ".join(f":{c}" for c in cols)
+    conn.execute(
+        f"INSERT INTO fetch_log ({', '.join(cols)}) VALUES ({placeholders})",
+        row,
+    )
+
+
+def upsert_poller_state(conn, poller, **fields):
+    """Writes only the columns passed in `fields`, so run_forever can update
+    e.g. just the schedule fields (next_wake_at/interval_seconds/
+    interval_reason/hold_awake) after a sleep decision without clobbering the
+    cycle fields (last_cycle_at/last_cycle_ms/...) written after the prior
+    run_cycle, and vice versa. updated_at always advances regardless of which
+    fields were passed."""
+    cols = list(fields.keys())
+    insert_cols = ["poller"] + cols
+    insert_vals = [poller] + [fields[c] for c in cols]
+    placeholders = ", ".join("?" for _ in insert_cols)
+    update_clause = ", ".join([f"{c} = excluded.{c}" for c in cols] + ["updated_at = datetime('now')"])
+    conn.execute(f"""
+        INSERT INTO poller_state ({', '.join(insert_cols)}, updated_at)
+        VALUES ({placeholders}, datetime('now'))
+        ON CONFLICT(poller) DO UPDATE SET
+            {update_clause}
+    """, insert_vals)
 
 
 def clear_live_score(conn, game_id):

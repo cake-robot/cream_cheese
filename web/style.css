@@ -1538,6 +1538,129 @@ body[data-page="settings"] .settings-frame main {
 }
 .s-search-row:hover { color: var(--g-ink-bright); }
 
+/* ---- feed (fetch_log / poller_state, admin-only) ------------------------
+   Same --g-* token grammar as analytics/settings, reusing .g-card/.an-card-pad/
+   .an-table/.t-title-row/.t-chip/.t-footer unscoped above -- only the bits
+   with no existing analogue (status dot, on-deck rows, activity bars, error
+   highlighting) get new .fd-* classes below. */
+body[data-page="feed"] {
+  --g-ink-dimmest: #3f4a47;
+  --g-ink-dim: #4a5551;
+  --g-ink-muted: #5f6b66;
+  --g-ink-sec: #6e7b75;
+  --g-ink-sec2: #7d8a84;
+  --g-ink-body: #9aa39d;
+  --g-ink-body2: #c6c9c4;
+  --g-ink-strong: #c9c4b6;
+  --g-ink-bright: #e6e3d8;
+  --g-border: #1b2220;
+  --g-border-strong: #232b29;
+  --g-border-strong2: #2b3532;
+  --g-muted-graphic: #3a4441;
+  --g-card: #0b0f0e;
+  --g-card-inset: #0e1211;
+  --g-hairline: #161c1a;
+  --g-accent: #9a2b24;
+  --g-accent-ground: #2a1210;
+  --g-row-hairline: #101514;
+  --g-track: #141a18;
+  --g-chip-border: #3a4441;
+}
+
+body[data-page="feed"] .feed-frame {
+  position: relative;
+  background: var(--surface-0);
+  overflow: hidden;
+}
+body[data-page="feed"] .feed-frame::before {
+  content: "";
+  position: absolute; inset: 0; pointer-events: none; opacity: .055;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+body[data-page="feed"] .feed-frame::after {
+  content: "";
+  position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(120% 80% at 50% -10%, rgba(148, 180, 168, .07), rgba(0, 0, 0, 0) 60%);
+}
+body[data-page="feed"] .feed-frame header.chrome {
+  background: transparent; padding: 0 34px; position: relative;
+}
+body[data-page="feed"] .feed-frame main {
+  max-width: none; margin: 0; padding: 26px 34px 44px; position: relative;
+}
+body[data-page="feed"] main > .g-card { margin-top: 20px; }
+
+/* nav link only ever shown to an admin -- see app.js's initAccountMenu()/
+   initMobileNav(). Hidden by default so there's no flash of it before that
+   async check runs; a direct hit on the routes themselves still 403s for a
+   non-admin regardless (serve.py's _require_admin), this is just UI. */
+[data-admin-only] { display: none; }
+
+/* 1. poller status */
+.fd-status { margin-top: 14px; }
+.fd-dot-row { display: flex; align-items: center; gap: 10px; }
+.fd-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: var(--g-ink-dim); }
+.fd-live .fd-dot { background: var(--good); box-shadow: 0 0 0 3px rgba(122, 158, 110, .18); }
+.fd-stopped .fd-dot { background: var(--g-ink-dim); }
+.fd-stale .fd-dot { background: var(--critical); box-shadow: 0 0 0 3px rgba(184, 67, 58, .18); }
+.fd-dot-label { font-family: var(--font-display); font-size: 13px; letter-spacing: .16em; color: var(--g-ink-bright); }
+.fd-dot-sub { font-family: var(--font-mono); font-size: 11px; color: var(--g-ink-sec); }
+.fd-kv { margin-top: 14px; display: flex; flex-direction: column; }
+.fd-kv-row {
+  display: flex; justify-content: space-between; gap: 16px; padding: 7px 0;
+  border-bottom: 1px solid var(--g-row-hairline); font-family: var(--font-mono); font-size: 12px;
+}
+.fd-kv-key { color: var(--g-ink-sec); flex: none; }
+.fd-kv-val { color: var(--g-ink-body2); text-align: right; overflow-wrap: anywhere; }
+
+/* 2. on deck */
+.fd-ondeck { margin-top: 14px; }
+.fd-ondeck-label {
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: .16em; text-transform: uppercase;
+  color: var(--g-ink-dimmest); margin-top: 16px;
+}
+.fd-ondeck-label:first-child { margin-top: 0; }
+.fd-ondeck-row {
+  display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  padding: 7px 0; border-bottom: 1px solid var(--g-row-hairline);
+  font-family: var(--font-body); font-size: 13px;
+}
+.fd-ondeck-row a { color: var(--g-ink-body2); text-decoration: none; border-bottom: 1px solid var(--g-border-strong2); }
+.fd-ondeck-row a:hover { color: var(--g-ink-bright); }
+.fd-ondeck-when { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .08em; color: var(--g-ink-dimmest); white-space: nowrap; }
+.fd-badge-live { color: var(--g-accent); font-weight: 600; }
+.fd-queue { margin-top: 6px; font-family: var(--font-mono); font-size: 11px; color: var(--g-ink-muted); line-height: 1.6; word-break: break-word; }
+.fd-empty { font-family: var(--font-mono); font-size: 12px; color: var(--g-ink-sec); margin-top: 4px; }
+
+/* 3. activity */
+.fd-activity-bars {
+  display: flex; align-items: flex-end; gap: 1px; height: 70px; margin-top: 16px;
+  border-left: 1px solid var(--g-hairline); border-bottom: 1px solid var(--g-hairline); padding-left: 4px;
+}
+.fd-bar-col { flex: 1; height: 100%; display: flex; flex-direction: column-reverse; min-width: 1px; }
+.fd-bar-ok { display: block; background: var(--g-muted-graphic); }
+.fd-bar-error { display: block; background: var(--g-accent); }
+.fd-source-table { margin-top: 18px; }
+
+/* 4. recent requests */
+.fd-log-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.fd-filters { display: flex; gap: 18px; flex-wrap: wrap; }
+.fd-table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin-top: 14px; }
+.fd-log-table td.fd-err { color: var(--critical); }
+/* Otherwise the game_id link inherits the site-wide default `a` red
+   (--series-1), which reads as an error highlight in a table that already
+   has a real one (td.fd-err) -- muted here to match .fd-ondeck-row a. */
+.fd-log-table a { color: var(--g-ink-body2); text-decoration: none; border-bottom: 1px solid var(--g-border-strong2); }
+.fd-log-table a:hover { color: var(--g-ink-bright); }
+.fd-err-text {
+  color: var(--critical) !important; font-family: var(--font-mono); font-size: 10.5px;
+  max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.fd-log-footer {
+  margin-top: 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  font-family: var(--font-mono); font-size: 10px; color: var(--g-ink-dimmest);
+}
+
 /* =========================================================================
    Mobile (~390-430px phones) -- Mobile Slate/Game Detail/Games/Top games
    handoffs, "a" option on all four (each explicitly the recommended/winning

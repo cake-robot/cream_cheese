@@ -18,7 +18,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, patch
 
-from src import db, live
+from src import db, fetchlog, live
 
 DB_PATH = pathlib.Path(__file__).resolve().parent.parent / "data" / "cfb.db"
 
@@ -216,6 +216,63 @@ class TestSyncCaffeinate(unittest.TestCase):
             result = live._sync_caffeinate(dead, True)
         self.assertIs(result, fresh)
         popen.assert_called_once()
+
+
+class TestPollerStatePersistence(unittest.TestCase):
+    """run_forever's src/fetchlog.py wiring: after a cycle, poller_state
+    should reflect exactly the (period, reason) _schedule_interval itself
+    would compute for the same game state -- persisting a value that
+    already exists, not re-deriving a second one that could drift from it."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db_path = pathlib.Path(self._tmp.name) / "poller_state_test.db"
+        self.conn = db.init_db(self.db_path)
+        fetchlog.configure(caller="live", db_path=str(self.db_path), enabled=True)
+        self._orig_lock_path = live.LOCK_PATH
+        live.LOCK_PATH = str(pathlib.Path(self._tmp.name) / "live.lock")
+
+    def tearDown(self):
+        live.LOCK_PATH = self._orig_lock_path
+        fetchlog.configure(caller=None, db_path=None, enabled=False)
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def test_run_forever_persists_schedule_consistent_with_schedule_interval(self):
+        now = datetime.now(timezone.utc)
+        kick = now + timedelta(minutes=25)
+        _insert_game(self.conn, "g1", _fmt(kick), "pre")
+
+        class _StopLoop(Exception):
+            """Raised from the mocked _sleep_until to escape run_forever's
+            `while True` after exactly one iteration -- once=True would
+            exit before the schedule-write this test is checking (see
+            run_forever: that write only happens on the non-break path)."""
+
+        expected_period, _, expected_reason = live._schedule_interval(self.conn)
+
+        # No real network calls -- Tier 1 would otherwise hit the live
+        # ESPN API. Empty slate keeps run_cycle's own logic (upserts,
+        # completion detection, Tier 2) a no-op so this test is purely
+        # about the schedule-write plumbing around it.
+        with patch.object(live.espn, "fetch_scoreboard_dates", return_value=[]), \
+             patch.object(live, "_sleep_until", side_effect=_StopLoop):
+            with self.assertRaises(_StopLoop):
+                live.run_forever(self.conn, once=False, mode="normal", dates="20260101")
+
+        row = self.conn.execute("SELECT * FROM poller_state WHERE poller='live'").fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(row["cycle_seq"], 1)
+        self.assertEqual(row["interval_reason"], expected_reason)
+        self.assertAlmostEqual(row["interval_seconds"], expected_period, delta=5.0)
+        self.assertIsNotNone(row["next_wake_at"])
+        self.assertIsNotNone(row["started_at"])
+        # _StopLoop is a normal Python exception, so run_forever's `finally`
+        # runs before it propagates out (same as any other exception) and
+        # stamps stopped_at -- only an actual SIGKILL skips Python cleanup
+        # entirely and leaves a genuinely crashed poller's row stopped_at
+        # NULL, which is what makes the field meaningful in production.
+        self.assertIsNotNone(row["stopped_at"])
 
 
 class TestSleepUntil(unittest.TestCase):

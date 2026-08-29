@@ -3,8 +3,34 @@ import logging
 import sys
 from datetime import date
 
-from src import db, espn, fox, fox_match, fox_reconcile, fox_wp, live, live_replay, scoring
+from src import db, espn, fetchlog, fox, fox_match, fox_reconcile, fox_wp, live, live_replay, scoring
 from src.config import DEFAULT_SEASON, FOX_SEASON_ANCHORS, FOX_SCAN_OVERRUN
+
+
+def _caller_label(args):
+    """Best-effort fetch_log.caller for this invocation, in the same order
+    main() dispatches below. One label per process (fetchlog.configure() is
+    called once) -- purely descriptive grouping for the Feed page, never
+    used for control flow, so a run that touches more than one path (e.g.
+    the default discover-then-fetch-details pipeline) just gets the label
+    of whichever branch it entered first."""
+    if args.find_team:
+        return "find-team"
+    if args.live or args.live_once:
+        return "live"
+    if args.fox_event:
+        return "fox-event"
+    if args.fox_pull:
+        return "fox-scan"
+    if args.fox_sync_teams:
+        return "fox-sync-teams"
+    if args.fox_match_games:
+        return "fox-match"
+    if args.seed_teams:
+        return "find-team"
+    if args.game:
+        return "detail"
+    return "discover"
 
 
 def find_team(name_query):
@@ -599,6 +625,22 @@ def main():
                          help="With --live-replay, print an ASCII curve instead of a row table")
     args = parser.parse_args()
 
+    # Hoisted out of the `if args.live or args.live_once:` branch below --
+    # it used to be configured only there, so any logging added elsewhere
+    # (e.g. src/espn.py, src/fox.py) was invisible on every non-live
+    # invocation (bare `just discover`, `just rescore`, ...).
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+
+    # Moved ahead of the --find-team early exit below (it used to run only
+    # right before the branches that actually mutate `games`/etc.) --
+    # find_team() fetches through espn.py same as everything else, and
+    # fetchlog.record() needs the fetch_log table to already exist.
+    # init_db() is idempotent, so running it this early costs nothing on
+    # every other path.
+    conn = db.init_db()
+
+    fetchlog.configure(caller=_caller_label(args))
+
     if args.find_team:
         find_team(args.find_team)
         sys.exit(0)
@@ -624,8 +666,6 @@ def main():
             print(str(e), file=sys.stderr)
             sys.exit(1)
 
-    conn = db.init_db()
-
     if args.live_replay:
         if not args.game:
             print("--live-replay requires --game GAME_ID", file=sys.stderr)
@@ -642,7 +682,6 @@ def main():
         sys.exit(0)
 
     if args.live or args.live_once:
-        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
         interval = args.live_interval  # None -> schedule-aware, see live._schedule_interval
         budget = args.live_budget or live.LIVE_SUMMARY_BUDGET
         if args.live_dry_run:

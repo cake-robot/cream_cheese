@@ -3,6 +3,7 @@ import time
 
 import requests
 
+from . import fetchlog
 from .config import FOX_BASE, FOX_APIKEY, FOX_RATE_LIMIT_SECONDS
 
 _last_request_time = 0.0
@@ -34,18 +35,38 @@ def fetch_event(fox_event_id, attempts=4, backoff_base=2.0):
         elapsed = time.time() - _last_request_time
         if elapsed < FOX_RATE_LIMIT_SECONDS:
             time.sleep(FOX_RATE_LIMIT_SECONDS - elapsed)
+        t0 = time.monotonic()
         try:
             resp = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
             _last_request_time = time.time()
             if resp.status_code == 404:
+                # A legitimate answer on the ID walk, not a failure -- logged
+                # ok=True so it doesn't read as an error storm on the Feed page.
+                fetchlog.record(
+                    "fox", "event", url, ok=True, http_status=404,
+                    latency_ms=int((time.monotonic() - t0) * 1000), bytes=len(resp.content),
+                    attempt=attempt + 1, source_ref=fox_event_id,
+                )
                 return None
             if resp.status_code in (429, 500, 502, 503, 504):
-                raise requests.HTTPError(f"{resp.status_code} on event {fox_event_id}")
+                raise requests.HTTPError(f"{resp.status_code} on event {fox_event_id}", response=resp)
             resp.raise_for_status()
-            return resp.json()
+            data = resp.json()
+            fetchlog.record(
+                "fox", "event", url, ok=True, http_status=resp.status_code,
+                latency_ms=int((time.monotonic() - t0) * 1000), bytes=len(resp.content),
+                attempt=attempt + 1, source_ref=fox_event_id,
+            )
+            return data
         except (requests.RequestException, ValueError) as exc:
             last_exc = exc
             _last_request_time = time.time()
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            fetchlog.record(
+                "fox", "event", url, ok=False, http_status=status,
+                latency_ms=int((time.monotonic() - t0) * 1000), error=exc,
+                attempt=attempt + 1, source_ref=fox_event_id,
+            )
             if attempt < attempts - 1:
                 time.sleep(backoff_base ** attempt)
     raise RuntimeError(

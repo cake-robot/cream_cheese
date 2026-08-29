@@ -354,6 +354,19 @@ async function initAccountMenu() {
   } catch (e) {
     return;
   }
+  // Feed nav link (desktop <nav> + its initMobileNav()-cloned drawer copy,
+  // both carrying data-admin-only) -- one selector covers both since
+  // initMobileNav() already ran by the time this async fetch resolves.
+  // CSS hides [data-admin-only] by default (display:none) so there's no
+  // flash of it before this runs; an admin gets it explicitly revealed
+  // below (there's no other CSS rule for JS to "fall back" to), a
+  // non-admin gets it removed outright. Either way a non-admin still gets
+  // a 403 from the routes themselves (see serve.py's _require_admin) if
+  // they hit the URL directly.
+  document.querySelectorAll("[data-admin-only]").forEach((node) => {
+    if (me.is_admin) node.style.display = node.classList.contains("mnav-item") ? "flex" : "inline";
+    else node.remove();
+  });
   const logout = async () => {
     try { await apiPost("/logout", {}); } catch (e) { /* ignore -- redirect anyway */ }
     location.href = "/login.html";
@@ -382,11 +395,16 @@ function initMobileNav() {
   const navLinks = document.querySelectorAll("header.chrome nav a");
   if (!drawer || !trig || !navLinks.length) return;
   navLinks.forEach((a) => {
-    drawer.appendChild(el("a", {
+    const item = el("a", {
       class: "mnav-item" + (a.getAttribute("aria-current") === "page" ? " on" : ""),
       href: a.getAttribute("href"),
       text: a.textContent,
-    }));
+    });
+    // Carried onto the clone so initAccountMenu()'s later admin check can
+    // find and remove it from the drawer the same way it does the desktop
+    // copy -- see that function for why the removal has to wait for /me.
+    if (a.hasAttribute("data-admin-only")) item.setAttribute("data-admin-only", "");
+    drawer.appendChild(item);
   });
   // Inserted as a child of .mnav-bar (before the drawer), not document.body --
   // .mnav-bar is `position:fixed` and establishes its own stacking context,

@@ -1,26 +1,48 @@
 import time
 import requests
+from . import fetchlog
 from .config import ESPN_BASE, RATE_LIMIT_SECONDS
 
 _last_request_time = 0.0
 
 
-def fetch_json(url):
+def fetch_json(url, kind="unknown", game_id=None, source_ref=None):
+    """`kind`/`game_id`/`source_ref` exist only for src/fetchlog.py's
+    fetch_log rows -- every caller below passes its own kind so a Feed page
+    can tell a scoreboard poll apart from a per-game summary fetch. The
+    RATE_LIMIT_SECONDS sleep happens before timing starts, so latency_ms
+    reflects the server, not our own pacing."""
     global _last_request_time
     elapsed = time.time() - _last_request_time
     if elapsed < RATE_LIMIT_SECONDS:
         time.sleep(RATE_LIMIT_SECONDS - elapsed)
-    resp = requests.get(url, timeout=15)
-    _last_request_time = time.time()
-    resp.raise_for_status()
-    return resp.json()
+    t0 = time.monotonic()
+    try:
+        resp = requests.get(url, timeout=15)
+        _last_request_time = time.time()
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        fetchlog.record(
+            "espn", kind, url, ok=False, http_status=status,
+            latency_ms=int((time.monotonic() - t0) * 1000), error=exc,
+            game_id=game_id, source_ref=source_ref,
+        )
+        raise
+    fetchlog.record(
+        "espn", kind, url, ok=True, http_status=resp.status_code,
+        latency_ms=int((time.monotonic() - t0) * 1000), bytes=len(resp.content),
+        game_id=game_id, source_ref=source_ref,
+    )
+    return data
 
 
 def fetch_scoreboard(season, week=None, season_type=2):
     url = f"{ESPN_BASE}/scoreboard?limit=100&dates={season}&seasontype={season_type}&groups=80"
     if week is not None:
         url += f"&week={week}"
-    data = fetch_json(url)
+    data = fetch_json(url, kind="scoreboard")
     events = data.get("events", [])
     return [parse_scoreboard_game(e) for e in events if e.get("competitions")]
 
@@ -42,14 +64,14 @@ def fetch_scoreboard_dates(dates, limit=200):
     than relying on this call alone to draw the boundary.
     """
     url = f"{ESPN_BASE}/scoreboard?limit={limit}&dates={dates}&groups=80"
-    data = fetch_json(url)
+    data = fetch_json(url, kind="scoreboard")
     events = data.get("events", [])
     return [parse_scoreboard_game(e) for e in events if e.get("competitions")]
 
 
 def fetch_team_schedule(team_id, season):
     url = f"{ESPN_BASE}/teams/{team_id}/schedule?season={season}"
-    data = fetch_json(url)
+    data = fetch_json(url, kind="schedule")
     events = data.get("events", [])
     return [parse_team_schedule_game(e) for e in events if e.get("competitions")]
 
@@ -59,7 +81,7 @@ def fetch_teams_list():
     page = 1
     while True:
         url = f"{ESPN_BASE}/teams?limit=100&page={page}"
-        data = fetch_json(url)
+        data = fetch_json(url, kind="teams")
         items = data.get("sports", [{}])[0].get("leagues", [{}])[0].get("teams", [])
         if not items:
             break
@@ -77,7 +99,7 @@ def fetch_teams_list():
 
 def fetch_game_summary(game_id):
     url = f"{ESPN_BASE}/summary?event={game_id}"
-    return fetch_json(url)
+    return fetch_json(url, kind="summary", game_id=game_id)
 
 
 def _get_rank(competitor):

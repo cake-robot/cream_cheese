@@ -15,7 +15,7 @@ import pathlib
 import secrets
 import sqlite3
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
@@ -431,6 +431,18 @@ def current_user():
         if g.user is None and os.environ.get("CC_DISABLE_AUTH") == "1":
             g.user = users.get_user_by_id(get_users_db(), 1)
     return g.user
+
+
+def _require_admin():
+    """Gate for the Feed page's routes (/api/feed*) -- ops internals (raw
+    URLs, error text, per-caller/per-cycle breakdowns) aren't for a general
+    account the way the rest of the app's read routes are. Call after
+    _require_auth has already run (i.e. from inside a route, not another
+    before_request hook) -- current_user() is guaranteed non-None by then
+    except under CC_DISABLE_AUTH, where it falls back to user_id 1."""
+    user = current_user()
+    if user is None or not user["is_admin"]:
+        abort(403, description="admin only")
 
 
 def _is_loopback(addr):
@@ -2481,6 +2493,219 @@ def api_analytics():
         "correlation": correlation,
         "total_weight": TOTAL_WEIGHT,
     })
+
+
+# ---- feed (fetch_log / poller_state) ---------------------------------------
+#
+# Admin-only observability for the data-source pollers (src/fetchlog.py
+# writes fetch_log/poller_state, src/espn.py and src/fox.py are the only
+# writers of individual rows). Read-only against cfb.db like every other
+# route in this file. None of these three routes select score/
+# watchability_score/live_score -- only matchup labels, kickoff times, and
+# fetch metadata -- so there is nothing here for _assert_no_spoiler_leaks
+# to catch even though it never fires on this payload shape (it only walks
+# dicts carrying spoiler_hidden); see tests/test_feed_api.py, which checks
+# that invariant directly.
+
+def _percentile(values, p):
+    if not values:
+        return None
+    s = sorted(values)
+    return s[min(int(len(s) * p), len(s) - 1)]
+
+
+def _parse_iso(ts):
+    if not ts:
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _feed_game_row(r):
+    return {
+        "game_id": r["game_id"],
+        "away_team_abbr": r["away_team_abbr"],
+        "home_team_abbr": r["home_team_abbr"],
+        "game_date": r["game_date"],
+        "status_state": r["status_state"],
+    }
+
+
+@app.route("/api/feed")
+def api_feed():
+    _require_admin()
+    conn = get_db()
+
+    poller_row = conn.execute("SELECT * FROM poller_state WHERE poller = 'live'").fetchone()
+    poller = dict(poller_row) if poller_row else None
+
+    now = datetime.now(timezone.utc)
+    seconds_since_last_cycle = None
+    seconds_to_next_wake = None
+    if poller:
+        last = _parse_iso(poller.get("last_cycle_at"))
+        if last is not None:
+            seconds_since_last_cycle = (now - last).total_seconds()
+        nxt = _parse_iso(poller.get("next_wake_at"))
+        if nxt is not None:
+            seconds_to_next_wake = (nxt - now).total_seconds()
+
+    # A crash leaves stopped_at NULL forever (only a clean shutdown sets
+    # it), so "running" alone can't tell a live poller from a dead one --
+    # staleness against the poller's own last-declared wake time is what
+    # actually catches that case. 120s of slack over the wake time itself
+    # covers an ordinary cycle's wall-clock run time.
+    running = bool(poller) and poller.get("stopped_at") is None
+    stale = (
+        running and seconds_to_next_wake is not None and seconds_to_next_wake < -120
+    )
+
+    threshold_24h = (now - timedelta(hours=24)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    fetch_rows = conn.execute(
+        "SELECT source, ok, latency_ms, requested_at FROM fetch_log WHERE requested_at >= ?",
+        (threshold_24h,),
+    ).fetchall()
+
+    by_source = {}
+    for r in fetch_rows:
+        b = by_source.setdefault(r["source"], {
+            "n": 0, "n_error": 0, "latencies": [], "last_ok_at": None, "last_error_at": None,
+        })
+        b["n"] += 1
+        if r["ok"]:
+            if r["latency_ms"] is not None:
+                b["latencies"].append(r["latency_ms"])
+            if b["last_ok_at"] is None or r["requested_at"] > b["last_ok_at"]:
+                b["last_ok_at"] = r["requested_at"]
+        else:
+            b["n_error"] += 1
+            if b["last_error_at"] is None or r["requested_at"] > b["last_error_at"]:
+                b["last_error_at"] = r["requested_at"]
+
+    sources = [{
+        "source": src,
+        "n": b["n"],
+        "n_error": b["n_error"],
+        "p50_latency_ms": _percentile(b["latencies"], 0.50),
+        "p95_latency_ms": _percentile(b["latencies"], 0.95),
+        "last_ok_at": b["last_ok_at"],
+        "last_error_at": b["last_error_at"],
+    } for src, b in sorted(by_source.items())]
+
+    live_games = conn.execute("""
+        SELECT game_id, away_team_abbr, home_team_abbr, game_date, status_state
+        FROM games WHERE status_state = 'in' ORDER BY game_date ASC
+    """).fetchall()
+
+    upcoming = conn.execute("""
+        SELECT game_id, away_team_abbr, home_team_abbr, game_date, status_state
+        FROM games WHERE status_state = 'pre' AND game_date >= ?
+        ORDER BY game_date ASC LIMIT 10
+    """, (now.strftime(live.GAME_DATE_FMT),)).fetchall()
+
+    return jsonify({
+        "poller": poller,
+        "running": running,
+        "stale": stale,
+        "seconds_since_last_cycle": seconds_since_last_cycle,
+        "seconds_to_next_wake": seconds_to_next_wake,
+        "sources_24h": sources,
+        "live_games": [_feed_game_row(r) for r in live_games],
+        "upcoming": [_feed_game_row(r) for r in upcoming],
+        "refresh_queue": live._tier2_priority(conn),
+    })
+
+
+@app.route("/api/feed/log")
+def api_feed_log():
+    _require_admin()
+    conn = get_db()
+
+    where, params = [], []
+    for field, col in (("source", "source"), ("kind", "endpoint_kind"), ("caller", "caller"), ("game_id", "game_id")):
+        val = request.args.get(field)
+        if val:
+            where.append(f"{col} = ?")
+            params.append(val)
+
+    ok = request.args.get("ok")
+    if ok is not None:
+        if ok not in ("0", "1"):
+            abort(400, description="ok must be 0 or 1")
+        where.append("ok = ?")
+        params.append(int(ok))
+
+    since = request.args.get("since")
+    if since:
+        where.append("requested_at >= ?")
+        params.append(since)
+
+    before_id = request.args.get("before_id")
+    if before_id:
+        try:
+            where.append("id < ?")
+            params.append(int(before_id))
+        except ValueError:
+            abort(400, description="before_id must be an integer")
+
+    try:
+        limit = min(max(int(request.args.get("limit", 100)), 1), 500)
+    except ValueError:
+        abort(400, description="limit must be an integer")
+
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    rows = conn.execute(f"""
+        SELECT id, requested_at, source, endpoint_kind, url, caller, cycle_seq,
+               game_id, source_ref, attempt, ok, http_status, latency_ms, bytes, error
+        FROM fetch_log
+        {where_sql}
+        ORDER BY id DESC
+        LIMIT ?
+    """, params + [limit]).fetchall()
+
+    return jsonify({"rows": [dict(r) for r in rows], "limit": limit})
+
+
+@app.route("/api/feed/activity")
+def api_feed_activity():
+    _require_admin()
+    conn = get_db()
+    try:
+        hours = min(max(int(request.args.get("hours", 24)), 1), 24 * 14)
+    except ValueError:
+        abort(400, description="hours must be an integer")
+
+    now = datetime.now(timezone.utc)
+    threshold = (now - timedelta(hours=hours)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    rows = conn.execute(
+        "SELECT requested_at, ok FROM fetch_log WHERE requested_at >= ? ORDER BY requested_at ASC",
+        (threshold,),
+    ).fetchall()
+
+    bucket_seconds = 300
+    buckets = {}
+    for r in rows:
+        ts = _parse_iso(r["requested_at"])
+        if ts is None:
+            continue
+        epoch = int(ts.timestamp())
+        bucket_start = epoch - (epoch % bucket_seconds)
+        b = buckets.setdefault(bucket_start, {"ok": 0, "error": 0})
+        if r["ok"]:
+            b["ok"] += 1
+        else:
+            b["error"] += 1
+
+    buckets_out = [{
+        "bucket_start": datetime.fromtimestamp(start, tz=timezone.utc)
+                                 .isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+        "ok": b["ok"],
+        "error": b["error"],
+    } for start, b in sorted(buckets.items())]
+
+    return jsonify({"hours": hours, "bucket_seconds": bucket_seconds, "buckets": buckets_out})
 
 
 # ---- spoiler policy ---------------------------------------------------------

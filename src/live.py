@@ -32,7 +32,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from . import db, espn, scoring
+from . import db, espn, fetchlog, scoring
 
 logger = logging.getLogger(__name__)
 
@@ -879,36 +879,43 @@ def run_cycle(conn, cycle_seq, summary_budget=LIVE_SUMMARY_BUDGET, mode="normal"
     """
     One poll cycle: Tier 1 (one scoreboard call covering the whole slate),
     completion detection, Tier 2 (budgeted per-game WP refresh). Returns
-    wall-clock seconds elapsed, so run_forever can sleep the remainder of
-    the interval rather than stacking a fixed sleep on top of it.
+    {"elapsed": wall-clock seconds, "n_requests": int, "counts": {status_state: n}}
+    -- run_forever uses "elapsed" to sleep the remainder of the interval
+    rather than stacking a fixed sleep on top of it, and "n_requests"/
+    "counts" to populate poller_state without re-deriving them.
     """
     t0 = time.monotonic()
     if dates is None:
         dates = _et_today_tomorrow()
 
-    games = espn.fetch_scoreboard_dates(dates)
-    n_requests = 1
+    # cycle_seq tags every fetch_log row this cycle produces (Tier 1's
+    # scoreboard call and every Tier 2 summary fetch below), so the Feed
+    # page can group requests by cycle without threading cycle_seq through
+    # espn.fetch_json's call sites individually.
+    with fetchlog.context(cycle_seq=cycle_seq):
+        games = espn.fetch_scoreboard_dates(dates)
+        n_requests = 1
 
-    if mode != "dry_run":
-        with conn:
-            for g in games:
-                db.upsert_game(conn, g)
+        if mode != "dry_run":
+            with conn:
+                for g in games:
+                    db.upsert_game(conn, g)
 
-    if mode != "dry_run":
-        previously_live = set(db.live_game_ids(conn))
-        now_completed = {g["game_id"] for g in games if g["completed"]}
-        newly_completed = [gid for gid in previously_live if gid in now_completed]
-        if newly_completed:
-            handle_completions(conn, newly_completed, mode=mode)
+        if mode != "dry_run":
+            previously_live = set(db.live_game_ids(conn))
+            now_completed = {g["game_id"] for g in games if g["completed"]}
+            newly_completed = [gid for gid in previously_live if gid in now_completed]
+            if newly_completed:
+                handle_completions(conn, newly_completed, mode=mode)
 
-    if mode == "dry_run":
-        targets = [g["game_id"] for g in games if g["status_state"] == "in"][:summary_budget]
-    else:
-        targets = _tier2_priority(conn)[:summary_budget]
+        if mode == "dry_run":
+            targets = [g["game_id"] for g in games if g["status_state"] == "in"][:summary_budget]
+        else:
+            targets = _tier2_priority(conn)[:summary_budget]
 
-    for gid in targets:
-        _process_live_game(conn, gid, cycle_seq, mode=mode)
-        n_requests += 1
+        for gid in targets:
+            _process_live_game(conn, gid, cycle_seq, mode=mode)
+            n_requests += 1
 
     elapsed = time.monotonic() - t0
     counts = {}
@@ -919,7 +926,7 @@ def run_cycle(conn, cycle_seq, summary_budget=LIVE_SUMMARY_BUDGET, mode="normal"
         cycle_seq, len(games), counts.get("in", 0), counts.get("post", 0), counts.get("pre", 0),
         n_requests, elapsed,
     )
-    return elapsed
+    return {"elapsed": elapsed, "n_requests": n_requests, "counts": counts}
 
 
 def run_forever(conn, interval=None, summary_budget=LIVE_SUMMARY_BUDGET,
@@ -968,16 +975,36 @@ def run_forever(conn, interval=None, summary_budget=LIVE_SUMMARY_BUDGET,
             reconcile_on_start(conn)
         except Exception:
             logger.exception("live: reconcile_on_start failed -- continuing anyway")
+        # stopped_at explicitly cleared (not just left from a prior row) so a
+        # restart after a clean shutdown doesn't read as still-stopped.
+        fetchlog.record_poller_state(
+            "live", pid=os.getpid(), mode=mode,
+            started_at=fetchlog.now_iso(), stopped_at=None,
+        )
 
     cycle_seq = 0
     try:
         while True:
             cycle_seq += 1
+            cycle_result = None
+            cycle_error = None
             try:
-                elapsed = run_cycle(conn, cycle_seq, summary_budget=summary_budget, mode=mode, dates=dates)
-            except Exception:
+                cycle_result = run_cycle(conn, cycle_seq, summary_budget=summary_budget, mode=mode, dates=dates)
+                elapsed = cycle_result["elapsed"]
+            except Exception as exc:
                 logger.exception("live: cycle %d failed -- continuing", cycle_seq)
                 elapsed = 0.0
+                cycle_error = f"{type(exc).__name__}: {exc}"
+
+            if mode != "dry_run":
+                counts = cycle_result["counts"] if cycle_result else {}
+                fetchlog.record_poller_state(
+                    "live", cycle_seq=cycle_seq,
+                    last_cycle_at=fetchlog.now_iso(), last_cycle_ms=int(elapsed * 1000),
+                    last_cycle_reqs=cycle_result["n_requests"] if cycle_result else None,
+                    last_cycle_error=cycle_error,
+                    slate_in=counts.get("in"), slate_post=counts.get("post"), slate_pre=counts.get("pre"),
+                )
 
             if once or stop["flag"] or _deadline_passed():
                 if deadline is not None and not stop["flag"] and not once:
@@ -1004,9 +1031,19 @@ def run_forever(conn, interval=None, summary_budget=LIVE_SUMMARY_BUDGET,
             if period > LIVE_INTERVAL_SECONDS:
                 logger.info("live: idle -- sleeping %.0fs (%s)", sleep_for, reason)
 
+            if mode != "dry_run":
+                wake_at_dt = datetime.now(timezone.utc) + timedelta(seconds=sleep_for)
+                fetchlog.record_poller_state(
+                    "live",
+                    next_wake_at=wake_at_dt.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+                    interval_seconds=period, interval_reason=reason, hold_awake=int(hold_awake),
+                )
+
             wake_at = time.time() + sleep_for
             _sleep_until(wake_at, lambda: stop["flag"], _deadline_passed)
     finally:
+        if mode != "dry_run":
+            fetchlog.record_poller_state("live", stopped_at=fetchlog.now_iso())
         caffeinate = _sync_caffeinate(caffeinate, False)
         if lock_fd is not None:
             _release_lock(lock_fd)
