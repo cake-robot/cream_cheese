@@ -1279,48 +1279,106 @@ function groupedBars(mount, rows) {
 }
 
 /* ---------------------------------------------------------------------
- * multiLine -- mean score by week, one line per season.
+ * liveScoreChart -- how the live recommendation has moved over the course
+ * of a single in-progress game. One sample per poll tick, so no per-point
+ * dots (there can be dozens) -- just the line plus a single hover/keyboard
+ * crosshair marker, same pattern as wpChart. `rows` is live_history:
+ * [{progress, live_score, ...}, ...] in chronological order.
  * ------------------------------------------------------------------- */
-function multiLine(mount, byWeek) {
-  const seasons = Object.keys(byWeek).sort();
+function liveScoreChart(mount, rows) {
   const W = 720, H = 220;
-  const margin = { top: 14, right: 50, bottom: 26, left: 40 };
+  const margin = { top: 14, right: 20, bottom: 16, left: 40 };
   const plotW = W - margin.left - margin.right;
   const plotH = H - margin.top - margin.bottom;
-  const allWeeks = [].concat(...seasons.map((s) => byWeek[s].map((r) => r.week)));
-  const maxWeek = Math.max(...allWeeks, 1);
-  const allScores = [].concat(...seasons.map((s) => byWeek[s].map((r) => r.avg_score)));
-  const maxScore = Math.max(...allScores, 0.01) * 1.15;
-  const x = linScale([1, maxWeek], [margin.left, margin.left + plotW]);
+  const n = rows.length;
+  const maxScore = Math.max(...rows.map((r) => r.live_score), 0.01) * 1.15;
+  const x = linScale([0, Math.max(n - 1, 1)], [margin.left, margin.left + plotW]);
   const y = linScale([0, maxScore], [margin.top + plotH, margin.top]);
-  const colors = ["var(--series-1)", "var(--series-2)"];
 
-  const root = svg("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Mean watchability score by week" });
+  function progressLabel(p) {
+    if (p === null || p === undefined) return "";
+    if (p >= 1) return "Overtime";
+    return `Q${Math.min(4, Math.floor(p * 4) + 1)}`;
+  }
+
+  const root = svg("svg", {
+    viewBox: `0 0 ${W} ${H}`, role: "img", tabindex: "0",
+    "aria-label": "Live score over the course of the game",
+  });
   [0, 0.25, 0.5, 0.75, 1].forEach((f) => {
     const v = maxScore * f;
     root.appendChild(svg("line", { x1: margin.left, x2: margin.left + plotW, y1: y(v).toFixed(1), y2: y(v).toFixed(1), stroke: "var(--grid)", "stroke-width": "1", "vector-effect": "non-scaling-stroke" }));
   });
 
-  seasons.forEach((s, si) => {
-    const rows = byWeek[s].slice().sort((a, b) => a.week - b.week);
-    const path = rows.map((r, i) => `${i === 0 ? "M" : "L"}${x(r.week).toFixed(1)},${y(r.avg_score).toFixed(1)}`).join(" ");
-    root.appendChild(svg("path", { d: path, fill: "none", stroke: colors[si % 2], "stroke-width": "2", "vector-effect": "non-scaling-stroke", "stroke-linejoin": "round" }));
-    rows.forEach((r) => {
-      const c = svg("circle", { cx: x(r.week).toFixed(1), cy: y(r.avg_score).toFixed(1), r: "4", fill: colors[si % 2], stroke: "var(--surface-1)", "stroke-width": "2" });
-      c.addEventListener("pointermove", (ev) => showTooltip(`<div class="tt-value">${r.avg_score.toFixed(3)}</div><div class="tt-sub">${s} week ${r.week} · n=${r.n}</div>`, ev.clientX, ev.clientY));
-      c.addEventListener("pointerleave", hideTooltip);
-      root.appendChild(c);
-    });
-    const last = rows[rows.length - 1];
-    if (last) root.appendChild(svgText(x(last.week) + 6, y(last.avg_score) + 3, s, { "font-size": "11", fill: colors[si % 2], "font-weight": "600" }));
+  const path = rows.map((r, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(r.live_score).toFixed(1)}`).join(" ");
+  root.appendChild(svg("path", {
+    d: path, fill: "none", stroke: "var(--series-1)", "stroke-width": "2",
+    "stroke-linejoin": "round", "stroke-linecap": "round", "vector-effect": "non-scaling-stroke",
+  }));
+
+  // hover / keyboard crosshair -- single marker at the sample under the
+  // cursor, not one dot per sample.
+  const crosshair = svg("line", {
+    x1: 0, x2: 0, y1: margin.top, y2: margin.top + plotH,
+    stroke: "var(--ink-muted)", "stroke-width": "1", "vector-effect": "non-scaling-stroke",
+    visibility: "hidden",
+  });
+  const crossDot = svg("circle", { r: "4", fill: "var(--series-1)", stroke: "var(--surface-1)", "stroke-width": "2", visibility: "hidden" });
+  root.appendChild(crosshair);
+  root.appendChild(crossDot);
+
+  function moveTo(idx, clientX, clientY) {
+    idx = Math.max(0, Math.min(n - 1, idx));
+    const r = rows[idx];
+    const px = x(idx);
+    crosshair.setAttribute("x1", px.toFixed(1));
+    crosshair.setAttribute("x2", px.toFixed(1));
+    crosshair.setAttribute("visibility", "visible");
+    crossDot.setAttribute("cx", px.toFixed(1));
+    crossDot.setAttribute("cy", y(r.live_score).toFixed(1));
+    crossDot.setAttribute("visibility", "visible");
+    const html = `<div class="tt-value">${r.live_score.toFixed(3)}</div>` +
+      `<div class="tt-sub">${progressLabel(r.progress)}</div>`;
+    if (clientX !== undefined) showTooltip(html, clientX, clientY);
+  }
+
+  const hitRect = svg("rect", { x: margin.left, y: margin.top, width: plotW, height: plotH, fill: "transparent" });
+  hitRect.addEventListener("pointermove", (ev) => {
+    const rect = root.getBoundingClientRect();
+    const scale = W / rect.width;
+    const localX = (ev.clientX - rect.left) * scale;
+    const idx = Math.round((localX - margin.left) / plotW * (n - 1));
+    moveTo(idx, ev.clientX, ev.clientY);
+  });
+  hitRect.addEventListener("pointerleave", () => {
+    crosshair.setAttribute("visibility", "hidden");
+    crossDot.setAttribute("visibility", "hidden");
+    hideTooltip();
+  });
+  root.appendChild(hitRect);
+
+  let focusIdx = 0;
+  root.addEventListener("keydown", (ev) => {
+    if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(ev.key)) ev.preventDefault();
+    if (ev.key === "ArrowLeft") focusIdx -= 1;
+    else if (ev.key === "ArrowRight") focusIdx += 1;
+    else if (ev.key === "Home") focusIdx = 0;
+    else if (ev.key === "End") focusIdx = n - 1;
+    else return;
+    const rect = root.getBoundingClientRect();
+    const px = x(Math.max(0, Math.min(n - 1, focusIdx))) / W * rect.width + rect.left;
+    const py = rect.top + rect.height / 2;
+    moveTo(focusIdx, px, py);
+  });
+  root.addEventListener("blur", () => {
+    crosshair.setAttribute("visibility", "hidden");
+    crossDot.setAttribute("visibility", "hidden");
+    hideTooltip();
   });
 
-  mount.appendChild(el("div", { class: "chart-key" }, seasons.map((s, si) =>
-    el("span", { class: "k" }, [el("span", { class: "line", style: `background:${colors[si % 2]}` }), s]))));
   mount.appendChild(el("div", { class: "viz" }, root));
-  const twinRows = [];
-  seasons.forEach((s) => byWeek[s].forEach((r) => twinRows.push([s, String(r.week), r.avg_score.toFixed(4), String(r.n)])));
-  mount.appendChild(tableTwin("Show as table", ["Season", "Week", "Mean score", "N"], twinRows));
+  const twinRows = rows.map((r, i) => [String(i + 1), progressLabel(r.progress) || "—", r.live_score.toFixed(4)]);
+  mount.appendChild(tableTwin("Show as table", ["Update #", "Game clock", "Live score"], twinRows));
 }
 
 /* ---------------------------------------------------------------------
