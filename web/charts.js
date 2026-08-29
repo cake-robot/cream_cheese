@@ -205,7 +205,6 @@ function wpDualCard(mount, wp, game) {
       label: `${d.pts}`,
       labelTop: ((tip + (up ? -14 : 14)) / LH) * 100,
       labelFill: d.team === "home" ? "var(--g-ink-body2)" : "var(--g-accent-tint)",
-      scorer: `${d.team === "home" ? homeAbbr : awayAbbr} +${d.pts}`,
       i: d.i, team: d.team, pts: d.pts, from, to, home: d.home, away: d.away,
     };
   });
@@ -255,7 +254,6 @@ function wpDualCard(mount, wp, game) {
   ladderBars.forEach((b) => {
     const left = (b.cx / 10).toFixed(2) + "%";
     ladderWrap.appendChild(el("span", { class: "g-ladder-value", style: `left:${left}; top:${b.labelTop}%; color:${b.labelFill}` }, b.label));
-    ladderWrap.appendChild(el("span", { class: "g-ladder-scorer", style: `left:${left}; top:${((LH - 10) / LH) * 100}%` }, b.scorer));
   });
 
   mount.appendChild(plotWrap);
