@@ -70,12 +70,14 @@ WP_NOW_DEVIATION_LOG_THRESHOLD = 0.30
 REGULATION_SECONDS = scoring.REGULATION_SECONDS  # 3600, shared with scoring.py
 
 # --- Refresh loop ---
-LIVE_INTERVAL_SECONDS = 60
+LIVE_INTERVAL_SECONDS = 600
 # Tier 2 (per-game /summary fetch) budget per cycle. ~40 simultaneous live
-# games x 1 request each would be 41s of a 60s cycle with zero headroom;
-# 25 leaves ~34s and relies on the priority ordering below to still cover
-# every live game within LIVE_MAX_STALENESS_SECONDS.
-LIVE_SUMMARY_BUDGET = 25
+# games x 1 request each would be ~40s of a 600s cycle -- comfortable
+# headroom even without relying on the priority ordering below, but the
+# budget is kept below the realistic max concurrent slate size (rather than
+# unbounded) so a pathological/duplicated slate can't turn one cycle into an
+# unbounded request burst.
+LIVE_SUMMARY_BUDGET = 50
 LIVE_MAX_STALENESS_SECONDS = 300
 LIVE_ALWAYS_REFRESH_PROGRESS = 0.85
 
