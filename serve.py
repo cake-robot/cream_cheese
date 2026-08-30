@@ -9,6 +9,7 @@ Run from anywhere:
     ./venv/bin/python serve.py
 """
 
+import bisect
 import json
 import os
 import pathlib
@@ -661,6 +662,35 @@ def percentile_from_rank(rank, n):
     if rank is None or not n:
         return None
     return int((n - rank) * 100 // n)
+
+
+# Minimum percentile (among every scored game's value for that same metric)
+# a metric must clear to appear in a "Top games" row's top_contributors --
+# keeps the "Driven by X + Y" line from naming a metric that barely moved
+# the needle just because it happened to be this game's highest of a weak set.
+TOP_CONTRIBUTOR_PERCENTILE_MIN = 60
+
+
+def fetch_metric_distributions(conn):
+    """Sorted norm_value list per metric name, across every scored game's
+    game_metrics rows -- the reference population metric_percentile() ranks
+    a single game's value against."""
+    rows = conn.execute(
+        "SELECT metric_name, norm_value FROM game_metrics ORDER BY metric_name, norm_value"
+    ).fetchall()
+    dists = {}
+    for r in rows:
+        dists.setdefault(r["metric_name"], []).append(r["norm_value"])
+    return dists
+
+
+def metric_percentile(sorted_vals, v):
+    """'Better than X% of games' for a single metric's value, same
+    nearest-rank convention as percentile_from_rank (count strictly below,
+    over population size)."""
+    if not sorted_vals:
+        return None
+    return bisect.bisect_left(sorted_vals, v) * 100 // len(sorted_vals)
 
 
 def build_metrics_map(metric_rows):
@@ -2219,14 +2249,16 @@ def api_top():
         ).fetchall()
         game_ids = [r["game_id"] for r in rows]
         metrics_by_game = fetch_metrics_maps(conn, game_ids)
+        metric_dists = fetch_metric_distributions(conn)
         fox_diff_ids = fetch_fox_diff_game_ids(conn, game_ids)
         results = []
         for i, row in enumerate(rows, start=1):
             m_map = metrics_by_game.get(row["game_id"], {})
-            top2 = sorted(
-                ((n, v["weighted"]) for n, v in m_map.items() if v is not None),
-                key=lambda t: t[1], reverse=True,
-            )[:2]
+            qualifying = (
+                (n, v["weighted"]) for n, v in m_map.items() if v is not None
+                and (metric_percentile(metric_dists.get(n, []), v["norm"]) or 0) >= TOP_CONTRIBUTOR_PERCENTILE_MIN
+            )
+            top2 = sorted(qualifying, key=lambda t: t[1], reverse=True)[:2]
             results.append({
                 "rank": i,
                 "game": shape_game(
