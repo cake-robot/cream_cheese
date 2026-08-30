@@ -1687,12 +1687,34 @@ body[data-page="feed"] main > .g-card { margin-top: 20px; }
   right: 0;
   z-index: 30;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   height: 54px;
   padding: 0 16px;
   border-bottom: 1px solid var(--grid);
   background: var(--surface-1);
 }
+/* The page name IS the trigger -- clicking/tapping it (not a separate
+   "Menu" label) opens the drawer. The chevron riding right after the name
+   is the standard affordance for "this label opens something" (same idea
+   as a <select>'s arrow or an OS menu-bar item), so no extra text label is
+   needed to explain the interaction. Negative margin + matching padding
+   extends the tap target to the bar's edges without shifting the visible
+   text, and covers the bar's full height for an easy thumb hit. */
+.mnav-trig {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 54px;
+  margin: 0 -16px;
+  padding: 0 16px;
+  cursor: pointer;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  -webkit-tap-highlight-color: transparent;
+}
+.mnav-trig:active { background: var(--surface-2); }
 .mnav-page-title {
   font-family: var(--font-display);
   font-weight: 500;
@@ -1701,32 +1723,15 @@ body[data-page="feed"] main > .g-card { margin-top: 20px; }
   color: var(--ink-1);
   text-transform: uppercase;
 }
-.mnav-trig {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  height: 44px;
-  padding: 0 4px 0 10px;
-  margin-right: -10px;
-  cursor: pointer;
-  background: none;
-  border: none;
-  color: inherit;
-  font: inherit;
-}
-.mnav-trig .t {
-  font-family: var(--font-display);
-  font-size: 11px;
-  letter-spacing: .2em;
-  color: #9aa39d;
-  text-transform: uppercase;
-}
 .mnav-trig .c {
-  font-size: 11px;
-  color: var(--grid-2);
+  font-size: 12px;
+  color: var(--ink-1);
+  opacity: .5;
   display: inline-block;
-  transition: transform .15s;
+  transition: transform .15s, opacity .15s;
 }
+.mnav-trig:active .c,
+.mnav-trig .c.up { opacity: .9; }
 .mnav-trig .c.up { transform: rotate(180deg); }
 .mnav-drawer {
   position: absolute;
