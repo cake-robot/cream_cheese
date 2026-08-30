@@ -481,13 +481,26 @@ def _next_et_deadline(until_str):
 
 
 def _et_today_tomorrow():
-    """ESPN's scoreboard `dates` param is interpreted in US/Eastern (verified
-    live); span today through tomorrow ET so a 9pm PT Saturday kickoff
-    (00:xx ET Sunday) isn't dropped from a 'today' pull."""
+    """ESPN's scoreboard `dates` param is interpreted in US/Eastern, and a
+    game stays bucketed under its kickoff's ET calendar date for its entire
+    duration (verified live) -- range end is exclusive (verified live: a
+    "date-date" pair returns dates in [start, end), never including end).
+
+    Span yesterday through tomorrow ET (3 days). Yesterday matters even
+    though this runs every cycle: a 9pm PT Saturday kickoff still sits in
+    ET-Saturday's bucket at 10pm ET, but this function is called anew every
+    poll cycle, and ET midnight can pass *while that game is still live*
+    (confirmed 2026-08-29/30: a 7pm PT UNLV/Memphis kickoff crossed ET
+    midnight at halftime; "today" flipped to Sunday, the game's Saturday
+    bucket dropped out of the window, and it stopped being polled --
+    live_updated_at/status_detail froze at "Halftime" for hours). Including
+    yesterday keeps a late kickoff in the window through its own ET-day
+    rollover, not just through the poller's."""
     et = ZoneInfo("America/New_York")
     today = datetime.now(et).date()
-    tomorrow = today + timedelta(days=1)
-    return f"{today:%Y%m%d}-{tomorrow:%Y%m%d}"
+    yesterday = today - timedelta(days=1)
+    day_after_tomorrow = today + timedelta(days=2)
+    return f"{yesterday:%Y%m%d}-{day_after_tomorrow:%Y%m%d}"
 
 
 _SCHEDULE_SQL = """
