@@ -155,6 +155,7 @@ def fetch_details(conn, game_ids=None):
         with conn:
             if wp_rows:
                 db.upsert_win_probability(conn, wp_rows)
+            db.upsert_game_raw_json(conn, game_id, summary)
             db.mark_detail_fetched(conn, game_id, home_score, away_score, attendance, initial_home_wp)
 
     print(f"Detail fetch complete: {n} games processed.")

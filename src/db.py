@@ -1,3 +1,5 @@
+import gzip
+import json
 import sqlite3
 from .config import DB_PATH
 
@@ -105,6 +107,19 @@ CREATE TABLE IF NOT EXISTS game_metrics (
     raw_value   REAL NOT NULL,
     norm_value  REAL NOT NULL,
     PRIMARY KEY (game_id, metric_name)
+);
+
+-- Archive of ESPN's full /summary payload for completed games, gzip-
+-- compressed. Captured for free alongside the detail fetch fetch_details()
+-- already does for WP/score parsing -- no extra network call. Escape hatch
+-- for fields not (yet) parsed into the schema (down/distance, boxscore,
+-- odds, drive results, ...) without re-fetching from ESPN.
+CREATE TABLE IF NOT EXISTS game_raw_json (
+    game_id          TEXT PRIMARY KEY REFERENCES games(game_id),
+    raw_json_gzip    BLOB NOT NULL,
+    raw_size         INTEGER NOT NULL,
+    compressed_size  INTEGER NOT NULL,
+    fetched_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 -- Fox Sports scoring-sequence pull. Standalone from `games` on purpose --
@@ -644,6 +659,31 @@ def upsert_game_metrics(conn, game_id, breakdown):
             raw_value  = excluded.raw_value,
             norm_value = excluded.norm_value
     """, rows)
+
+
+def upsert_game_raw_json(conn, game_id, summary):
+    """Archive ESPN's full /summary payload for `game_id`, gzip-compressed."""
+    raw = json.dumps(summary, separators=(",", ":")).encode("utf-8")
+    compressed = gzip.compress(raw, compresslevel=9)
+    conn.execute("""
+        INSERT INTO game_raw_json (game_id, raw_json_gzip, raw_size, compressed_size)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(game_id) DO UPDATE SET
+            raw_json_gzip   = excluded.raw_json_gzip,
+            raw_size        = excluded.raw_size,
+            compressed_size = excluded.compressed_size,
+            fetched_at      = datetime('now')
+    """, (game_id, compressed, len(raw), len(compressed)))
+
+
+def get_game_raw_json(conn, game_id):
+    """Return the archived ESPN /summary payload for `game_id` as a dict, or None."""
+    row = conn.execute(
+        "SELECT raw_json_gzip FROM game_raw_json WHERE game_id = ?", (game_id,)
+    ).fetchone()
+    if not row:
+        return None
+    return json.loads(gzip.decompress(row["raw_json_gzip"]))
 
 
 def upsert_fox_event(conn, event):
