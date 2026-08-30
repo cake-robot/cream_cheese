@@ -161,6 +161,45 @@ def fetch_details(conn, game_ids=None):
     print(f"Detail fetch complete: {n} games processed.")
 
 
+def backfill_raw_json(conn, limit):
+    """Archive game_raw_json for games that were detail-fetched before that
+    table existed. Incremental and resumable by design (default cap of
+    `limit` games/run, oldest game_date first) -- meant to be re-run
+    periodically rather than pulling the whole backlog in one shot, since
+    (unlike fetch_details()) this path re-fetches from ESPN and costs a
+    real request per game."""
+    rows = conn.execute("""
+        SELECT g.game_id, g.away_team_abbr, g.home_team_abbr
+        FROM games g
+        LEFT JOIN game_raw_json r ON r.game_id = g.game_id
+        WHERE g.completed = 1 AND g.detail_fetched = 1 AND r.game_id IS NULL
+        ORDER BY g.game_date
+        LIMIT ?
+    """, (limit,)).fetchall()
+
+    total_remaining = conn.execute("""
+        SELECT COUNT(*) FROM games g
+        LEFT JOIN game_raw_json r ON r.game_id = g.game_id
+        WHERE g.completed = 1 AND g.detail_fetched = 1 AND r.game_id IS NULL
+    """).fetchone()[0]
+
+    n = len(rows)
+    if n == 0:
+        print("0 games need raw JSON backfill.")
+        return
+
+    for i, row in enumerate(rows, 1):
+        game_id = row["game_id"]
+        label = f"{row['away_team_abbr']} @ {row['home_team_abbr']}"
+        print(f"Backfilling raw JSON {i}/{n}: {label} ({game_id})...")
+        summary = espn.fetch_game_summary(game_id)
+        with conn:
+            db.upsert_game_raw_json(conn, game_id, summary)
+
+    print(f"Raw JSON backfill complete: {n} games fetched, "
+          f"{total_remaining - n} still remaining.")
+
+
 def handle_game_arg(conn, game_id):
     """Ensure a game row exists when --game is specified; return [game_id]."""
     row = conn.execute("SELECT game_id FROM games WHERE game_id = ?", (game_id,)).fetchone()
@@ -562,6 +601,13 @@ def main():
     parser.add_argument("--skip-scoring", action="store_true", help="Skip Phase 3 scoring")
     parser.add_argument("--rescore", action="store_true", help="Re-score already-scored games")
     parser.add_argument("--compute-sequences", action="store_true", help="Compute play_sequence for all WP rows")
+    parser.add_argument("--backfill-raw-json", action="store_true",
+                         help="Archive ESPN's full /summary JSON (gzip) into game_raw_json for "
+                              "already detail-fetched games missing it -- incremental, capped by "
+                              "--backfill-raw-json-limit; re-fetches from ESPN (not free like the "
+                              "normal detail-fetch path), safe to re-run repeatedly")
+    parser.add_argument("--backfill-raw-json-limit", type=int, default=25, metavar="N",
+                         help="Max games to fetch per --backfill-raw-json run (default 25)")
     parser.add_argument("--find-team", type=str, metavar="NAME")
     parser.add_argument("--seed-teams", action="store_true", help="Populate teams table from ESPN teams list")
     parser.add_argument("--fox-pull", action="store_true",
@@ -743,6 +789,10 @@ def main():
         game_id = args.game if args.game else None
         n = db.compute_play_sequences(conn, game_id=game_id)
         print(f"play_sequence computed for {n} game(s).")
+        sys.exit(0)
+
+    if args.backfill_raw_json:
+        backfill_raw_json(conn, args.backfill_raw_json_limit)
         sys.exit(0)
 
     if args.score_only:
