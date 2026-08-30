@@ -319,7 +319,7 @@ function renderCompletedSection(games) {
   if (games.some((g) => g.spoiler_hidden)) {
     wrap.appendChild(el("div", {
       class: "slate-note",
-      text: "Ranked most to least watchable — scores hidden for spoiler-protected games.",
+      text: "Ranked by watchability",
     }));
   }
   const list = el("div", { class: "slate-list" });
