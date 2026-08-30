@@ -1415,10 +1415,11 @@ def _tuesday_window(local_date, tz):
     (early-week MACtion games belong with the *upcoming* weekend, not the
     one just past) and its last game is almost always Sat, occasionally
     trailing to Sun/Mon -- so Tue->Mon, not the calendar Mon->Sun week, is
-    the real boundary.
+    the real boundary. The weekday math itself lives in src/live.py's
+    _week_tuesday, shared with the live poller's own week-anchor cadence
+    (_schedule_interval) so the two agree on what "the week" means.
     """
-    tue_offset = (local_date.weekday() - 1) % 7
-    tuesday = local_date - timedelta(days=tue_offset)
+    tuesday = live._week_tuesday(local_date)
     window_start = datetime(tuesday.year, tuesday.month, tuesday.day, tzinfo=tz)
     return window_start, window_start + timedelta(days=7)
 

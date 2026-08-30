@@ -96,7 +96,8 @@ let LOG_ROWS_SHOWN = 0;
 function _durationLabel(abs) {
   return abs < 60 ? `${Math.round(abs)}s`
     : abs < 3600 ? `${Math.round(abs / 60)}m`
-    : `${(abs / 3600).toFixed(1)}h`;
+    : abs < 86400 ? `${(abs / 3600).toFixed(1)}h`
+    : `${(abs / 86400).toFixed(1)}d`;
 }
 // seconds_since_last_cycle: always >= 0 (a cycle already happened).
 function fmtRelative(seconds) {

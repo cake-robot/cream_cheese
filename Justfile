@@ -119,10 +119,15 @@ logs-serve:
 
 # Discover+fetch+score a specific week. Also what keeps the schedule the
 # poller's own cadence depends on from rotting -- a never-discovered game
-# self-heals within 30min once it's in the today/tomorrow window (see
-# _schedule_interval), but stays invisible before that. season_type=3
+# stays invisible to _schedule_interval until it's discovered. season_type=3
 # (postseason) isn't covered by season-long discovery at all; run this
-# explicitly for bowls/CFP once the bracket is set.
+# explicitly for bowls/CFP -- no need to wait for the bracket, ESPN
+# publishes the full slate (dates/times, TBD teams) months ahead.
+#
+# If the schedule ever runs dry going into a new season (next season not
+# discovered while this one was still running), the live poller's sleep is
+# unbounded -- after running this, also run `just live-now` to wake it
+# rather than waiting on a timer.
 discover week season="2026":
     {{venv}} pipeline.py --week {{week}} --season {{season}}
 

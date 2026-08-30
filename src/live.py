@@ -96,8 +96,10 @@ LOCK_PATH = "data/live.lock"
 # derives its own cadence from the kickoff times already in `games`, rather
 # than from a launchd calendar schedule that was only ever a proxy for
 # "when are games on". LIVE_INTERVAL_SECONDS applies whenever something is
-# (or is about to be) in progress; otherwise the poller sleeps until just
-# before the next scheduled kickoff. See _schedule_interval.
+# (or is about to be) in progress; otherwise the poller sleeps to the
+# earliest of a handful of schedule-derived boundaries (kickoff lead,
+# caffeinate lead, the start of the next game's week, the next game's own
+# day) rather than a flat idle ceiling -- see _schedule_interval.
 
 # How early before a scheduled kickoff to switch to the fast cadence.
 LIVE_KICKOFF_LEAD_SECONDS = 1 * 60
@@ -110,12 +112,26 @@ LIVE_KICKOFF_LEAD_SECONDS = 1 * 60
 # being right is not missing a game.
 LIVE_KICKOFF_GRACE_SECONDS = 6 * 3600
 
-# Ceiling on an idle sleep. Not a polling requirement -- the next kickoff is
-# known exactly -- but a bound on how long a stale or missing schedule can
-# blind the poller (run_cycle upserts every game the today/tomorrow
-# scoreboard returns on every cycle, including idle ones, so this cap is
-# also the self-heal rate for a game that was never discovered at all).
-LIVE_IDLE_INTERVAL_SECONDS = 30 * 60
+# Hour (ET) at which the schedule-refresh wakes below land -- early enough
+# to be well ahead of the earliest observed real kickoff (11:00 ET), so a
+# refresh always precedes the day's first game.
+LIVE_WEEK_ANCHOR_HOUR_ET = 8
+
+# When next_kickoff is unknown (no 'pre' row on record) but the most recent
+# game seen is a regular-season game within this many days, treat it as the
+# ~7-day conference-championship -> first-bowl gap rather than a genuinely
+# empty schedule, and poll daily until the postseason is discovered.
+LIVE_BLIND_RECENT_GAME_DAYS = 14
+LIVE_BLIND_BACKSTOP_SECONDS = 24 * 3600
+
+# Genuinely nothing on record at all -- not the conf-champ/bowl gap
+# LIVE_BLIND_BACKSTOP_SECONDS exists for, but the DB having no upcoming game
+# whatsoever (e.g. before any discovery has ever been run for a season).
+# Deliberately not a polling cadence: offseason discovery is manual, and a
+# discovery run needs a subsequent `just live-now` to be noticed -- this is
+# just a large finite bound so the sleep math stays well-defined, not a
+# timer meant to ever actually fire in normal operation.
+LIVE_NO_SCHEDULE_BACKSTOP_SECONDS = 365 * 24 * 3600
 
 # `caffeinate` is asserted on a deliberately wider window than the fast poll
 # cadence: an assertion can only *keep* the machine awake, never wake it, so
@@ -522,6 +538,49 @@ _SCHEDULE_SQL = """
              WHERE status_state = 'pre' AND game_date >= ?)       AS next_kickoff
 """
 
+# Same shape as _SCHEDULE_SQL's next_kickoff subquery, but floored at the
+# start of today (ET) rather than now - LIVE_KICKOFF_GRACE_SECONDS.
+#
+# Why a second query: an all-day-TBD slate is stored at ET midnight (a
+# placeholder, not a real kickoff -- see _schedule_interval's docstring).
+# Once LIVE_KICKOFF_GRACE_SECONDS (6h) has passed since that stamp,
+# next_kickoff's grace floor excludes it and jumps straight to the next
+# already-known row -- which, on a slate that's entirely TBD, is often next
+# week. The kickoff-lead/caffeinate-lead boundaries derived from
+# next_kickoff can't rescue this: they're anchored to the placeholder's own
+# (bogus, early-morning) timestamp, so they always fire *before* a
+# same-day refresh could, not after. This query keeps "today" in view for
+# the week-anchor/day-of refresh wakes specifically, independent of
+# whether today's own row has aged out of the grace floor used for
+# entering fast cadence.
+_NEXT_ANCHOR_SQL = """
+    SELECT MIN(game_date) AS anchor_kickoff FROM games
+     WHERE status_state = 'pre' AND game_date >= ?
+"""
+
+# Only ever queried when _NEXT_ANCHOR_SQL also comes up empty (no 'pre' row
+# anywhere from today onward) -- not the hot path every cycle takes -- so
+# unlike the two queries above this deliberately isn't covered by
+# idx_games_state_date. A full scan there is fine.
+_LATEST_GAME_SQL = "SELECT season_type, game_date FROM games ORDER BY game_date DESC LIMIT 1"
+
+_ET = ZoneInfo("America/New_York")
+
+
+def _week_tuesday(local_date):
+    """Date of the Tuesday beginning the Tue->Mon CFB week containing
+    local_date. Same weekday math as serve.py's _tuesday_window (that
+    function's docstring has the supporting evidence: confirmed against 4
+    seasons of data that a CFB week's earliest game is never a Sun/Mon) --
+    shared here so the live poller's week boundary and /api/slate's agree."""
+    tue_offset = (local_date.weekday() - 1) % 7
+    return local_date - timedelta(days=tue_offset)
+
+
+def _et_anchor(local_date, hour=LIVE_WEEK_ANCHOR_HOUR_ET):
+    """`hour`:00 ET on local_date, converted to UTC."""
+    return datetime(local_date.year, local_date.month, local_date.day, hour, tzinfo=_ET).astimezone(timezone.utc)
+
 
 def _schedule_interval(conn, now=None):
     """
@@ -532,14 +591,36 @@ def _schedule_interval(conn, now=None):
     an unattended always-on poller needs its cadence decisions to be
     legible after the fact.
 
-    Three states:
-      - anything status_state='in'  -> LIVE_INTERVAL_SECONDS
+    States:
+      - anything status_state='in' -> LIVE_INTERVAL_SECONDS
       - next scheduled kickoff within [now - LIVE_KICKOFF_GRACE_SECONDS,
         now + LIVE_KICKOFF_LEAD_SECONDS] -> LIVE_INTERVAL_SECONDS
-      - otherwise sleep until LIVE_KICKOFF_LEAD_SECONDS before that kickoff,
-        capped at LIVE_IDLE_INTERVAL_SECONDS (and exactly that cap when
-        there is no upcoming game at all -- offseason, or a game that was
-        never discovered).
+      - otherwise sleep to the *earliest future* of:
+          * LIVE_KICKOFF_LEAD_SECONDS before that (grace-floored)
+            next_kickoff, if one exists (enter fast cadence in time)
+          * LIVE_CAFFEINATE_LEAD_SECONDS before it (grab the idle-sleep
+            assertion exactly on time, not up to LIVE_INTERVAL_SECONDS late)
+          * LIVE_WEEK_ANCHOR_HOUR_ET ET on the Tuesday beginning the CFB
+            game week of the earliest 'pre' row from today onward (a
+            *separate*, ungated query -- see _NEXT_ANCHOR_SQL -- so it
+            still refreshes a TBD-placeholder slate that has aged out of
+            the grace floor above). Bounded at <=7d by construction since
+            it's derived from an actual known row, not a floating timer --
+            an offseason "next game" months out collapses this to one wake
+            before the opener's week, not a recurring heartbeat.
+          * LIVE_WEEK_ANCHOR_HOUR_ET ET on that same row's own day
+            (backstop in case the week-anchor refresh didn't resolve it)
+        If every one of those has already passed -- today's own refresh
+        window is behind us but the game still hasn't gone 'in' -- falls
+        back to LIVE_INTERVAL_SECONDS so it keeps checking through the rest
+        of the day rather than jumping to next week.
+      - no 'pre' row anywhere from today onward: LIVE_BLIND_BACKSTOP_SECONDS
+        if the most recent known game is a regular-season game within
+        LIVE_BLIND_RECENT_GAME_DAYS days (the conference-championship ->
+        first-bowl gap, when the postseason hasn't been discovered yet),
+        else LIVE_NO_SCHEDULE_BACKSTOP_SECONDS (nothing scheduled at all --
+        e.g. offseason with next season not yet discovered; recovering
+        from this is `just discover` + `just live-now`, not a timer).
 
     The grace floor is what collapses the first two cases into a single
     MIN(): the earliest kickoff at or after `now - grace` is either already
@@ -547,8 +628,9 @@ def _schedule_interval(conn, now=None):
     quietly excludes every past season's rows, which can never re-enter the
     window no matter how long the process runs.
 
-    Both subqueries are covering seeks on idx_games_state_date. `now` is
-    injectable so this is testable without waiting for a real kickoff.
+    _SCHEDULE_SQL's two subqueries are covering seeks on
+    idx_games_state_date. `now` is injectable so this is testable without
+    waiting for a real kickoff.
     """
     now = now or datetime.now(timezone.utc)
     floor = (now - timedelta(seconds=LIVE_KICKOFF_GRACE_SECONDS)).strftime(GAME_DATE_FMT)
@@ -558,24 +640,63 @@ def _schedule_interval(conn, now=None):
     if n_live:
         return float(LIVE_INTERVAL_SECONDS), True, f"{n_live} game(s) in progress"
 
-    if next_kickoff is None:
-        return float(LIVE_IDLE_INTERVAL_SECONDS), False, "no scheduled kickoff on record"
+    kick = until = None
+    if next_kickoff is not None:
+        kick = datetime.strptime(next_kickoff, GAME_DATE_FMT).replace(tzinfo=timezone.utc)
+        until = (kick - now).total_seconds()
+        if until <= LIVE_KICKOFF_LEAD_SECONDS:
+            # Includes until < 0: a game the scoreboard still calls 'pre'
+            # whose scheduled kickoff has passed but is inside the grace
+            # window.
+            return float(LIVE_INTERVAL_SECONDS), True, f"kickoff {next_kickoff} ({until / 60:+.0f} min)"
 
-    kick = datetime.strptime(next_kickoff, GAME_DATE_FMT).replace(tzinfo=timezone.utc)
-    until = (kick - now).total_seconds()
+    today_floor = _et_anchor(now.astimezone(_ET).date(), hour=0).strftime(GAME_DATE_FMT)
+    anchor_kickoff = conn.execute(_NEXT_ANCHOR_SQL, (today_floor,)).fetchone()["anchor_kickoff"]
 
-    if until <= LIVE_KICKOFF_LEAD_SECONDS:
-        # Includes until < 0: a game the scoreboard still calls 'pre' whose
-        # scheduled kickoff has passed but is inside the grace window.
-        return float(LIVE_INTERVAL_SECONDS), True, f"kickoff {next_kickoff} ({until / 60:+.0f} min)"
+    if anchor_kickoff is None:
+        latest = conn.execute(_LATEST_GAME_SQL).fetchone()
+        if latest and latest["game_date"] and latest["season_type"] == 2:
+            latest_dt = datetime.strptime(latest["game_date"], GAME_DATE_FMT).replace(tzinfo=timezone.utc)
+            if (now - latest_dt).total_seconds() <= LIVE_BLIND_RECENT_GAME_DAYS * 86400:
+                return float(LIVE_BLIND_BACKSTOP_SECONDS), False, "postseason not yet discovered"
+        return float(LIVE_NO_SCHEDULE_BACKSTOP_SECONDS), False, "no scheduled kickoff on record"
 
-    # Floored at LIVE_INTERVAL_SECONDS so a kickoff 15m01s out can't produce
-    # a 1-second sleep and a wasted request; overshooting the lead by <=60s
-    # is immaterial against a 15-minute lead.
-    sleep_for = max(float(LIVE_INTERVAL_SECONDS),
-                     min(until - LIVE_KICKOFF_LEAD_SECONDS, float(LIVE_IDLE_INTERVAL_SECONDS)))
-    hold_awake = until <= LIVE_CAFFEINATE_LEAD_SECONDS
-    return sleep_for, hold_awake, f"next kickoff {next_kickoff} in {until / 3600:.1f}h"
+    anchor_et_date = datetime.strptime(anchor_kickoff, GAME_DATE_FMT).replace(tzinfo=timezone.utc) \
+        .astimezone(_ET).date()
+    candidates = {
+        "week anchor": _et_anchor(_week_tuesday(anchor_et_date)),
+        "day-of refresh": _et_anchor(anchor_et_date),
+    }
+    if kick is not None:
+        # Always future here: until > LEAD was just confirmed above.
+        candidates["kickoff lead"] = kick - timedelta(seconds=LIVE_KICKOFF_LEAD_SECONDS)
+        candidates["caffeinate lead"] = kick - timedelta(seconds=LIVE_CAFFEINATE_LEAD_SECONDS)
+
+    future = {label: dt for label, dt in candidates.items() if dt > now}
+    if not future:
+        # Today's own refresh window has already passed but this game
+        # still hasn't gone 'in' -- keep checking through the rest of
+        # today rather than falling through to next week's anchor.
+        return float(LIVE_INTERVAL_SECONDS), True, f"{anchor_et_date} refresh window passed, still unresolved"
+
+    label, wake_at = min(future.items(), key=lambda item: item[1])
+    # Floored at LIVE_INTERVAL_SECONDS so a boundary 61s out can't produce
+    # a 1-second sleep and a wasted request.
+    sleep_for = max(float(LIVE_INTERVAL_SECONDS), (wake_at - now).total_seconds())
+    hold_awake = until is not None and until <= LIVE_CAFFEINATE_LEAD_SECONDS
+    # Describe whichever boundary actually won, not just whether a credible
+    # next_kickoff exists -- anchor_et_date can differ from next_kickoff's
+    # own date (the TBD-placeholder-past-grace case), so crediting the wake
+    # to next_kickoff whenever one happens to be present would mislabel it.
+    # wake_at itself is named explicitly (not just "waking for {label}") so
+    # a week-anchor/day-of wake -- which fires *ahead of* anchor_et_date,
+    # to refresh it -- doesn't read as though it wakes on that date itself.
+    reason = (
+        f"next kickoff {next_kickoff} in {until / 3600:.1f}h (waking for {label})"
+        if label in ("kickoff lead", "caffeinate lead")
+        else f"{label} {wake_at.strftime(GAME_DATE_FMT)} for {anchor_et_date}'s schedule"
+    )
+    return sleep_for, hold_awake, reason
 
 
 def _acquire_lock():
@@ -691,12 +812,22 @@ def _sleep_until(wake_at, stop, deadline_passed):
     time.time() advances across suspend, so a wake past wake_at polls on
     the very next slice instead of waiting out a stale budget.
 
+    That wall-clock read has its own failure mode though: a clock that
+    jumps *backward* mid-sleep (NTP correction, manual change, VM restore)
+    inflates `wake_at - time.time()`, and with sleeps now running up to
+    ~7 days (or longer, offseason) that could otherwise oversleep well past
+    `wake_at`. `budget`, fixed once before the loop starts, caps `remaining`
+    at the sleep's originally-computed length -- a backward jump can make
+    this loop restart the sleep from the top, but never exceed the length
+    it was already going to run.
+
     Extracted as its own function so the wall-clock property is directly
     testable (fake time.time()/time.sleep()) rather than only inferable
     from reading run_forever's loop.
     """
+    budget = max(0.0, wake_at - time.time())
     while not stop() and not deadline_passed():
-        remaining = wake_at - time.time()
+        remaining = min(wake_at - time.time(), budget)
         if remaining <= 0:
             return
         time.sleep(min(LIVE_SLEEP_SLICE_SECONDS, remaining))
