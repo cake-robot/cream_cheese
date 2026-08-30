@@ -46,6 +46,14 @@ function gameId() {
   return new URLSearchParams(location.search).get("id");
 }
 
+// Mirrors src/spoilers.py's LEVEL_* constants -- see the two-tier-spoiler
+// plan. LEVEL_HIDDEN: nothing revealed. LEVEL_SCORE: the watchability
+// composite (score/rank/percentile) is revealed, everything else stays
+// hidden. LEVEL_FULL: everything revealed (today's ordinary game page).
+const LEVEL_HIDDEN = 0;
+const LEVEL_SCORE = 1;
+const LEVEL_FULL = 2;
+
 // Checked before the scored/live/not-scored branches in loadAndRenderGame()
 // below, regardless of the game's actual status_state -- a spoiler-hidden
 // game always renders this and nothing else, whether it's completed, live,
@@ -68,27 +76,36 @@ function renderHidden(mount, detail) {
     el("div", {
       class: "card-sub",
       text: "This game is spoiler-protected -- its score, charts, and what drove it are hidden. "
-        + "Reveal it (adds a game override on the Settings page, undoable there), "
-        + "or change the setting for its whole week from Settings.",
+        + "Show just the watchability score (no final score or winner), or reveal everything "
+        + "(adds a game override on the Settings page, undoable there) -- or change the setting "
+        + "for its whole week from Settings.",
     }),
   ]);
-  const revealBtn = el("button", { class: "reset", text: "Reveal this game" });
-  revealBtn.addEventListener("click", async () => {
-    revealBtn.disabled = true;
-    revealBtn.textContent = "Loading…";
-    try {
-      // Same /api/spoilers/game route Settings' own game-override card
-      // uses -- a real, persistent override, not a client-side-only
-      // bypass, so it shows up in Settings' "Active overrides" and is
-      // undoable from there, on any device, going forward.
-      await apiPost("/spoilers/game", { game_id: g.game_id, hidden: false });
-      await loadAndRenderGame();
-    } catch (e) {
-      revealBtn.disabled = false;
-      revealBtn.textContent = `Failed: ${e.message} -- try again`;
-    }
-  });
-  card.appendChild(revealBtn);
+  // Two-step progressive disclosure, both real persistent overrides through
+  // the same /api/spoilers/game route Settings' own game-override card
+  // uses -- not a client-side-only bypass, so either shows up in Settings'
+  // "Active overrides" and is undoable there, on any device, going forward.
+  const scoreBtn = el("button", { class: "reset", text: "Show watchability score" });
+  const revealBtn = el("button", { class: "reset", text: "Reveal everything" });
+  function wireRevealButton(btn, level) {
+    btn.addEventListener("click", async () => {
+      scoreBtn.disabled = true;
+      revealBtn.disabled = true;
+      const original = btn.textContent;
+      btn.textContent = "Loading…";
+      try {
+        await apiPost("/spoilers/game", { game_id: g.game_id, level });
+        await loadAndRenderGame();
+      } catch (e) {
+        scoreBtn.disabled = false;
+        revealBtn.disabled = false;
+        btn.textContent = `${original} -- failed: ${e.message}, try again`;
+      }
+    });
+  }
+  wireRevealButton(scoreBtn, LEVEL_SCORE);
+  wireRevealButton(revealBtn, LEVEL_FULL);
+  card.appendChild(el("div", { style: "display:flex;gap:10px;margin-top:12px" }, [scoreBtn, revealBtn]));
   mount.appendChild(card);
 }
 
@@ -143,6 +160,7 @@ let LIVE_REGISTRY = { so_far: [], from_here: [] };
 function renderLive(mount, detail) {
   const g = detail.game;
   const live = detail.live;
+  const level = g.spoiler_level;
 
   mount.appendChild(el("div", { class: "matchup-header" }, [
     el("div", {}, [
@@ -154,32 +172,37 @@ function renderLive(mount, detail) {
     ]),
   ]));
 
+  // headline/quality_so_far/drama_from_here are all null below LEVEL_FULL
+  // (see redact_live_score_only) -- live_score (the hero number itself)
+  // survives at LEVEL_SCORE, so the hero block always renders, but the
+  // headline line only when there's real text to show.
+  const heroContext = [el("div", { text: `Updated ${Math.max(0, Math.round(live.stale_seconds))}s ago` })];
+  if (live.headline) heroContext.unshift(el("div", { text: live.headline }));
   const hero = el("div", { class: "hero-row" }, [
     el("div", { class: "hero-score tabular-nums", text: fmtScore(live.live_score) }),
-    el("div", { class: "hero-context" }, [
-      el("div", { text: live.headline }),
-      el("div", { text: `Updated ${Math.max(0, Math.round(live.stale_seconds))}s ago` }),
-    ]),
+    el("div", { class: "hero-context" }, heroContext),
   ]);
   mount.appendChild(hero);
 
-  const halvesCard = el("div", { class: "card" }, [
-    el("h2", { text: "Quality so far vs. drama from here" }),
-    el("div", {
-      class: "card-sub",
-      text: "The composite blends both (40% / 60%) so neither can silently cancel the other out.",
-    }),
-  ]);
-  [
-    ["Quality so far", live.quality_so_far],
-    ["Drama from here", live.drama_from_here],
-  ].forEach(([label, value]) => {
-    halvesCard.appendChild(el("div", { class: "halves-row" }, [
-      el("div", { class: "half-label" }, [label, " ", el("span", { class: "tabular-nums", text: fmtScore(value) })]),
-      el("div", { class: "score-meter" }, el("i", { style: `width:${value === null ? 0 : Math.min(100, value * 100)}%` })),
-    ]));
-  });
-  mount.appendChild(halvesCard);
+  if (level >= LEVEL_FULL) {
+    const halvesCard = el("div", { class: "card" }, [
+      el("h2", { text: "Quality so far vs. drama from here" }),
+      el("div", {
+        class: "card-sub",
+        text: "The composite blends both (40% / 60%) so neither can silently cancel the other out.",
+      }),
+    ]);
+    [
+      ["Quality so far", live.quality_so_far],
+      ["Drama from here", live.drama_from_here],
+    ].forEach(([label, value]) => {
+      halvesCard.appendChild(el("div", { class: "halves-row" }, [
+        el("div", { class: "half-label" }, [label, " ", el("span", { class: "tabular-nums", text: fmtScore(value) })]),
+        el("div", { class: "score-meter" }, el("i", { style: `width:${value === null ? 0 : Math.min(100, value * 100)}%` })),
+      ]));
+    });
+    mount.appendChild(halvesCard);
+  }
 
   if (detail.wp) {
     const wpCard = el("div", { class: "g-card" });
@@ -199,13 +222,22 @@ function renderLive(mount, detail) {
     mount.appendChild(wpCard);
   }
 
-  const contribCard = el("div", { class: "card" }, [el("h2", { text: "What's driving this" })]);
-  contribCard.appendChild(el("div", { class: "card-sub", text: "Quality so far" }));
-  contributionBars(contribCard, adaptLiveMetrics(live.so_far.metrics), LIVE_REGISTRY.so_far, live.so_far.applicable_weight || 0.0001);
-  contribCard.appendChild(el("div", { class: "card-sub", style: "margin-top:16px", text: "Drama from here" }));
-  contributionBars(contribCard, adaptLiveMetrics(live.from_here.metrics), LIVE_REGISTRY.from_here, live.from_here.applicable_weight || 0.0001);
-  mount.appendChild(contribCard);
+  // so_far/from_here metrics are {} below LEVEL_FULL (component detail),
+  // so this card would otherwise render two empty "Quality so far"/"Drama
+  // from here" sub-sections with nothing in them.
+  if (level >= LEVEL_FULL) {
+    const contribCard = el("div", { class: "card" }, [el("h2", { text: "What's driving this" })]);
+    contribCard.appendChild(el("div", { class: "card-sub", text: "Quality so far" }));
+    contributionBars(contribCard, adaptLiveMetrics(live.so_far.metrics), LIVE_REGISTRY.so_far, live.so_far.applicable_weight || 0.0001);
+    contribCard.appendChild(el("div", { class: "card-sub", style: "margin-top:16px", text: "Drama from here" }));
+    contributionBars(contribCard, adaptLiveMetrics(live.from_here.metrics), LIVE_REGISTRY.from_here, live.from_here.applicable_weight || 0.0001);
+    mount.appendChild(contribCard);
+  }
 
+  // live_score/progress survive at LEVEL_SCORE (redact_live_history keeps
+  // them, nulls quality_so_far/drama_from_here) and liveScoreChart() only
+  // ever reads those two fields, so this chart is safe -- and worth
+  // keeping -- at LEVEL_SCORE too.
   if (detail.live_history && detail.live_history.length > 1) {
     const histCard = el("div", { class: "card" }, [
       el("h2", { text: "Live score so far" }),
@@ -215,6 +247,9 @@ function renderLive(mount, detail) {
     mount.appendChild(histCard);
   }
 
+  // corrections are suppressed server-side below LEVEL_FULL (empty
+  // manual/fox/unusable_notes), so renderProvenance()'s own early-return
+  // guard already keeps this a no-op there -- no level check needed here.
   renderProvenance(mount, detail);
 }
 
@@ -280,12 +315,15 @@ function renderProvenanceRail(mount, detail) {
   mount.appendChild(card);
 }
 
-function renderScored(mount, detail) {
-  const g = detail.game;
-  const rc = detail.rank_context;
-  const si = detail.score_integrity;
+// -- shared between renderScored() and renderScoreOnly(): the neighbor-by-
+// rank nav, the watchability composite, and the three rank rails. A
+// LEVEL_SCORE game's rank_context/neighbors ARE populated (see the
+// two-tier-spoiler plan's decision 1) -- these are exactly the pieces that
+// tier reveals, so both render paths share one implementation rather than
+// two copies that could drift.
 
-  // -- utility row: neighbor-by-rank nav (back link is static page chrome) --
+function buildNeighborNav(detail) {
+  const rc = detail.rank_context;
   const neighborNav = document.getElementById("neighbor-nav");
   neighborNav.appendChild(detail.neighbors.prev_by_rank
     ? el("a", { href: `/game.html?id=${detail.neighbors.prev_by_rank.game_id}`, text: `‹ #${detail.neighbors.prev_by_rank.rank}` })
@@ -294,6 +332,52 @@ function renderScored(mount, detail) {
   neighborNav.appendChild(detail.neighbors.next_by_rank
     ? el("a", { href: `/game.html?id=${detail.neighbors.next_by_rank.game_id}`, text: `#${detail.neighbors.next_by_rank.rank} ›` })
     : el("span"));
+}
+
+function buildComposite(g) {
+  const bonus = g.uw_loss_bonus || 0;
+  const base = g.watchability_score - bonus;
+  const composite = el("div", { class: "g-composite-wrap" }, [
+    el("div", { class: "g-composite", text: fmtScore(g.watchability_score) }),
+    el("div", { class: "g-composite-caption", text: "WATCHABILITY" }),
+  ]);
+  if (bonus) {
+    composite.appendChild(el("div", { class: "g-bonus-line" }, [
+      el("span", { class: "base", text: fmtScore(base) }), " metrics ",
+      el("span", { class: "bonus", text: `+${bonus.toFixed(3)}` }), " UW loss",
+    ]));
+  }
+  return composite;
+}
+
+function buildRankRails(rc) {
+  const rankRailDefs = rc ? [
+    { label: "ALL SEASONS", rank: rc.global.rank, n: rc.global.n, pct: rc.global.percentile, suffix: " percentile", sub: "scored" },
+    { label: `${rc.season.label} SEASON`, rank: rc.season.rank, n: rc.season.n, pct: rc.season.percentile, suffix: "", sub: "" },
+    { label: rc.week.label.toUpperCase(), rank: rc.week.rank, n: rc.week.n, pct: rc.week.percentile, suffix: "", sub: "" },
+  ] : [];
+  return el("div", { class: "g-rank-rails" }, rankRailDefs.map((r) => {
+    const barPct = r.n ? Math.max(0, Math.min(100, (1 - r.rank / r.n) * 100)) : 0;
+    return el("div", {}, [
+      el("div", { class: "g-rank-rail-head" }, [el("span", { text: r.label }), el("span", { class: "rank-val", text: `#${r.rank}` })]),
+      el("div", { class: "g-rank-track" }, [
+        el("div", { class: "g-rank-fill", style: `width:${barPct}%` }),
+        el("div", { class: "g-rank-marker", style: `left:${barPct}%` }),
+      ]),
+      el("div", { class: "g-rank-sub" }, [
+        el("span", { class: "pctile", text: `${fmtPct(r.pct)}${r.suffix}` }),
+        ` of ${r.n.toLocaleString()}${r.sub ? " " + r.sub : ""}`,
+      ]),
+    ]);
+  }));
+}
+
+function renderScored(mount, detail) {
+  const g = detail.game;
+  const rc = detail.rank_context;
+  const si = detail.score_integrity;
+
+  buildNeighborNav(detail);
 
   // -- hero --
   const awayRank = g.away.rank ? `#${g.away.rank} ` : "";
@@ -311,42 +395,9 @@ function renderScored(mount, detail) {
     el("div", { class: "g-meta", text: metaText }),
   ]);
 
-  const bonus = g.uw_loss_bonus || 0;
-  const base = g.watchability_score - bonus;
-  const composite = el("div", { class: "g-composite-wrap" }, [
-    el("div", { class: "g-composite", text: fmtScore(g.watchability_score) }),
-    el("div", { class: "g-composite-caption", text: "WATCHABILITY" }),
-  ]);
-  if (bonus) {
-    composite.appendChild(el("div", { class: "g-bonus-line" }, [
-      el("span", { class: "base", text: fmtScore(base) }), " metrics ",
-      el("span", { class: "bonus", text: `+${bonus.toFixed(3)}` }), " UW loss",
-    ]));
-  }
-
-  const rankRailDefs = rc ? [
-    { label: "ALL SEASONS", rank: rc.global.rank, n: rc.global.n, pct: rc.global.percentile, suffix: " percentile", sub: "scored" },
-    { label: `${rc.season.label} SEASON`, rank: rc.season.rank, n: rc.season.n, pct: rc.season.percentile, suffix: "", sub: "" },
-    { label: rc.week.label.toUpperCase(), rank: rc.week.rank, n: rc.week.n, pct: rc.week.percentile, suffix: "", sub: "" },
-  ] : [];
-  const rankRails = el("div", { class: "g-rank-rails" }, rankRailDefs.map((r) => {
-    const barPct = r.n ? Math.max(0, Math.min(100, (1 - r.rank / r.n) * 100)) : 0;
-    return el("div", {}, [
-      el("div", { class: "g-rank-rail-head" }, [el("span", { text: r.label }), el("span", { class: "rank-val", text: `#${r.rank}` })]),
-      el("div", { class: "g-rank-track" }, [
-        el("div", { class: "g-rank-fill", style: `width:${barPct}%` }),
-        el("div", { class: "g-rank-marker", style: `left:${barPct}%` }),
-      ]),
-      el("div", { class: "g-rank-sub" }, [
-        el("span", { class: "pctile", text: `${fmtPct(r.pct)}${r.suffix}` }),
-        ` of ${r.n.toLocaleString()}${r.sub ? " " + r.sub : ""}`,
-      ]),
-    ]);
-  }));
-
   mount.appendChild(el("div", { class: "g-hero" }, [
     heroLeft,
-    el("div", { class: "g-hero-right" }, [composite, el("div", { class: "g-hero-rule" }), rankRails]),
+    el("div", { class: "g-hero-right" }, [buildComposite(g), el("div", { class: "g-hero-rule" }), buildRankRails(rc)]),
   ]));
 
   // -- body: rail layout --
@@ -417,6 +468,73 @@ function renderScored(mount, detail) {
   renderProvenanceRail(railCol, detail);
 }
 
+// LEVEL_SCORE's own render path: the watchability composite, the three
+// rank rails, and the neighbor-by-rank nav -- exactly what that tier
+// reveals (see the two-tier-spoiler plan). No final score in the matchup
+// line (g.away.score/g.home.score are null), no drivers card (g.metrics is
+// {}), no WP chart (detail.wp is null), no provenance rail (corrections
+// are suppressed below LEVEL_FULL). The distribution rail survives --
+// "here's your score in context" is exactly the point of this tier.
+function renderScoreOnly(mount, detail) {
+  const g = detail.game;
+  const rc = detail.rank_context;
+
+  buildNeighborNav(detail);
+
+  const awayRank = g.away.rank ? `#${g.away.rank} ` : "";
+  const homeRank = g.home.rank ? `#${g.home.rank} ` : "";
+  const matchup = el("div", { class: "g-matchup" }, [
+    awayRank, g.away.name,
+    el("br"),
+    "at ", homeRank, g.home.name,
+  ]);
+  const metaText = [fmtDate(g.game_date), venueLabel(g), g.attendance ? g.attendance.toLocaleString() : null, seasonWeekLabel(g)]
+    .filter(Boolean).join(" · ");
+  const heroLeft = el("div", {}, [
+    el("div", { class: "g-chip-row" }, scoredHeroChips(g)),
+    matchup,
+    el("div", { class: "g-meta", text: metaText }),
+  ]);
+
+  mount.appendChild(el("div", { class: "g-hero" }, [
+    heroLeft,
+    el("div", { class: "g-hero-right" }, [buildComposite(g), el("div", { class: "g-hero-rule" }), buildRankRails(rc)]),
+  ]));
+
+  const distCard = el("div", { class: "card" }, [
+    el("h2", { text: "Where this sits" }),
+    el("div", { class: "card-sub", text: rc ? `${rc.global.n.toLocaleString()} scored games, all seasons.` : "" }),
+  ]);
+  const distBody = el("div");
+  distCard.appendChild(distBody);
+  mount.appendChild(distCard);
+  api("/analytics").then((analytics) => {
+    distributionRail(distBody, analytics.distribution.histogram, g.watchability_score);
+  });
+
+  const revealCard = el("div", { class: "card" }, [
+    el("h2", { text: "🙈 Score only" }),
+    el("div", {
+      class: "card-sub",
+      text: "The final score, winner, and what drove this score are still hidden.",
+    }),
+  ]);
+  const revealBtn = el("button", { class: "reset", text: "Show final score" });
+  revealBtn.addEventListener("click", async () => {
+    revealBtn.disabled = true;
+    revealBtn.textContent = "Loading…";
+    try {
+      await apiPost("/spoilers/game", { game_id: g.game_id, level: LEVEL_FULL });
+      await loadAndRenderGame();
+    } catch (e) {
+      revealBtn.disabled = false;
+      revealBtn.textContent = `Failed: ${e.message} -- try again`;
+    }
+  });
+  revealCard.appendChild(revealBtn);
+  mount.appendChild(revealCard);
+}
+
 async function loadAndRenderGame() {
   const id = gameId();
   const mount = document.getElementById("body-mount");
@@ -433,10 +551,20 @@ async function loadAndRenderGame() {
   }
   mount.innerHTML = "";
   neighborNav.innerHTML = "";
-  if (detail.game.spoiler_hidden) {
+  // Routes on spoiler_level, not spoiler_hidden -- spoiler_hidden is true
+  // for both LEVEL_HIDDEN and LEVEL_SCORE (see the two-tier-spoiler plan),
+  // so routing on it alone would send a LEVEL_SCORE game into
+  // renderHidden() and hide the composite/rank rails that tier exists to
+  // show, or (if checked the other way) into renderScored() where it would
+  // throw formatting a null g.away.score.
+  const level = detail.game.spoiler_level;
+  if (level === LEVEL_HIDDEN) {
     renderHidden(mount, detail);
   } else if (detail.game.watchability_score !== null) {
-    renderScored(mount, detail);
+    // Completed and scored: LEVEL_SCORE gets the composite/rank-only view,
+    // LEVEL_FULL gets the full breakdown.
+    if (level === LEVEL_SCORE) renderScoreOnly(mount, detail);
+    else renderScored(mount, detail);
   } else if (detail.game.status_state === "in" && detail.live) {
     const liveRegistry = await api("/slate/registry");
     LIVE_REGISTRY = liveRegistry;

@@ -243,7 +243,12 @@ function renderLiveSection(games) {
       el("h2", {}, [fmtMatchup(top) + " ", ...renderChips(top)]),
       el("div", { class: "sub", text: top.live.status.detail || (top.spoiler_hidden ? "In progress" : "") }),
     ]),
-    top.spoiler_hidden
+    // Keyed off live_score's own nullness, not spoiler_hidden -- a
+    // LEVEL_SCORE game (spoiler_hidden: true) DOES reveal live_score (see
+    // the two-tier-spoiler plan's decision 3), so gating this on
+    // spoiler_hidden the way the tag below still correctly does would wrongly
+    // hide the one thing that tier exists to show.
+    top.live.live_score === null
       ? el("div", { class: "spoiler-hidden-tag", text: "SPOILER HIDDEN" })
       : el("div", { class: "hero-score-block" }, [
           el("div", { class: "hero-score tabular-nums", text: fmtScore(top.live.live_score) }),
@@ -264,7 +269,10 @@ function renderLiveSection(games) {
 
   const list = el("div", { class: "slate-list" });
   rest.forEach((g) => {
-    const flash = !g.spoiler_hidden && PREV_LIVE_SCORES[g.game_id] !== undefined
+    // Keyed off live_score's own nullness, same as the hero block above --
+    // a LEVEL_SCORE game's live_score is real and can legitimately flash on
+    // change, not just a LEVEL_FULL game's.
+    const flash = g.live.live_score !== null && PREV_LIVE_SCORES[g.game_id] !== undefined
       && Math.abs(PREV_LIVE_SCORES[g.game_id] - g.live.live_score) > 0.05;
     PREV_LIVE_SCORES[g.game_id] = g.live.live_score;
 
@@ -275,7 +283,7 @@ function renderLiveSection(games) {
       ? (g.live.status.detail || "In progress")
       : `${g.live.status.detail || ""}${g.live.headline ? " · " + g.live.headline : ""}`;
     const row = el("div", { class: "slate-row row-live" + (flash ? " updated-flash" : "") }, [
-      el("div", { class: "score-big", text: g.spoiler_hidden ? "—" : fmtScore(g.live.live_score) }),
+      el("div", { class: "score-big", text: g.live.live_score === null ? "—" : fmtScore(g.live.live_score) }),
       el("div", { class: "row-info" }, [
         el("div", { class: "matchup-line" }, [el("span", { class: "name", text: fmtMatchup(g) }), ...renderChips(g)]),
         el("div", { class: "row-sub", text: whyText }),
@@ -328,9 +336,12 @@ function renderCompletedSection(games) {
     const hasMetrics = Object.values(g.metrics || {}).some((v) => v.applicable);
     const chevron = el("div", { class: "chevron" + (expanded ? " open" : ""), text: expanded ? "︿" : "⌄" });
     if (!hasMetrics) chevron.style.visibility = "hidden";
-    // A composite rank implies an outcome (e.g. "#1 this week"), so it's
-    // withheld right alongside the score itself on a spoiler-hidden game.
-    const rankText = !g.spoiler_hidden && g.rank ? `#${g.rank} overall` : null;
+    // g.rank is already null below LEVEL_SCORE (see redact_game_full) --
+    // no separate spoiler_hidden gate needed here, and none should be
+    // added: a LEVEL_SCORE game's rank is exactly what that tier reveals
+    // (see the two-tier-spoiler plan's decision 1), so gating this on
+    // spoiler_hidden the way it used to would wrongly withhold it.
+    const rankText = g.rank ? `#${g.rank} overall` : null;
     const scoreCell = g.watchability_score === null
       ? el("div", { class: "score-big", text: "—" })
       : el("div", { class: "score-with-meter" }, [
@@ -407,10 +418,11 @@ function renderUpcomingSection(unsortedGames) {
       el("span", { class: "kickoff-time", text: fmtKickoff(g.game_date) }),
       el("div", { class: "matchup-line" }, [
         el("span", { class: "name", text: fmtMatchup(g) }),
-        // Pre-kickoff games never have a score to spoil yet, so the HIDDEN
-        // chip (meaningful once something's actually being withheld) is
-        // suppressed here even though spoiler_hidden may already be true.
-        ...renderChips(g).filter((c) => !c.textContent.includes("HIDDEN")),
+        // Pre-kickoff games never have a score to spoil yet, so the HIDDEN/
+        // SCORE ONLY chips (meaningful once something's actually being
+        // withheld or revealed) are suppressed here even though
+        // spoiler_level may already be < LEVEL_FULL.
+        ...renderChips(g).filter((c) => !c.textContent.includes("HIDDEN") && c.textContent !== "SCORE ONLY"),
       ]),
     ]);
     row.addEventListener("click", () => (location.href = `/game.html?id=${g.game_id}`));

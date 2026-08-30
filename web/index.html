@@ -485,7 +485,13 @@ function renderRows(data) {
       el("span", { class: "gm-score-val null", text: "—" }),
     ]);
 
-    const chevron = el("span", { class: scored ? "gm-chevron" : "", text: scored ? "⌄" : "" });
+    // Gated on metrics presence, not `scored` -- a LEVEL_SCORE spoiler-
+    // hidden game has a non-null watchability_score (that's the point of
+    // the tier) but g.metrics is {} (redact_game_score_only), so a `scored`
+    // gate here would open a chevron onto an empty "Contribution by
+    // metric" panel. Same pattern as slate.html's hasMetrics.
+    const hasMetrics = Object.values(g.metrics || {}).some(Boolean);
+    const chevron = el("span", { class: hasMetrics ? "gm-chevron" : "", text: hasMetrics ? "⌄" : "" });
     const matchupParts = fmtMatchupParts(g);
 
     const row = el("div", { class: "gm-row" }, [
@@ -511,7 +517,7 @@ function renderRows(data) {
     });
     mount.appendChild(row);
 
-    if (scored) {
+    if (hasMetrics) {
       const expandEl = el("div", { class: "gm-expand", style: "display:none" });
       mount.appendChild(expandEl);
       chevron.addEventListener("click", (ev) => {

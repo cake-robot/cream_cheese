@@ -55,6 +55,7 @@
       <select id="f-week-week"></select>
       <select id="f-week-state">
         <option value="hidden">Hidden</option>
+        <option value="score">Score only</option>
         <option value="shown">Revealed</option>
         <option value="default">Baseline</option>
       </select>
@@ -70,6 +71,7 @@
       <input type="text" id="f-game-search" placeholder="team or venue">
       <select id="f-game-state">
         <option value="hidden">Hidden</option>
+        <option value="score">Score only</option>
         <option value="shown">Revealed</option>
       </select>
       <button class="s-btn" id="btn-save-game" disabled>Save</button>
@@ -160,11 +162,20 @@ function refreshWeekWeekOptions() {
   if (opts.some((o) => o.value === current)) weekSel.value = current;
 }
 
+// Three-way name lookup for a policy level (0/1/2) -- mirrors
+// src/spoilers.py's LEVEL_* constants (see the two-tier-spoiler plan). The
+// `o.hidden ?? ...` fallback covers a response shape that only ever sent
+// `hidden` (older cached JS, or a future API rollback).
+const LEVEL_NAMES = { 0: "hidden", 1: "score only", 2: "revealed" };
+function levelName(o) {
+  return LEVEL_NAMES[o.level] ?? (o.hidden ? "hidden" : "revealed");
+}
+
 function overrideLabel(o) {
   if (o.type === "week") {
-    return `${o.season_year} ${o.season_type === 3 ? "postseason" : `week ${o.week}`} — ${o.hidden ? "hidden" : "revealed"}`;
+    return `${o.season_year} ${o.season_type === 3 ? "postseason" : `week ${o.week}`} — ${levelName(o)}`;
   }
-  return `game ${o.game_id} — ${o.hidden ? "hidden" : "revealed"}`;
+  return `game ${o.game_id} — ${levelName(o)}`;
 }
 
 function renderOverrideRow(o, labelText, onClear) {
@@ -187,7 +198,7 @@ async function renderOverrides(overrides) {
   }
   weeks.forEach((o) => {
     weekList.appendChild(renderOverrideRow(o, overrideLabel(o), () => runWrite(
-      () => apiPost("/spoilers/week", { season_year: o.season_year, season_type: o.season_type, week: o.week, hidden: null }),
+      () => apiPost("/spoilers/week", { season_year: o.season_year, season_type: o.season_type, week: o.week, level: null }),
       `Cleared the override for ${o.season_year} ${o.season_type === 3 ? "postseason" : "week " + o.week}.`,
     )));
   });
@@ -204,12 +215,12 @@ async function renderOverrides(overrides) {
     api("/spoilers/search", { game_id: o.game_id }).then((data) => {
       const g = data.results[0];
       const labelText = g
-        ? `${fmtMatchup(g)} — ${seasonWeekLabel(g)} — ${o.hidden ? "hidden" : "revealed"}`
+        ? `${fmtMatchup(g)} — ${seasonWeekLabel(g)} — ${levelName(o)}`
         : overrideLabel(o);
       row.innerHTML = "";
       const removeBtn = el("span", { class: "s-override-clear", text: "✕", title: "Clear this override" });
       removeBtn.addEventListener("click", () => runWrite(
-        () => apiPost("/spoilers/game", { game_id: o.game_id, hidden: null }),
+        () => apiPost("/spoilers/game", { game_id: o.game_id, level: null }),
         `Cleared the override for ${labelText}.`,
       ));
       row.appendChild(removeBtn);
@@ -255,14 +266,19 @@ document.getElementById("btn-reset-default").addEventListener("click", () => {
 
 // ---- week override ------------------------------------------------------------
 
+// Select value -> policy level (see src/spoilers.py's LEVEL_* constants),
+// null meaning "clear the override, fall back to Baseline".
+const STATE_TO_LEVEL = { hidden: 0, score: 1, shown: 2, default: null };
+const STATE_LABELS = { hidden: "hidden", score: "score only", shown: "revealed", default: "baseline" };
+
 document.getElementById("f-week-season").addEventListener("change", refreshWeekWeekOptions);
 document.getElementById("btn-save-week").addEventListener("click", () => {
   const season_year = Number(document.getElementById("f-week-season").value);
   const [season_type, week] = document.getElementById("f-week-week").value.split("-").map(Number);
   const stateVal = document.getElementById("f-week-state").value;
-  const hidden = stateVal === "default" ? null : stateVal === "hidden";
+  const level = STATE_TO_LEVEL[stateVal];
   const label = `${season_year} ${season_type === 3 ? "postseason" : "week " + week}`;
-  runWrite(() => apiPost("/spoilers/week", { season_year, season_type, week, hidden }), `${label} set to ${stateVal}.`);
+  runWrite(() => apiPost("/spoilers/week", { season_year, season_type, week, level }), `${label} set to ${STATE_LABELS[stateVal]}.`);
 });
 
 // ---- game override -------------------------------------------------------------
@@ -300,10 +316,11 @@ document.getElementById("f-game-search").addEventListener("input", () => {
 document.getElementById("btn-save-game").addEventListener("click", () => {
   if (!SELECTED_GAME) { setStatus("Search and pick a game first.", true); return; }
   const stateVal = document.getElementById("f-game-state").value;
+  const level = STATE_TO_LEVEL[stateVal];
   const label = `${fmtMatchup(SELECTED_GAME)} — ${seasonWeekLabel(SELECTED_GAME)}`;
   runWrite(
-    () => apiPost("/spoilers/game", { game_id: SELECTED_GAME.game_id, hidden: stateVal === "hidden" }),
-    `${label} set to ${stateVal}.`,
+    () => apiPost("/spoilers/game", { game_id: SELECTED_GAME.game_id, level }),
+    `${label} set to ${STATE_LABELS[stateVal]}.`,
   );
 });
 

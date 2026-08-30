@@ -26,11 +26,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src import users
+from src import spoilers, users
 
 import serve
 
-SPOILER_NUMERIC_FIELDS = ("watchability_score", "uw_loss_bonus", "rank", "percentile", "n_scored", "applicable_weight")
+# spoiler_hidden means "spoiler_level < LEVEL_FULL" (levels 0 and 1 both),
+# so only the fields level 1 is ALSO supposed to hide belong in the
+# unconditional list -- watchability_score/rank/percentile/n_scored are
+# level 1's whole payload and must only be checked at level 0. Mirrors
+# serve.py's own dev-only _walk_spoiler_leaks split.
+SPOILER_ALWAYS_REDACTED_FIELDS = ("uw_loss_bonus", "applicable_weight")
+SPOILER_LEVEL0_ONLY_FIELDS = ("watchability_score", "rank", "percentile", "n_scored")
 
 
 def _walk_and_check(node, path, failures):
@@ -40,9 +46,13 @@ def _walk_and_check(node, path, failures):
     runs unconditionally here (not gated on app.debug)."""
     if isinstance(node, dict):
         if node.get("spoiler_hidden") is True:
-            for f in SPOILER_NUMERIC_FIELDS:
+            level = node.get("spoiler_level", spoilers.LEVEL_HIDDEN)
+            fields = SPOILER_ALWAYS_REDACTED_FIELDS
+            if level == spoilers.LEVEL_HIDDEN:
+                fields = fields + SPOILER_LEVEL0_ONLY_FIELDS
+            for f in fields:
                 if f in node and node[f] is not None:
-                    failures.append(f"{path}.{f} is non-null on a spoiler_hidden game")
+                    failures.append(f"{path}.{f} is non-null on a spoiler_hidden game (level={level})")
             away, home = node.get("away"), node.get("home")
             if isinstance(away, dict) and away.get("score") is not None:
                 failures.append(f"{path}.away.score is non-null on a spoiler_hidden game")
@@ -272,6 +282,169 @@ class TestGameDetailGuards(SpoilerApiTestCase):
         self.assertTrue(detail["game"]["spoiler_hidden"])
 
 
+class TestLevelOne(SpoilerApiTestCase):
+    """LEVEL_SCORE: the watchability composite (score/rank/percentile/
+    n_scored) is revealed, everything else stays hidden exactly as at
+    LEVEL_HIDDEN. Unlike LEVEL_HIDDEN, a LEVEL_SCORE game joins the ranked
+    lists (see the two-tier-spoiler plan's decision 1) -- these tests cover
+    both what it reveals and the leak channels opened by that inclusion."""
+
+    def _set_level_one(self, gid):
+        self.post("/api/spoilers/game", {"game_id": gid, "level": 1})
+
+    def test_score_survives_outcome_does_not(self):
+        gid = self._any_2025_scored_game()["game_id"]
+        self._set_level_one(gid)
+        data = self.get("/api/games", season=2025, scored="all", limit=500)
+        g = next(x for x in data["games"] if x["game_id"] == gid)
+        self.assertTrue(g["spoiler_hidden"])
+        self.assertEqual(g["spoiler_level"], 1)
+        self.assertIsNotNone(g["watchability_score"])
+        self.assertIsNotNone(g["rank"])
+        self.assertIsNotNone(g["percentile"])
+        self.assertIsNotNone(g["n_scored"])
+        self.assertIsNone(g["away"]["score"])
+        self.assertIsNone(g["home"]["score"])
+        self.assertIsNone(g["ot"])
+        self.assertIsNone(g["uw_loss_bonus"])
+        self.assertIsNone(g["applicable_weight"])
+        self.assertEqual(g["metrics"], {})
+        self.assertFalse(g["has_fox_correction"])
+        self.assertFalse(g["has_manual_correction"])
+
+    def test_appears_in_top_composite(self):
+        gid = self._any_2025_scored_game()["game_id"]
+        self._set_level_one(gid)
+        data = self.get("/api/top", season=2025, limit=500)
+        ids = [r["game"]["game_id"] for r in data["results"]]
+        self.assertIn(gid, ids)
+
+    def test_top_contributors_empty_for_a_level_one_row(self):
+        gid = self._any_2025_scored_game()["game_id"]
+        self._set_level_one(gid)
+        data = self.get("/api/top", season=2025, limit=500)
+        row = next(r for r in data["results"] if r["game"]["game_id"] == gid)
+        self.assertEqual(row["top_contributors"], [])
+
+    def test_excluded_from_outcome_shaped_games_surfaces(self):
+        gid = self._any_2025_scored_game()["game_id"]
+        self._set_level_one(gid)
+        combos = [
+            {"sort": "margin"},
+            {"ot": "1"},
+            {"ot": "0"},
+            {"sort": "metric:lead_changes"},
+        ]
+        for extra in combos:
+            data = self.get("/api/games", season=2025, scored="all", limit=500, **extra)
+            ids = [g["game_id"] for g in data["games"]]
+            self.assertNotIn(gid, ids, f"level-1 game leaked through outcome-ordered surface {extra}")
+
+    def test_included_under_score_sort_and_min_score_filter(self):
+        gid = self._any_2025_scored_game()["game_id"]
+        self._set_level_one(gid)
+        data = self.get("/api/games", season=2025, scored="all", sort="score", limit=500)
+        self.assertIn(gid, [g["game_id"] for g in data["games"]])
+        data2 = self.get("/api/games", season=2025, scored="all", min_score=0, limit=500)
+        self.assertIn(gid, [g["game_id"] for g in data2["games"]])
+
+    def test_excluded_from_top_by_metric(self):
+        gid = self._any_2025_scored_game()["game_id"]
+        self._set_level_one(gid)
+        data = self.get("/api/top", season=2025, by="lead_changes", limit=500)
+        ids = [r["game"]["game_id"] for r in data["results"]]
+        self.assertNotIn(gid, ids)
+
+    def test_rank_contiguous_with_a_level_one_game_in_the_corpus(self):
+        gid = self._any_2025_scored_game()["game_id"]
+        self._set_level_one(gid)
+        data = self.get("/api/games", limit=500, sort="score", scored=1)
+        games = data["games"]
+        self.assertTrue(games)
+        for i, g in enumerate(games, start=1):
+            if i > 1 and g["watchability_score"] == games[i - 2]["watchability_score"]:
+                continue  # a genuine tie
+            self.assertEqual(g["rank"], i, f"rank gap at position {i}: game {g['game_id']} has rank {g['rank']}")
+
+    def test_matchup_string_absent_from_neighbor_and_weekly_peaks(self):
+        top = self.get("/api/games", limit=2, sort="score")["games"]
+        g, neighbor_gid = top[0], top[1]["game_id"]
+        matchup_string = f"{g['away']['abbr']} {g['away']['score']} at {g['home']['abbr']} {g['home']['score']}"
+        self._set_level_one(g["game_id"])
+
+        neighbor_detail = self.get(f"/api/games/{neighbor_gid}")
+        neighbor_json = self.client.get(f"/api/games/{neighbor_gid}").get_data(as_text=True)
+        self.assertNotIn(matchup_string, neighbor_json)
+        nb_ids = [
+            (neighbor_detail["neighbors"]["prev_by_rank"] or {}).get("game_id"),
+            (neighbor_detail["neighbors"]["next_by_rank"] or {}).get("game_id"),
+        ]
+        if g["game_id"] in nb_ids:
+            # The level-1 game legitimately CAN appear as a neighbor now
+            # (that's decision 1) -- its watchability_score is fine to show,
+            # but the label must carry no score.
+            entry = (
+                neighbor_detail["neighbors"]["prev_by_rank"]
+                if (neighbor_detail["neighbors"]["prev_by_rank"] or {}).get("game_id") == g["game_id"]
+                else neighbor_detail["neighbors"]["next_by_rank"]
+            )
+            self.assertIsNotNone(entry["watchability_score"])
+            self.assertNotIn(str(g["away"]["score"]), entry["label"])
+
+        weekly = self.get("/api/top/weekly-peaks", season=g["season_year"], season_type=g["season_type"])
+        weekly_text = self.client.get(
+            "/api/top/weekly-peaks", query_string={"season": g["season_year"], "season_type": g["season_type"]}
+        ).get_data(as_text=True)
+        self.assertNotIn(matchup_string, weekly_text)
+        del weekly  # response already checked as raw text above
+
+    def test_game_detail_reveals_rank_but_not_metrics(self):
+        gid = self._any_2025_scored_game()["game_id"]
+        self._set_level_one(gid)
+        detail = self.get(f"/api/games/{gid}")
+        self.assertEqual(detail["game"]["spoiler_level"], 1)
+        self.assertIsNotNone(detail["rank_context"])
+        self.assertIsNone(detail["score_integrity"])
+        self.assertIsNone(detail["wp"])
+        self.assertIsNone(detail["fox_score"])
+        self.assertEqual(detail["game"]["metrics"], {})
+        self.assertEqual(detail["ot"], {"is_ot": None, "max_period_in_data": None, "note": None})
+
+    def test_legacy_hidden_true_still_maps_to_level_zero(self):
+        gid = self._any_2025_scored_game()["game_id"]
+        self.post("/api/spoilers/game", {"game_id": gid, "hidden": True})
+        detail = self.get(f"/api/games/{gid}")
+        self.assertEqual(detail["game"]["spoiler_level"], 0)
+        self.assertIsNone(detail["game"]["watchability_score"])
+
+    def test_level_and_hidden_together_rejected(self):
+        gid = self._any_2025_scored_game()["game_id"]
+        resp = self.client.post(
+            "/api/spoilers/game", json={"game_id": gid, "level": 1, "hidden": True},
+            headers={"Origin": "http://127.0.0.1:5050"},
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_per_user_isolation_of_a_level_one_override(self):
+        gid = self._any_2025_scored_game()["game_id"]
+        self._set_level_one(gid)
+
+        conn = users.get_connection(users.DB_PATH)
+        users.create_user(conn, "seconduser", "seconduserpassword1", invite_code=None)
+        conn.close()
+        client2 = serve.app.test_client()
+        login2 = client2.post(
+            "/api/login", json={"username": "seconduser", "password": "seconduserpassword1"},
+            headers={"Origin": "http://127.0.0.1:5050"},
+        )
+        self.assertEqual(login2.status_code, 200)
+
+        resp2 = client2.get(f"/api/games/{gid}")
+        self.assertEqual(resp2.status_code, 200)
+        other_level = resp2.get_json()["game"]["spoiler_level"]
+        self.assertNotEqual(other_level, 1, "seconduser must not see testuser's level-1 override")
+
+
 class TestSlateOrdering(SpoilerApiTestCase):
     def test_completed_section_stays_score_ordered_when_hidden(self):
         self.post("/api/spoilers/week", {"season_year": 2025, "season_type": 2, "week": 5, "hidden": True})
@@ -324,7 +497,12 @@ class TestGameOverrideUnhide(SpoilerApiTestCase):
         gid = self._any_2025_week5_game_id()
         self.post("/api/spoilers/game", {"game_id": gid, "hidden": False})
         overrides = self.get("/api/spoilers")["active_overrides"]
-        self.assertIn({"type": "game", "game_id": gid, "hidden": False}, overrides)
+        # _spoiler_active_overrides() now reports `level` alongside the
+        # legacy `hidden` flag (see the two-tier-spoiler plan) -- hidden:
+        # False maps to LEVEL_FULL.
+        self.assertIn(
+            {"type": "game", "game_id": gid, "hidden": False, "level": 2}, overrides
+        )
 
         self.post("/api/spoilers/game", {"game_id": gid, "hidden": None})
         overrides2 = self.get("/api/spoilers")["active_overrides"]
@@ -438,8 +616,11 @@ class TestWritePath(SpoilerApiTestCase):
 
         policy = self.get("/api/spoilers")["policy"]
         self.assertEqual(policy["hidden_from"], {"season_year": 2027, "season_type": 2, "week": 1})
-        self.assertTrue(policy["weeks"]["2025:2:9"])
-        self.assertTrue(policy["games"][gid])
+        # Stored as LEVEL_HIDDEN (0), not the legacy bool -- assertTrue(0)
+        # would wrongly fail here since 0 is falsy, so compare against the
+        # level constant explicitly.
+        self.assertEqual(policy["weeks"]["2025:2:9"], spoilers.LEVEL_HIDDEN)
+        self.assertEqual(policy["games"][gid], spoilers.LEVEL_HIDDEN)
 
     def test_default_reset_via_null_season_year(self):
         self.post("/api/spoilers/default", {"season_year": 2030, "season_type": 3, "week": 1})

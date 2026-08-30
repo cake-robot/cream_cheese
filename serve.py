@@ -548,21 +548,33 @@ def _no_store(resp):
     return resp
 
 
-_SPOILER_NUMERIC_FIELDS = ("watchability_score", "uw_loss_bonus", "rank", "percentile", "n_scored", "applicable_weight")
+# spoiler_hidden now means "spoiler_level < LEVEL_FULL" (see shape_game()),
+# i.e. true for both LEVEL_HIDDEN and LEVEL_SCORE -- so the fields a
+# LEVEL_SCORE game is *allowed* to reveal (its whole reason to exist) must
+# not be flagged when that's the level in play. Split accordingly:
+# always-redacted whenever spoiler_hidden is true, vs. redacted only at
+# LEVEL_HIDDEN specifically.
+_SPOILER_ALWAYS_REDACTED_FIELDS = ("uw_loss_bonus", "applicable_weight")
+_SPOILER_LEVEL0_ONLY_FIELDS = ("watchability_score", "rank", "percentile", "n_scored")
 
 
 def _walk_spoiler_leaks(node, path=""):
     """Recursively walk a JSON-able structure; for any dict carrying
     spoiler_hidden: true, yield a description of any field that should
-    have been redacted but wasn't. Dev-only tripwire (see
-    _assert_no_spoiler_leaks below) -- not a substitute for
-    tests/test_spoilers_api.py's scanner test, just a second net for
-    whatever that test didn't anticipate."""
+    have been redacted but wasn't. A missing spoiler_level (an older
+    payload shape) is treated as LEVEL_HIDDEN -- the strictest check --
+    rather than skipped. Dev-only tripwire (see _assert_no_spoiler_leaks
+    below) -- not a substitute for tests/test_spoilers_api.py's scanner
+    test, just a second net for whatever that test didn't anticipate."""
     if isinstance(node, dict):
         if node.get("spoiler_hidden") is True:
-            for f in _SPOILER_NUMERIC_FIELDS:
+            level = node.get("spoiler_level", spoilers.LEVEL_HIDDEN)
+            fields = _SPOILER_ALWAYS_REDACTED_FIELDS
+            if level == spoilers.LEVEL_HIDDEN:
+                fields = fields + _SPOILER_LEVEL0_ONLY_FIELDS
+            for f in fields:
                 if f in node and node[f] is not None:
-                    yield f"{path}.{f} is non-null on a spoiler_hidden game"
+                    yield f"{path}.{f} is non-null on a spoiler_hidden game (level={level})"
             away, home = node.get("away"), node.get("home")
             if isinstance(away, dict) and away.get("score") is not None:
                 yield f"{path}.away.score is non-null on a spoiler_hidden game"
@@ -783,10 +795,11 @@ def shape_game(row, metrics_map, rank=None, n_scored=None, has_fox_correction=Fa
 
     This is also the single choke point for spoiler redaction (see
     src/spoilers.py's module docstring): every field below is computed
-    first, then nulled out by spoilers.redact_game() if the game is
-    currently spoiler-hidden. Because every endpoint that lists or embeds
-    a game goes through this function, a new endpoint that forgets to
-    think about spoilers fails by over-redacting rather than leaking."""
+    first, then nulled out by spoilers.redact_game_full()/
+    redact_game_score_only() according to the game's current spoiler
+    level. Because every endpoint that lists or embeds a game goes through
+    this function, a new endpoint that forgets to think about spoilers
+    fails by over-redacting rather than leaking."""
     scored = row["watchability_score"] is not None
     pct = percentile_from_rank(rank, n_scored) if scored else None
     is_ot = row["is_ot"] if "is_ot" in row.keys() else None
@@ -831,9 +844,21 @@ def shape_game(row, metrics_map, rank=None, n_scored=None, has_fox_correction=Fa
         "applicable_weight": (applicable_weight_of(metrics_map) if scored else None),
     }
     policy = spoiler_ctx()
-    hidden = spoilers.is_hidden_row(row, policy)
-    out["spoiler_hidden"] = hidden
-    return spoilers.redact_game(out) if hidden else out
+    level = spoilers.level_of_row(row, policy)
+    out["spoiler_level"] = level
+    # "Something is hidden" -- true for LEVEL_HIDDEN *and* LEVEL_SCORE, not
+    # just LEVEL_HIDDEN. Every existing client/server guard that reads this
+    # flag was written when hidden was the only state below full reveal, so
+    # keeping it true for LEVEL_SCORE too means an un-updated call site
+    # keeps over-redacting a score-only game rather than treating it as
+    # fully revealed and rendering a field that's actually null (see the
+    # two-tier-spoiler plan's JSON-contract section).
+    out["spoiler_hidden"] = level < spoilers.LEVEL_FULL
+    if level == spoilers.LEVEL_HIDDEN:
+        return spoilers.redact_game_full(out)
+    if level == spoilers.LEVEL_SCORE:
+        return spoilers.redact_game_score_only(out)
+    return out
 
 
 def fetch_live_metrics_maps(conn, game_ids):
@@ -862,7 +887,7 @@ def fetch_live_metrics_maps(conn, game_ids):
     return out
 
 
-def build_live_payload(row, metrics_for_game, hidden=False):
+def build_live_payload(row, metrics_for_game, level=spoilers.LEVEL_FULL):
     """The additive "live" key attached to a game's shape_game() output for
     any game currently tracked in live_scores. `row` must carry the
     live_scores columns plus status_period/status_clock_display/status_detail
@@ -871,10 +896,12 @@ def build_live_payload(row, metrics_for_game, hidden=False):
     computed_at).
 
     This is the second spoiler-redaction choke point (shape_game() is the
-    first) -- `hidden` is applied via spoilers.redact_live() before this
-    ever leaves the function, so a live-tracked game in a hidden week can
-    never surface its running composite score, headline, or quality/drama
-    bars through this payload."""
+    first) -- `level` picks spoilers.redact_live_full()/
+    redact_live_score_only() before this ever leaves the function, so a
+    live-tracked game below LEVEL_FULL can never surface its game score,
+    headline, or quality/drama bars through this payload. At LEVEL_SCORE
+    the running composite (live_score) does survive -- that's the tier's
+    whole point, mirroring watchability_score for a completed game."""
     payload = {
         "live_score": row["live_score"],
         "quality_so_far": row["quality_so_far"],
@@ -892,7 +919,11 @@ def build_live_payload(row, metrics_for_game, hidden=False):
         "computed_at": row["computed_at"],
         "stale_seconds": row["stale_seconds"],
     }
-    return spoilers.redact_live(payload) if hidden else payload
+    if level == spoilers.LEVEL_HIDDEN:
+        return spoilers.redact_live_full(payload)
+    if level == spoilers.LEVEL_SCORE:
+        return spoilers.redact_live_score_only(payload)
+    return payload
 
 
 def build_misalignment_callout(rows):
@@ -1542,10 +1573,11 @@ def api_slate():
     where_scope, scope_params, resolved = _slate_window(conn, scope, request.args.get("date"), tz_name)
 
     # -- live section: additive "live" key, sorted by live_score desc -------
-    # Hidden games are NOT excluded from either this section or the
-    # completed one below -- the Slate is the one surface that still shows
-    # a spoiler-hidden game, ranked by watchability but with every number
-    # redacted (shape_game()/build_live_payload() do the actual redaction).
+    # No game is excluded from either this section or the completed one
+    # below, at any spoiler level -- the Slate is the one surface that still
+    # shows a spoiler-hidden game, ranked by watchability but with every
+    # number redacted (shape_game()/build_live_payload() do the actual
+    # per-level redaction).
     live_where = f"g.status_state = 'in' AND ({where_scope})"
     live_params = list(scope_params)
     live_rows = conn.execute(f"""
@@ -1565,7 +1597,7 @@ def api_slate():
         g_out = shape_game(row, {}, has_manual_correction=(row["game_id"] in MANUAL_CORRECTION_GAME_IDS))
         g_out["live"] = build_live_payload(
             row, live_metrics_by_game.get(row["game_id"], {"so_far": {}, "from_here": {}}),
-            hidden=g_out["spoiler_hidden"],
+            level=g_out["spoiler_level"],
         )
         live_out.append(g_out)
 
@@ -1855,13 +1887,25 @@ def api_games():
     if offset < 0:
         abort(400, description="offset must be >= 0")
 
-    # Spoiler-hidden games are excluded from this endpoint entirely --
-    # under every filter and every sort, not just redacted -- which is
-    # also what keeps sort=margin, ot=0/1, and sort=metric:* leak-free:
-    # they can no longer surface a hidden game's outcome shape because
-    # the game simply never appears in the result set.
+    # Games below LEVEL_SCORE are excluded from this endpoint entirely --
+    # under every filter and every sort, not just redacted -- which is what
+    # keeps sort=margin, ot=0/1, and sort=metric:* leak-free: without this,
+    # they could surface a hidden game's outcome shape by its absence, even
+    # fully redacted.
+    #
+    # A LEVEL_SCORE game reveals watchability_score but nothing about how
+    # the game ended, so it's safe to include under the ordinary
+    # score/date/week sorts and the min_score/max_score/scored filters --
+    # but NOT under sort=margin, sort=metric:*, or an ot=0/1 filter, each of
+    # which would leak exactly what LEVEL_SCORE is supposed to hide through
+    # the query's own ordering or membership rather than through any field
+    # on the game itself (see the two-tier-spoiler plan's leak-channels
+    # section). Raise the inclusion floor to LEVEL_FULL whenever one of
+    # those outcome-shaped surfaces is in play.
+    outcome_ordered = (ot != "all") or (sort == "margin") or (sort_metric_name is not None)
+    min_level = spoilers.LEVEL_FULL if outcome_ordered else spoilers.LEVEL_SCORE
     policy = spoiler_ctx()
-    visible_clause, visible_params = spoilers.visible_sql(policy, alias="g")
+    visible_clause, visible_params = spoilers.visible_sql(policy, alias="g", min_level=min_level)
 
     where = where_schedule + where_outcome + [visible_clause]
     params = params_schedule + params_outcome + visible_params
@@ -1926,10 +1970,10 @@ def api_games():
     # Spoiler-excluded count: schedule-shaped filters only (never ot/
     # min_score/max_score/scored, split out above) -- otherwise the count
     # itself would reconstruct an outcome-shaped fact about the games it's
-    # counting. `NOT (visible_clause)` double-negates visible_clause's own
-    # leading NOT, which is harmless (the CASE it wraps never returns NULL)
-    # and keeps this in terms of the same predicate the rest of the query
-    # already uses.
+    # counting. Uses the same min_level as the main query's visible_clause
+    # (computed above), so this always reports exactly what was dropped
+    # from *this* response -- a level-1 game only counts as excluded when
+    # an outcome-ordered surface forced min_level up to LEVEL_FULL.
     where_sched_sql = " AND ".join(where_schedule) if where_schedule else "1=1"
     excluded_count = conn.execute(
         f"SELECT COUNT(*) AS n FROM games g WHERE {where_sched_sql} AND NOT ({visible_clause})",
@@ -1956,20 +2000,22 @@ def api_game_detail(game_id):
     if row is None:
         abort(404, description="no such game")
 
-    # This route stays reachable for a spoiler-hidden game -- by
-    # click-through from the Slate, or by pasting the game_id into the URL
-    # -- so every payload shape_game() doesn't itself own (ot_info,
-    # score_integrity, corrections, rank_context, neighbors, wp, fox_score,
-    # live/live_history) needs its own guard here. When hidden, the
+    # This route stays reachable at every spoiler level -- by click-through
+    # from the Slate, or by pasting the game_id into the URL -- so every
+    # payload shape_game() doesn't itself own (ot_info, score_integrity,
+    # corrections, rank_context, neighbors, wp, fox_score, live/
+    # live_history) needs its own guard here, keyed off `level` rather than
+    # a single hidden bool. Below the level a payload requires, its
     # underlying queries are skipped outright rather than computed and then
     # discarded -- there's nothing to compute a spoiler-safe value from.
+    # rank_context/neighbors/live are the LEVEL_SCORE exception: revealing
+    # those (score-free) is the entire point of that tier.
     policy = spoiler_ctx()
-    hidden = spoilers.is_hidden_row(row, policy)
+    level = spoilers.level_of_row(row, policy)
+    show_score = level >= spoilers.LEVEL_SCORE
+    show_all = level >= spoilers.LEVEL_FULL
 
-    if hidden:
-        is_ot = None
-        ot_info = {"is_ot": None, "max_period_in_data": None, "note": None}
-    else:
+    if show_all:
         is_ot = bool(conn.execute(
             "SELECT EXISTS(SELECT 1 FROM win_probability WHERE game_id=? AND period_number>4) AS x",
             (game_id,),
@@ -1985,12 +2031,15 @@ def api_game_detail(game_id):
                 "on long overtime games." if is_ot else None
             ),
         }
+    else:
+        is_ot = None
+        ot_info = {"is_ot": None, "max_period_in_data": None, "note": None}
 
     scored = row["watchability_score"] is not None
     metrics_map, score_integrity, rank_context, wp_payload = {}, None, None, None
     neighbors = {"prev_by_rank": None, "next_by_rank": None}
 
-    if scored and not hidden:
+    if scored and show_all:
         metric_rows = conn.execute(
             "SELECT metric_name, raw_value, norm_value FROM game_metrics WHERE game_id=?",
             (game_id,),
@@ -2024,11 +2073,35 @@ def api_game_detail(game_id):
             "uw_loss_bonus": uw_bonus,
         }
 
+        wp_rows = conn.execute(
+            "SELECT play_id, sequence_number, home_win_pct, clock_seconds_elapsed, period_number, "
+            "clock_display, home_score, away_score, play_sequence FROM win_probability "
+            "WHERE game_id=? AND period_number IS NOT NULL ORDER BY play_sequence, id",
+            (game_id,),
+        ).fetchall()
+        wp_payload = build_wp_payload(wp_rows, row)
+    elif show_all and row["status_state"] == "in":
+        # A live-tracked game has real (partial) win_probability rows too --
+        # written incrementally by src/live.py's poller -- so the chart can
+        # render before the game is scored. build_wp_payload's "final" meta
+        # key just reflects whatever score the game currently carries here.
+        wp_rows = conn.execute(
+            "SELECT play_id, sequence_number, home_win_pct, clock_seconds_elapsed, period_number, "
+            "clock_display, home_score, away_score, play_sequence FROM win_probability "
+            "WHERE game_id=? AND period_number IS NOT NULL ORDER BY play_sequence, id",
+            (game_id,),
+        ).fetchall()
+        if wp_rows:
+            wp_payload = build_wp_payload(wp_rows, row)
+
+    if scored and show_score:
         # Rank/percentile here (and the neighbor lookup below) are scoped
-        # to the same visible-only corpus as /api/games and /api/top --
-        # otherwise a visible game's "rank X of N" would silently include
-        # hidden games in N, and would disagree with what the Games tab
-        # shows for the same game.
+        # to the same >=LEVEL_SCORE corpus as /api/games and /api/top --
+        # otherwise a game's "rank X of N" would silently include hidden
+        # games in N, and would disagree with what the Games tab shows for
+        # the same game. Split out of the `show_all` block above: a
+        # LEVEL_SCORE game gets rank/percentile without metrics/
+        # score_integrity, which is the entire point of that tier.
         visible_clause, visible_params = spoilers.visible_sql(policy, alias="g")
         rank_rows = conn.execute(f"""
             SELECT game_id,
@@ -2055,55 +2128,37 @@ def api_game_detail(game_id):
                 },
             }
             gr = rc["rnk_g"]
-            # ranked_cte() is scoped to the same visible-only set, so a
-            # hidden game can never come back as a neighbor here -- this
-            # is safe "for free" rather than needing its own guard.
+            # ranked_cte() is scoped to the same >=LEVEL_SCORE set, so a
+            # LEVEL_HIDDEN game can never come back as a neighbor here --
+            # that part is safe "for free". A LEVEL_SCORE neighbor CAN come
+            # back though (that's the point of the tier), so its own level
+            # is selected here and the label built without its score when
+            # that neighbor isn't itself LEVEL_FULL -- see the two-tier-
+            # spoiler plan's leak-channels section. This is about the
+            # NEIGHBOR's level, not the requested game's.
             ranked_sql, ranked_params = ranked_cte(alias="g")
+            level_expr, level_expr_params = spoilers.level_sql(policy, alias="g")
             nb_rows = conn.execute(f"""
                 WITH {ranked_sql}
                 SELECT g.game_id, g.home_team_abbr, g.away_team_abbr, g.home_score, g.away_score,
-                       g.watchability_score, r.rnk
+                       g.watchability_score, r.rnk, ({level_expr}) AS lvl
                 FROM games g JOIN ranked r ON r.game_id = g.game_id
                 WHERE r.rnk IN (?, ?)
-            """, ranked_params + [gr - 1, gr + 1]).fetchall()
+            """, ranked_params + level_expr_params + [gr - 1, gr + 1]).fetchall()
             for nb in nb_rows:
-                label = f"{nb['away_team_abbr']} {nb['away_score']} at {nb['home_team_abbr']} {nb['home_score']}"
+                nb_full = nb["lvl"] >= spoilers.LEVEL_FULL
+                label = (
+                    f"{nb['away_team_abbr']} {nb['away_score']} at {nb['home_team_abbr']} {nb['home_score']}"
+                    if nb_full else
+                    f"{nb['away_team_abbr']} at {nb['home_team_abbr']}"
+                )
                 entry = {"game_id": nb["game_id"], "rank": nb["rnk"], "label": label, "watchability_score": nb["watchability_score"]}
                 if nb["rnk"] == gr - 1:
                     neighbors["prev_by_rank"] = entry
                 elif nb["rnk"] == gr + 1:
                     neighbors["next_by_rank"] = entry
 
-        wp_rows = conn.execute(
-            "SELECT play_id, sequence_number, home_win_pct, clock_seconds_elapsed, period_number, "
-            "clock_display, home_score, away_score, play_sequence FROM win_probability "
-            "WHERE game_id=? AND period_number IS NOT NULL ORDER BY play_sequence, id",
-            (game_id,),
-        ).fetchall()
-        wp_payload = build_wp_payload(wp_rows, row)
-    elif not hidden and row["status_state"] == "in":
-        # A live-tracked game has real (partial) win_probability rows too --
-        # written incrementally by src/live.py's poller -- so the chart can
-        # render before the game is scored. build_wp_payload's "final" meta
-        # key just reflects whatever score the game currently carries here.
-        wp_rows = conn.execute(
-            "SELECT play_id, sequence_number, home_win_pct, clock_seconds_elapsed, period_number, "
-            "clock_display, home_score, away_score, play_sequence FROM win_probability "
-            "WHERE game_id=? AND period_number IS NOT NULL ORDER BY play_sequence, id",
-            (game_id,),
-        ).fetchall()
-        if wp_rows:
-            wp_payload = build_wp_payload(wp_rows, row)
-
-    if hidden:
-        # The reason strings in src/corrections.py literally describe how
-        # games ended ("the decisive final play"), and Fox reconciliation
-        # notes can too -- so this isn't just numbers to null, the queries
-        # themselves are skipped.
-        manual, fox_diff, unusable_notes = [], [], []
-        corrections_payload = {"manual": [], "fox": [], "unusable": False, "unusable_notes": [], "fox_event_id": None}
-        fox_score_payload = None
-    else:
+    if show_all:
         manual = [c for c in corrections_module.CORRECTIONS if c["game_id"] == game_id]
         fox_rows = conn.execute(
             "SELECT tier, metric_name, espn_value, fox_value, fox_event_id, notes, reconciled_at "
@@ -2121,6 +2176,14 @@ def api_game_detail(game_id):
             "fox_event_id": fox_event_row["fox_event_id"] if fox_event_row else None,
         }
         fox_score_payload = build_fox_score_payload(conn, game_id, row)
+    else:
+        # The reason strings in src/corrections.py literally describe how
+        # games ended ("the decisive final play"), and Fox reconciliation
+        # notes can too -- so this isn't just numbers to null, the queries
+        # themselves are skipped, below LEVEL_FULL.
+        manual, fox_diff, unusable_notes = [], [], []
+        corrections_payload = {"manual": [], "fox": [], "unusable": False, "unusable_notes": [], "fox_event_id": None}
+        fox_score_payload = None
 
     # shape_game() does `row["is_ot"]` / `row.keys()` -- sqlite3.Row supports
     # both, but we need to inject the separately-queried is_ot flag onto it,
@@ -2148,14 +2211,16 @@ def api_game_detail(game_id):
     # at all, rather than nulls -- upcoming games are deliberately unscored
     # (see /api/slate), so there's nothing live to report for them either.
     #
-    # Gated on `hidden`, not on live_row presence: db.clear_live_rows()
+    # Gated on `show_score`, not on live_row presence: db.clear_live_rows()
     # deletes live_scores/live_metrics on completion, but there are two
-    # windows where a *completed* hidden game could still have a live row
-    # -- between the game ending and the poller's next cycle, and any time
-    # the poller isn't running -- and status_detail in particular can read
-    # literally "Final/OT" for an overtime game.
+    # windows where a *completed*, still-below-LEVEL_FULL game could still
+    # have a live row -- between the game ending and the poller's next
+    # cycle, and any time the poller isn't running -- and status_detail in
+    # particular can read literally "Final/OT" for an overtime game.
+    # build_live_payload/redact_live_history apply the level-appropriate
+    # redaction from here.
     live_payload, live_history = None, None
-    if not hidden:
+    if show_score:
         live_row = conn.execute("""
             SELECT ls.*, g.status_period, g.status_clock_display, g.status_detail,
                    (julianday('now') - julianday(ls.computed_at)) * 86400.0 AS stale_seconds
@@ -2164,13 +2229,13 @@ def api_game_detail(game_id):
         """, (game_id,)).fetchone()
         if live_row is not None:
             live_metrics = fetch_live_metrics_maps(conn, [game_id]).get(game_id, {"so_far": {}, "from_here": {}})
-            live_payload = build_live_payload(live_row, live_metrics)
+            live_payload = build_live_payload(live_row, live_metrics, level=level)
             history_rows = conn.execute(
                 "SELECT computed_at, progress, live_score, quality_so_far, drama_from_here "
                 "FROM live_score_history WHERE game_id = ? ORDER BY computed_at",
                 (game_id,),
             ).fetchall()
-            live_history = [dict(r) for r in history_rows]
+            live_history = spoilers.redact_live_history([dict(r) for r in history_rows], level)
 
     return jsonify({
         "game": game_shaped,
@@ -2219,17 +2284,30 @@ def api_top():
         where.append("g.season_type = ?")
         params.append(int(season_type))
 
-    # Excluded entirely -- both the composite branch and every ?by=<metric>
-    # leaderboard below are a full ranked list of individual games, so a
-    # hidden game showing up (even redacted) would still leak its list
-    # position/raw metric value. Unlike /api/games, every filter on this
-    # endpoint (season/season_type) is schedule-shaped, so an excluded
-    # count computed against them carries none of the outcome-leak risk
-    # that /api/games' ot/min_score filters would.
+    # Unlike /api/games, every filter on this endpoint (season/season_type)
+    # is schedule-shaped, so an excluded count computed against them
+    # carries none of the outcome-leak risk that /api/games' ot/min_score
+    # filters would.
     where_schedule_sql = " AND ".join(where)
     params_schedule = list(params)
     policy = spoiler_ctx()
-    visible_clause, visible_params = spoilers.visible_sql(policy, alias="g")
+
+    if by == "composite":
+        # Included at LEVEL_SCORE -- this is the browsable, spoiler-safe
+        # leaderboard the two-tier system exists for (see the two-tier-
+        # spoiler plan): a LEVEL_SCORE game's watchability_score is
+        # revealed, so ranking by it and displaying it doesn't leak
+        # anything beyond what shape_game() already reveals for that game.
+        min_level = spoilers.LEVEL_SCORE
+    else:
+        # A ?by=<metric> leaderboard orders by, and displays, a single raw
+        # per-metric value -- that's component detail LEVEL_SCORE is
+        # supposed to hide, so this branch requires LEVEL_FULL (same
+        # reasoning as /api/games' sort=metric:*, see the leak-channels
+        # section).
+        min_level = spoilers.LEVEL_FULL
+
+    visible_clause, visible_params = spoilers.visible_sql(policy, alias="g", min_level=min_level)
     excluded_count = conn.execute(
         f"SELECT COUNT(*) AS n FROM games g WHERE {where_schedule_sql} AND NOT ({visible_clause})",
         params_schedule + visible_params,
@@ -2254,11 +2332,20 @@ def api_top():
         results = []
         for i, row in enumerate(rows, start=1):
             m_map = metrics_by_game.get(row["game_id"], {})
-            qualifying = (
-                (n, v["weighted"]) for n, v in m_map.items() if v is not None
-                and (metric_percentile(metric_dists.get(n, []), v["norm"]) or 0) >= TOP_CONTRIBUTOR_PERCENTILE_MIN
-            )
-            top2 = sorted(qualifying, key=lambda t: t[1], reverse=True)[:2]
+            # top_contributors is built from m_map before shape_game()'s
+            # redaction runs, so a LEVEL_SCORE game's per-metric components
+            # (already hidden by redact_game_score_only) must be suppressed
+            # here too -- otherwise "Driven by X + Y" would leak exactly the
+            # component detail that tier is supposed to hide. See the
+            # leak-channels section.
+            if spoilers.level_of_row(row, policy) >= spoilers.LEVEL_FULL:
+                qualifying = (
+                    (n, v["weighted"]) for n, v in m_map.items() if v is not None
+                    and (metric_percentile(metric_dists.get(n, []), v["norm"]) or 0) >= TOP_CONTRIBUTOR_PERCENTILE_MIN
+                )
+                top2 = sorted(qualifying, key=lambda t: t[1], reverse=True)[:2]
+            else:
+                top2 = []
             results.append({
                 "rank": i,
                 "game": shape_game(
@@ -2417,14 +2504,18 @@ def api_weekly_peaks():
     season_type = int(season_type)
 
     # Excluded from both the peak computation and the outer match -- a
-    # hidden game must never become "the" peak for its week.
+    # game below LEVEL_SCORE must never become "the" peak for its week.
+    # A LEVEL_SCORE peak IS included (its watchability_score is exactly
+    # what it reveals), but the `matchup` string below must build a
+    # score-free label for it -- see the leak-channels section.
     policy = spoiler_ctx()
     visible_g, visible_params_g = spoilers.visible_sql(policy, alias="g")
     visible_inner, visible_params_inner = spoilers.visible_sql(policy, alias="games")
+    level_expr, level_expr_params = spoilers.level_sql(policy, alias="g")
 
     rows = conn.execute(f"""
         SELECT g.week, g.game_id, g.watchability_score, g.home_team_abbr, g.away_team_abbr,
-               g.home_score, g.away_score
+               g.home_score, g.away_score, ({level_expr}) AS lvl
         FROM games g
         JOIN (
             SELECT week, MAX(watchability_score) AS peak FROM games
@@ -2433,18 +2524,23 @@ def api_weekly_peaks():
         ) m ON g.week = m.week AND g.watchability_score = m.peak
         WHERE g.season_year=? AND g.season_type=? AND {visible_g}
         ORDER BY g.week
-    """, [season, season_type] + visible_params_inner + [season, season_type] + visible_params_g).fetchall()
+    """, level_expr_params + [season, season_type] + visible_params_inner + [season, season_type] + visible_params_g).fetchall()
 
     seen, results = set(), []
     for r in rows:
         if r["week"] in seen:
             continue
         seen.add(r["week"])
+        matchup = (
+            f"{r['away_team_abbr']} {r['away_score']} at {r['home_team_abbr']} {r['home_score']}"
+            if r["lvl"] >= spoilers.LEVEL_FULL
+            else f"{r['away_team_abbr']} at {r['home_team_abbr']}"
+        )
         results.append({
             "week": r["week"],
             "game_id": r["game_id"],
             "watchability_score": r["watchability_score"],
-            "matchup": f"{r['away_team_abbr']} {r['away_score']} at {r['home_team_abbr']} {r['home_score']}",
+            "matchup": matchup,
         })
     return jsonify({"season": season, "season_type": season_type, "weeks": results})
 
@@ -2798,16 +2894,52 @@ def api_feed_activity():
 def _spoiler_active_overrides(policy):
     """Flattens policy["weeks"]/policy["games"] into the list the nav
     toggle's "Active overrides" panel renders, each with an ✕ that POSTs
-    hidden: null to clear it."""
+    level: null to clear it. Reports both `level` (the real value) and
+    `hidden` (level == LEVEL_HIDDEN) -- the latter kept for any client code
+    still reading the pre-LEVEL_SCORE field name."""
     overrides = []
-    for key, hidden in sorted(policy.get("weeks", {}).items()):
+    for key, level in sorted(policy.get("weeks", {}).items()):
         sy, st, wk = key.split(":")
         overrides.append({
-            "type": "week", "season_year": int(sy), "season_type": int(st), "week": int(wk), "hidden": hidden,
+            "type": "week", "season_year": int(sy), "season_type": int(st), "week": int(wk),
+            "level": level, "hidden": level == spoilers.LEVEL_HIDDEN,
         })
-    for gid, hidden in sorted(policy.get("games", {}).items()):
-        overrides.append({"type": "game", "game_id": gid, "hidden": hidden})
+    for gid, level in sorted(policy.get("games", {}).items()):
+        overrides.append({
+            "type": "game", "game_id": gid, "level": level, "hidden": level == spoilers.LEVEL_HIDDEN,
+        })
     return overrides
+
+
+def _parse_spoiler_level(data):
+    """Shared body-parsing for /api/spoilers/week and /api/spoilers/game:
+    accepts either a `level` (0 | 1 | 2 | null) or a legacy `hidden`
+    (true | false | null) field, never both -- a request sending both is
+    ambiguous about which one wins, so it's rejected rather than guessed
+    at. `hidden` maps true -> LEVEL_HIDDEN, false -> LEVEL_FULL, null ->
+    None (clear the override), the same mapping _coerce_level() applies
+    when migrating a stored policy value, so an un-updated client and an
+    old on-disk value both land in the same place. Neither field sent
+    defaults to `hidden: true` (LEVEL_HIDDEN), matching the pre-existing
+    default for these routes."""
+    has_level = "level" in data
+    has_hidden = "hidden" in data
+    if has_level and has_hidden:
+        abort(400, description="send either level or hidden, not both")
+    if has_level:
+        level = data["level"]
+        if level is not None and (
+            isinstance(level, bool)
+            or level not in (spoilers.LEVEL_HIDDEN, spoilers.LEVEL_SCORE, spoilers.LEVEL_FULL)
+        ):
+            abort(400, description="level must be 0, 1, 2, or null")
+        return level
+    hidden = data.get("hidden", True)
+    if hidden is not None and not isinstance(hidden, bool):
+        abort(400, description="hidden must be true, false, or null")
+    if hidden is None:
+        return None
+    return spoilers.LEVEL_HIDDEN if hidden else spoilers.LEVEL_FULL
 
 
 @app.route("/api/spoilers")
@@ -2882,9 +3014,7 @@ def api_spoilers_week():
         week = int(data["week"])
     except (KeyError, TypeError, ValueError):
         abort(400, description="season_year, season_type, and week are required integers")
-    hidden = data.get("hidden", True)
-    if hidden is not None and not isinstance(hidden, bool):
-        abort(400, description="hidden must be true, false, or null")
+    level = _parse_spoiler_level(data)
 
     exists = conn.execute(
         "SELECT 1 FROM games WHERE season_year=? AND season_type=? AND week=? LIMIT 1",
@@ -2894,7 +3024,7 @@ def api_spoilers_week():
         abort(404, description="no games match that season/season_type/week")
 
     policy = spoilers.set_user_week(
-        current_user()["user_id"], season_year, season_type, week, hidden, conn=get_users_db()
+        current_user()["user_id"], season_year, season_type, week, level, conn=get_users_db()
     )
     return jsonify({"policy": policy, "active_overrides": _spoiler_active_overrides(policy)})
 
@@ -2906,15 +3036,13 @@ def api_spoilers_game():
     game_id = data.get("game_id")
     if not game_id:
         abort(400, description="game_id is required")
-    hidden = data.get("hidden", True)
-    if hidden is not None and not isinstance(hidden, bool):
-        abort(400, description="hidden must be true, false, or null")
+    level = _parse_spoiler_level(data)
 
     exists = conn.execute("SELECT 1 FROM games WHERE game_id=? LIMIT 1", (game_id,)).fetchone()
     if exists is None:
         abort(404, description="no such game")
 
-    policy = spoilers.set_user_game(current_user()["user_id"], game_id, hidden, conn=get_users_db())
+    policy = spoilers.set_user_game(current_user()["user_id"], game_id, level, conn=get_users_db())
     return jsonify({"policy": policy, "active_overrides": _spoiler_active_overrides(policy)})
 
 

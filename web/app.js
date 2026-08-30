@@ -198,6 +198,18 @@ function weeksForSeason(meta, season, seasonType) {
   return Array.from(weeks).sort((a, b) => a - b);
 }
 
+// ---- spoiler level ------------------------------------------------------------
+// g.spoiler_level is the real 0/1/2 signal (see the two-tier-spoiler plan);
+// g.spoiler_hidden is kept alongside it meaning "level < 2" (something is
+// still hidden) so any code that only ever checks spoiler_hidden keeps
+// over-redacting a LEVEL_SCORE game rather than treating it as fully
+// revealed. isFullyRevealed() is the "level 2" question spelled out, for
+// call sites that used to write `!g.spoiler_hidden` to mean that.
+
+function isFullyRevealed(g) {
+  return (g.spoiler_level ?? (g.spoiler_hidden ? 0 : 2)) >= 2;
+}
+
 // ---- chips ------------------------------------------------------------------
 
 function gameChips(g) {
@@ -205,8 +217,11 @@ function gameChips(g) {
   // UW loss sorts first and is the one non-neutral chip -- g.uw_loss_bonus
   // is only ever 0 or UW_LOSS_BONUS (scoring.uw_loss_bonus), so truthiness
   // alone is "Washington played and lost," no team-id check needed here.
+  // Always null below LEVEL_FULL, so this chip can never fire early.
   if (g.uw_loss_bonus) chips.push(["UW LOSS", "uw"]);
-  if (g.spoiler_hidden) chips.push(["HIDDEN", "muted"]);
+  if (g.spoiler_level === 0) chips.push(["HIDDEN", "muted"]);
+  else if (g.spoiler_level === 1) chips.push(["SCORE ONLY", "muted"]);
+  else if (g.spoiler_level === undefined && g.spoiler_hidden) chips.push(["HIDDEN", "muted"]);
   if (g.status_state === "in") chips.push(["LIVE", "accent"]);
   if (g.ot) chips.push(["OT", "warn"]);
   if (postseasonInfo(g)?.isCFP) chips.push(["CFP", "accent"]);
@@ -220,10 +235,12 @@ function gameChips(g) {
   if (g.has_manual_correction) chips.push(["MANUAL", "muted"]);
   // "NOT SCORED" means "this game is done and we have nothing" -- a live or
   // not-yet-started game is unscored by design, not by gap, so it gets the
-  // LIVE chip (above) or no chip at all instead of this one. A spoiler-
-  // hidden game also has a null watchability_score, but it very much HAS
-  // been scored -- the HIDDEN chip already covers that case, so exclude it
-  // here rather than showing the misleading claim that nothing exists yet.
+  // LIVE chip (above) or no chip at all instead of this one. A LEVEL_HIDDEN
+  // game also has a null watchability_score, but it very much HAS been
+  // scored -- the HIDDEN chip already covers that case, so exclude it here
+  // rather than showing the misleading claim that nothing exists yet. A
+  // LEVEL_SCORE game's watchability_score is non-null, so it never reaches
+  // this branch at all.
   if (g.watchability_score === null && g.status_state === "post" && !g.spoiler_hidden) {
     chips.push(["NOT SCORED", "muted"]);
   }
