@@ -59,6 +59,15 @@ LIVE_RECENT_WINDOW = 20  # trailing WP rows considered by recent_volatility
 LATENESS_FLOOR = 0.35
 LATENESS_POWER = 2.0
 
+# Minimum normalized (0-1, post-cap) score a from_here metric must clear to
+# appear in headline_for()'s "Driven by X + Y" line. A flat bar rather than
+# a percentile: from_here metrics (tension_now, upset_finish_potential, ...)
+# have no stored historical distribution to rank against -- live_metrics is
+# overwritten every poll cycle, not accumulated -- unlike the retrospective
+# game_metrics corpus the completed-game leaderboard's top_contributors gate
+# (serve.py's TOP_CONTRIBUTOR_PERCENTILE_MIN) can use.
+LIVE_HEADLINE_MIN_NORMALIZED = 0.38
+
 # wp_now is the median of the last 3 WP rows, not the last row alone (ESPN's
 # WP series occasionally ends on an isolated garbage row -- verified on
 # 15/1828 completed games). Log when the raw last row deviates from that
@@ -402,14 +411,18 @@ def _enrich_breakdown(metrics, breakdown):
 
 def headline_for(ctx, fh_bd):
     """One-line explanation generated from the top two contributing
-    from_here metrics, driven by the registry (LIVE_METRIC_LABELS) rather
-    than hardcoded to any one metric name -- retuning a weight or adding a
-    metric updates the generated prose automatically."""
-    top = sorted(
-        ((name, v) for name, v in fh_bd.items() if v["applicable"] and v["weighted"]),
-        key=lambda kv: kv[1]["weighted"],
-        reverse=True,
-    )[:2]
+    from_here metrics that clear LIVE_HEADLINE_MIN_NORMALIZED, driven by the
+    registry (LIVE_METRIC_LABELS) rather than hardcoded to any one metric
+    name -- retuning a weight or adding a metric updates the generated prose
+    automatically. A metric below the bar drops out entirely rather than
+    being backfilled by a weaker one, so a lopsided or early game can
+    legitimately produce one metric's worth of headline, or none."""
+    qualifying = (
+        (name, v) for name, v in fh_bd.items()
+        if v["applicable"] and v["normalized"] is not None
+        and v["normalized"] >= LIVE_HEADLINE_MIN_NORMALIZED
+    )
+    top = sorted(qualifying, key=lambda kv: kv[1]["weighted"], reverse=True)[:2]
     if not top:
         return "Early — not much to go on yet"
     labels = [LIVE_METRIC_LABELS.get(name, name) for name, _ in top]
