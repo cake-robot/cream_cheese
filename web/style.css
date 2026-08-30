@@ -239,6 +239,12 @@ button.reset:disabled { opacity: .4; cursor: default; }
 .chip.accent { color: var(--ink-2); border-color: var(--axis); }
 .chip.good { color: var(--good); border-color: currentColor; }
 .chip.uw { color: #e0ddd2; border-color: var(--series-1); background: #2a1210; }
+/* A chip that's also a real <button> (Slate's per-game "Hidden -> reveal
+   score" action) -- same look as a plain chip, but with pointer/hover/
+   disabled affordances since it's clickable, not just a status tag. */
+.chip-btn { font-family: var(--font-mono); cursor: pointer; background: none; margin-left: 0; margin-right: 6px; }
+.chip-btn:hover { border-color: var(--series-1); color: var(--ink-1); }
+.chip-btn:disabled { opacity: .4; cursor: default; }
 
 .empty-state {
   text-align: center; padding: 48px 16px; color: var(--ink-muted);

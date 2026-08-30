@@ -349,10 +349,37 @@ function renderCompletedSection(games) {
           el("div", { class: "meter" }, el("i", { style: `width:${Math.min(100, (g.watchability_score / 0.70) * 100)}%` })),
           el("span", { class: "pctile", text: g.percentile !== null ? fmtPct(g.percentile) : "" }),
         ]);
+
+    // A real, clickable "Hidden" button, LEVEL_HIDDEN games only -- one
+    // click reveals the watchability score (a real, persistent
+    // LEVEL_SCORE override through the same /api/spoilers/game route
+    // Settings' game-override card and game.html's "Show watchability
+    // score" button both use, so it's visible/undoable from Settings on
+    // any device going forward, not a client-side-only bypass). Placed
+    // before the name in the matchup line, replacing the plain static
+    // HIDDEN chip renderChips() would otherwise also render there.
+    let hiddenBtn = null;
+    if (g.spoiler_level === 0) {
+      hiddenBtn = el("button", { class: "chip chip-btn", type: "button", text: "Hidden", title: "Reveal the watchability score" });
+      hiddenBtn.addEventListener("click", async (ev) => {
+        ev.stopPropagation();
+        hiddenBtn.disabled = true;
+        hiddenBtn.textContent = "Loading…";
+        try {
+          await apiPost("/spoilers/game", { game_id: g.game_id, level: 1 });
+          await loadSlate();
+        } catch (e) {
+          hiddenBtn.disabled = false;
+          hiddenBtn.textContent = `Failed: ${e.message}`;
+        }
+      });
+    }
+    const chips = renderChips(g).filter((c) => !(hiddenBtn && c.textContent === "HIDDEN"));
+
     const row = el("div", { class: "slate-row row-completed" }, [
       scoreCell,
       el("div", { class: "row-info" }, [
-        el("div", { class: "matchup-line" }, [el("span", { class: "name", text: fmtMatchup(g) }), ...renderChips(g)]),
+        el("div", { class: "matchup-line" }, [hiddenBtn, el("span", { class: "name", text: fmtMatchup(g) }), ...chips]),
         rankText ? el("div", { class: "row-sub", text: rankText }) : null,
       ]),
       chevron,
