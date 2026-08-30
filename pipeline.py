@@ -645,8 +645,9 @@ def main():
                          help="Force a fixed N-second poll interval, disabling schedule-aware "
                               "sleeping (default: derived from kickoff times in `games` -- see "
                               f"src/live.py's _schedule_interval; {live.LIVE_INTERVAL_SECONDS}s "
-                              "while live, up to 30min idle otherwise). Also the documented "
-                              "fallback to the old always-poll behaviour.")
+                              "while live, otherwise sleeps to the next kickoff/week-anchor "
+                              "boundary, up to days idle between game weeks). Also the "
+                              "documented fallback to the old always-poll behaviour.")
     parser.add_argument("--live-budget", type=int, metavar="N",
                          help=f"Max per-game /summary fetches per live cycle (default {live.LIVE_SUMMARY_BUDGET})")
     parser.add_argument("--live-date", type=str, metavar="YYYYMMDD",

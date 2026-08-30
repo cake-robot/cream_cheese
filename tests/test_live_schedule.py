@@ -78,25 +78,44 @@ class TestScheduleInterval(unittest.TestCase):
         self.assertEqual(seconds, float(live.LIVE_INTERVAL_SECONDS))
 
     def test_kickoff_25_minutes_out_sleeps_exactly_to_the_lead(self):
+        # self.now is 2026-09-05 18:00 UTC == 14:00 ET, a Saturday: this
+        # week's Tuesday anchor and today's day-of anchor (both 08:00 ET)
+        # are already behind `now`, so kickoff lead is the only future
+        # candidate and this collapses to the pre-rewrite behavior exactly.
         kick = self.now + timedelta(minutes=25)
         _insert_game(self.conn, "g1", _fmt(kick), "pre")
         seconds, hold_awake, _ = live._schedule_interval(self.conn, now=self.now)
         self.assertEqual(seconds, timedelta(minutes=25).total_seconds() - live.LIVE_KICKOFF_LEAD_SECONDS)
         self.assertTrue(hold_awake)  # inside the 3h caffeinate lead
 
-    def test_kickoff_two_hours_out_hits_the_idle_cap(self):
+    def test_kickoff_two_hours_out_sleeps_to_the_kickoff_lead_not_a_flat_cap(self):
+        # Same "today, anchors already past" setup as above -- the whole
+        # point of the rewrite is that a known-but-distant kickoff is no
+        # longer clipped to a flat idle ceiling; it sleeps almost the full
+        # gap.
         kick = self.now + timedelta(hours=2)
         _insert_game(self.conn, "g1", _fmt(kick), "pre")
-        seconds, hold_awake, _ = live._schedule_interval(self.conn, now=self.now)
-        self.assertEqual(seconds, float(live.LIVE_IDLE_INTERVAL_SECONDS))
+        seconds, hold_awake, reason = live._schedule_interval(self.conn, now=self.now)
+        self.assertEqual(seconds, timedelta(hours=2).total_seconds() - live.LIVE_KICKOFF_LEAD_SECONDS)
         self.assertTrue(hold_awake)  # still inside the 3h caffeinate lead
+        self.assertIn("kickoff lead", reason)
 
-    def test_hold_awake_decouples_from_the_idle_cap_at_the_caffeinate_lead(self):
-        kick = self.now + timedelta(hours=4)
+    def test_caffeinate_lead_wins_over_kickoff_lead_when_it_is_the_closer_boundary(self):
+        # Kickoff far enough out that T-3h (caffeinate lead) lands before
+        # T-1min (kickoff lead) -- assert the *earlier* boundary is chosen,
+        # and that hold_awake is still False now but flips True once a
+        # second call lands exactly at that boundary.
+        kick = self.now + timedelta(hours=5)
         _insert_game(self.conn, "g1", _fmt(kick), "pre")
-        seconds, hold_awake, _ = live._schedule_interval(self.conn, now=self.now)
-        self.assertEqual(seconds, float(live.LIVE_IDLE_INTERVAL_SECONDS))
-        self.assertFalse(hold_awake)  # outside the 3h caffeinate lead, same idle cap
+        seconds, hold_awake, reason = live._schedule_interval(self.conn, now=self.now)
+        expected = timedelta(hours=5).total_seconds() - live.LIVE_CAFFEINATE_LEAD_SECONDS
+        self.assertEqual(seconds, expected)
+        self.assertFalse(hold_awake)  # not yet inside the 3h caffeinate lead
+        self.assertIn("caffeinate lead", reason)
+
+        _, hold_awake_at_boundary, _ = live._schedule_interval(
+            self.conn, now=self.now + timedelta(seconds=seconds))
+        self.assertTrue(hold_awake_at_boundary)
 
     def test_kickoff_three_hours_past_still_pre_is_active_inside_grace(self):
         kick = self.now - timedelta(hours=3)
@@ -106,30 +125,147 @@ class TestScheduleInterval(unittest.TestCase):
         self.assertTrue(hold_awake)
         self.assertIn("kickoff", reason)
 
-    def test_kickoff_past_grace_window_is_excluded_from_next_kickoff(self):
+    def test_kickoff_past_grace_window_still_anchors_today_via_the_ungated_query(self):
+        # This is the TBD-placeholder rescue case: a 'pre' row 7h in the
+        # past falls out of next_kickoff's 6h grace floor, but is still
+        # *today*, so _NEXT_ANCHOR_SQL (floored at start-of-today, not
+        # now-grace) still finds it and derives day-of/week-anchor from it
+        # rather than silently jumping to whatever's discovered next.
         kick = self.now - timedelta(hours=7)
         _insert_game(self.conn, "g1", _fmt(kick), "pre")
         seconds, hold_awake, reason = live._schedule_interval(self.conn, now=self.now)
-        self.assertEqual(seconds, float(live.LIVE_IDLE_INTERVAL_SECONDS))
-        self.assertFalse(hold_awake)
-        self.assertIn("no scheduled kickoff", reason)
+        # self.now (14:00 ET) is itself past both this week's Tuesday
+        # anchor and today's 08:00 ET day-of anchor, so every candidate is
+        # already behind us -- the "keep checking through today" fallback.
+        self.assertEqual(seconds, float(live.LIVE_INTERVAL_SECONDS))
+        self.assertTrue(hold_awake)
+        self.assertIn("refresh window passed", reason)
 
-    def test_empty_schedule_returns_idle_cap(self):
+    def test_empty_schedule_with_no_history_returns_the_no_schedule_backstop(self):
         seconds, hold_awake, reason = live._schedule_interval(self.conn, now=self.now)
-        self.assertEqual(seconds, float(live.LIVE_IDLE_INTERVAL_SECONDS))
+        self.assertEqual(seconds, float(live.LIVE_NO_SCHEDULE_BACKSTOP_SECONDS))
         self.assertFalse(hold_awake)
         self.assertIn("no scheduled kickoff", reason)
 
-    def test_all_post_games_returns_idle_cap(self):
-        _insert_game(self.conn, "g1", _fmt(self.now - timedelta(days=1)), "post")
-        seconds, hold_awake, _ = live._schedule_interval(self.conn, now=self.now)
-        self.assertEqual(seconds, float(live.LIVE_IDLE_INTERVAL_SECONDS))
+    def test_recent_regular_season_game_with_no_future_row_triggers_the_blind_backstop(self):
+        # The conference-championship -> first-bowl gap: nothing 'pre' on
+        # record, but the most recent known game is season_type=2 and
+        # recent -- treated as "postseason not yet discovered" rather than
+        # a genuinely empty schedule, so it polls daily instead of sleeping
+        # a year.
+        _insert_game(self.conn, "g1", _fmt(self.now - timedelta(days=3)), "post", season_type=2)
+        seconds, hold_awake, reason = live._schedule_interval(self.conn, now=self.now)
+        self.assertEqual(seconds, float(live.LIVE_BLIND_BACKSTOP_SECONDS))
         self.assertFalse(hold_awake)
+        self.assertIn("postseason not yet discovered", reason)
+
+    def test_recent_postseason_game_does_not_trigger_the_blind_backstop(self):
+        # After the CFP final itself, the most recent game is
+        # season_type=3 -- the blind backstop must not arm here, since
+        # there's no reason to expect a same-season game still coming.
+        _insert_game(self.conn, "g1", _fmt(self.now - timedelta(days=2)), "post", season_type=3)
+        seconds, hold_awake, reason = live._schedule_interval(self.conn, now=self.now)
+        self.assertEqual(seconds, float(live.LIVE_NO_SCHEDULE_BACKSTOP_SECONDS))
+        self.assertFalse(hold_awake)
+        self.assertIn("no scheduled kickoff", reason)
+
+    def test_old_regular_season_game_outside_the_blind_window_does_not_trigger_it(self):
+        _insert_game(self.conn, "g1", _fmt(self.now - timedelta(days=30)), "post", season_type=2)
+        seconds, hold_awake, reason = live._schedule_interval(self.conn, now=self.now)
+        self.assertEqual(seconds, float(live.LIVE_NO_SCHEDULE_BACKSTOP_SECONDS))
+        self.assertFalse(hold_awake)
+        self.assertIn("no scheduled kickoff", reason)
 
     def test_past_season_row_never_surfaces_as_next_kickoff(self):
         _insert_game(self.conn, "old", _fmt(self.now - timedelta(days=700)), "pre", season_year=2024)
         seconds, hold_awake, reason = live._schedule_interval(self.conn, now=self.now)
-        self.assertEqual(seconds, float(live.LIVE_IDLE_INTERVAL_SECONDS))
+        self.assertEqual(seconds, float(live.LIVE_NO_SCHEDULE_BACKSTOP_SECONDS))
+        self.assertFalse(hold_awake)
+        self.assertIn("no scheduled kickoff", reason)
+
+    def test_week_anchor_wins_when_next_game_is_far_out_mid_week(self):
+        # A Wednesday with the next game 10 days out (the following
+        # Saturday): must sleep to *that game's own* week-Tuesday, not to
+        # a rolling N-day timer and not to tomorrow.
+        now = datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc)  # Wednesday
+        kick = datetime(2026, 9, 19, 19, 0, tzinfo=timezone.utc)  # Saturday, 10 days out
+        _insert_game(self.conn, "g1", _fmt(kick), "pre")
+        seconds, hold_awake, reason = live._schedule_interval(self.conn, now=now)
+        expected_wake = live._et_anchor(datetime(2026, 9, 15))  # that Saturday's own Tuesday
+        self.assertEqual(seconds, (expected_wake - now).total_seconds())
+        self.assertFalse(hold_awake)  # nowhere near kickoff or caffeinate lead yet
+        self.assertIn("week anchor", reason)
+
+    def test_all_tbd_saturday_wakes_at_day_of_refresh_once_grace_ages_out(self):
+        # Every game this Saturday shares an ET-midnight TBD placeholder
+        # timestamp. While the placeholder is still within
+        # LIVE_KICKOFF_GRACE_SECONDS (6h) of `now`, caffeinate-lead (3h
+        # before it) is *closer* than day-of (8am the same day) and wins
+        # instead -- day-of only becomes reachable once next_kickoff's
+        # grace floor has excluded the placeholder (so kickoff-lead/
+        # caffeinate-lead aren't computed at all) but 08:00 ET hasn't
+        # arrived yet. That's a real window: grace expires at 06:00 ET,
+        # day-of fires at 08:00 ET. Pick `now` inside it (07:00 ET).
+        placeholder = live._et_anchor(datetime(2026, 9, 12), hour=0)  # 00:00 ET Saturday
+        _insert_game(self.conn, "g1", _fmt(placeholder), "pre")
+        now = live._et_anchor(datetime(2026, 9, 12), hour=7)  # 07:00 ET, same Saturday
+        seconds, hold_awake, reason = live._schedule_interval(self.conn, now=now)
+        expected_wake = live._et_anchor(datetime(2026, 9, 12))  # 08:00 ET, same Saturday
+        self.assertEqual(seconds, (expected_wake - now).total_seconds())
+        self.assertFalse(hold_awake)  # no credible next_kickoff to hold awake for
+        self.assertIn("day-of refresh", reason)
+
+    def test_all_tbd_saturday_does_not_silently_jump_to_next_weeks_placeholder(self):
+        # The failure mode this design exists to prevent: with two
+        # all-TBD Saturdays back to back, once this week's placeholder
+        # ages past grace, a design driven only by the grace-gated
+        # next_kickoff would jump straight to *next* week's placeholder
+        # and sleep through the whole intervening day. The ungated anchor
+        # query must keep resolving to *this* Saturday until it's done.
+        this_week = live._et_anchor(datetime(2026, 9, 12), hour=0)
+        next_week = live._et_anchor(datetime(2026, 9, 19), hour=0)
+        _insert_game(self.conn, "g1", _fmt(this_week), "pre")
+        _insert_game(self.conn, "g2", _fmt(next_week), "pre")
+        now = live._et_anchor(datetime(2026, 9, 12), hour=7)  # 07:00 ET, past this week's grace
+        seconds, hold_awake, reason = live._schedule_interval(self.conn, now=now)
+        expected_wake = live._et_anchor(datetime(2026, 9, 12))  # still today, not next Saturday
+        self.assertEqual(seconds, (expected_wake - now).total_seconds())
+        self.assertIn("2026-09-12", reason)
+
+    def test_postseason_semifinal_to_championship_gap_needs_no_blind_backstop(self):
+        # One postseason discovery pull returns the whole bracket at once
+        # (verified live against ESPN), so the ~10-day semifinal ->
+        # championship gap is walked on ordinary boundaries -- the blind
+        # backstop must never arm here.
+        _insert_game(self.conn, "sf", _fmt(self.now - timedelta(days=1)), "post", season_type=3)
+        champ = self.now + timedelta(days=9)
+        _insert_game(self.conn, "champ", _fmt(champ), "pre", season_type=3)
+        seconds, hold_awake, reason = live._schedule_interval(self.conn, now=self.now)
+        self.assertNotIn("no scheduled kickoff", reason)
+        self.assertNotIn("postseason not yet discovered", reason)
+        self.assertGreater(seconds, 0)
+
+    def test_offseason_with_opener_already_discovered_sleeps_straight_to_its_week(self):
+        # The explicit requirement this rewrite exists to satisfy: zero
+        # pings between the CFP final and the opener's game week, when the
+        # next season is already discovered (this project's normal
+        # pattern).
+        now = datetime(2026, 1, 21, 0, 0, tzinfo=timezone.utc)  # day after the 2026-01-20 CFP final
+        opener = datetime(2026, 8, 29, 16, 0, tzinfo=timezone.utc)  # ~7 months out
+        _insert_game(self.conn, "opener", _fmt(opener), "pre", season_year=2026, season_type=2, week=1)
+        seconds, hold_awake, reason = live._schedule_interval(self.conn, now=now)
+        expected_wake = live._et_anchor(datetime(2026, 8, 25))  # opener week's Tuesday
+        self.assertEqual(seconds, (expected_wake - now).total_seconds())
+        self.assertFalse(hold_awake)
+        self.assertIn("week anchor", reason)
+
+    def test_offseason_with_nothing_discovered_is_unbounded_not_a_daily_ping(self):
+        # No games at all on record, well clear of any conf-champ/bowl
+        # window -- must fall to the (effectively unbounded) no-schedule
+        # backstop, not a recurring daily/weekly check.
+        now = datetime(2026, 3, 1, tzinfo=timezone.utc)
+        seconds, hold_awake, reason = live._schedule_interval(self.conn, now=now)
+        self.assertEqual(seconds, float(live.LIVE_NO_SCHEDULE_BACKSTOP_SECONDS))
         self.assertFalse(hold_awake)
         self.assertIn("no scheduled kickoff", reason)
 
@@ -295,7 +431,7 @@ class TestSleepUntil(unittest.TestCase):
         sleeps = []
         with patch.object(live.time, "time", side_effect=fake_time), \
              patch.object(live.time, "sleep", side_effect=sleeps.append):
-            wake_at = base + live.LIVE_IDLE_INTERVAL_SECONDS
+            wake_at = base + 1800.0
             live._sleep_until(wake_at, lambda: False, lambda: False)
         # Should have returned after at most one more time.time() check,
         # never actually sleeping out the (now long-past) budget.
@@ -305,6 +441,45 @@ class TestSleepUntil(unittest.TestCase):
         with patch.object(live.time, "sleep") as sleep_mock:
             live._sleep_until(live.time.time() + 100, lambda: True, lambda: False)
         sleep_mock.assert_not_called()
+
+    def test_backward_clock_jump_is_capped_at_the_originally_computed_budget(self):
+        """Sleeps now run up to days (offseason: months). A clock that
+        jumps *backward* mid-sleep (NTP correction, VM restore) would
+        otherwise inflate `wake_at - time.time()` well past what was
+        originally intended -- assert `remaining` is clamped to the budget
+        computed once at the start, not to the jumped-back value.
+
+        wake_at is set only 2s out, well under LIVE_SLEEP_SLICE_SECONDS
+        (5.0): an *unclamped* remaining (50002s after the jump) would still
+        pick the 5.0s slice via min(SLICE, remaining), which would look
+        identical to a correctly-clamped 5.0s slice from the same numbers
+        -- indistinguishable. So the budget itself (2s) has to be smaller
+        than the slice for the sleep() call's argument to reveal whether
+        the clamp actually held.
+        """
+        calls = {"n": 0}
+        base = 1_000_000.0
+
+        def fake_time():
+            calls["n"] += 1
+            # First call establishes the 2s budget; every call after
+            # simulates the clock having jumped 50,000s into the past.
+            return base if calls["n"] == 1 else base - 50_000.0
+
+        sleeps = []
+        stopped = {"flag": False}
+
+        def fake_sleep(seconds):
+            sleeps.append(seconds)
+            stopped["flag"] = True  # bail after one slice -- the fake
+            # clock never advances on its own, so nothing else would.
+
+        wake_at = base + 2.0
+        with patch.object(live.time, "time", side_effect=fake_time), \
+             patch.object(live.time, "sleep", side_effect=fake_sleep):
+            live._sleep_until(wake_at, lambda: stopped["flag"], lambda: False)
+
+        self.assertEqual(sleeps, [2.0])
 
 
 if __name__ == "__main__":

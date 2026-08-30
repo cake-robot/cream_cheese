@@ -8,12 +8,16 @@
     <!-- Runs unbounded -- no --live-until, no StartCalendarInterval window.
          Cadence is derived at runtime from the kickoff times already in
          `games` (src/live.py's _schedule_interval): ~10min while a game is
-         live or within ~15min of kickoff, sleeping up to 30min otherwise.
-         The process also manages its own `caffeinate -i` child, asserted
-         only from ~3h before the day's first kickoff through the last game
-         -- NOT wrapped around the whole process the way it used to be,
-         since an always-on process with an unconditional caffeinate would
-         never let the Mac idle-sleep at all. See _sync_caffeinate.
+         live or within 1min of kickoff, otherwise sleeping to the earliest
+         of a handful of schedule-derived boundaries (kickoff lead,
+         caffeinate lead, the start of the next game's week, that game's
+         own day) -- days idle between game weeks, and zero pings at all in
+         the offseason once the opener is discovered. The process also
+         manages its own `caffeinate -i` child, asserted only from ~3h
+         before the day's first kickoff through the last game -- NOT
+         wrapped around the whole process the way it used to be, since an
+         always-on process with an unconditional caffeinate would never let
+         the Mac idle-sleep at all. See _sync_caffeinate.
 
          FALLBACK: if the schedule-aware cadence ever needs to be bypassed
          (e.g. the DB's kickoff schedule is stale/wrong on a gameday),
@@ -45,8 +49,12 @@
          that goes away here since all of _schedule_interval's math is
          UTC-vs-UTC. `just discover` still matters: an undiscovered game
          (e.g. season_type=3/postseason, never pulled for a season) is only
-         found on the next scoreboard pull, up to 30min after the poller
-         goes idle-active for it -- see _schedule_interval's docstring. -->
+         found once the poller's cadence brings it back around to check --
+         see _schedule_interval's docstring for the specific boundaries. If
+         the schedule is empty going into a new season (next season not yet
+         discovered while this one was still running), the sleep is
+         unbounded -- run `just live-now` after discovery to kick it awake
+         rather than waiting on a timer. -->
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
