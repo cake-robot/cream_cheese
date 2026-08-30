@@ -250,15 +250,7 @@ function renderLiveSection(games) {
           el("div", { class: "hero-score-label", text: "LIVE SCORE" }),
         ]),
   ]));
-  if (top.spoiler_hidden) {
-    // Ranked (this IS the top-ranked live game), but every number that
-    // would say *how* it's going -- composite score, headline, quality/
-    // drama bars -- is withheld.
-    hero.appendChild(el("div", {
-      class: "hero-context", style: "margin-top:20px",
-      text: "Ranked #1 among live games right now, but watchability is hidden for this game.",
-    }));
-  } else {
+  if (!top.spoiler_hidden) {
     hero.appendChild(el("div", { class: "hero-context hero-headline", text: top.live.headline }));
     hero.appendChild(halvesBars(top.live.quality_so_far, top.live.drama_from_here));
     const note = divergeNote(top.live);
@@ -327,7 +319,7 @@ function renderCompletedSection(games) {
   if (games.some((g) => g.spoiler_hidden)) {
     wrap.appendChild(el("div", {
       class: "slate-note",
-      text: "Ranked most to least watchable — scores hidden for spoiler-protected games.",
+      text: "Ranked by watchability",
     }));
   }
   const list = el("div", { class: "slate-list" });

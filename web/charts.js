@@ -1002,5 +1002,4 @@ function weeklyPeaksChart(mount, byWeek) {
     rowRightEdge[row] = rect.right;
     if (row > 0) calloutEl.style.marginTop = `-${row * (rect.height + 3)}px`;
   });
-  mount.appendChild(el("div", { class: "t-peaks-caption", text: "One point per week: the single highest composite of that week. Oxblood marks each season's highest week. Postseason weeks are excluded from this view." }));
 }
