@@ -319,6 +319,7 @@ button.reset:disabled { opacity: .4; cursor: default; }
 
 body[data-page="slate"] .hero-card {
   border-color: var(--grid-2); background: var(--surface-1); padding: 30px 32px;
+  cursor: pointer;
 }
 body[data-page="slate"] .hero-card:hover { background: var(--row-selected); }
 body[data-page="slate"] .hero-card h2 { font-size: 32px; letter-spacing: .03em; }
