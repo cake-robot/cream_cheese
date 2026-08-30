@@ -7,9 +7,19 @@
 
     <!-- Always on -- the web UI should stay reachable whether or not games
          are in progress (browsing history, checking settings), unlike the
-         live poller which only runs gameday windows. -->
+         live poller which only runs gameday windows. Wrapped in
+         `caffeinate -i` unconditionally (unlike live's own scoped,
+         schedule-gated assertion in src/live.py's _sync_caffeinate) because
+         this laptop's configured idle-sleep timer is 1 minute on both
+         battery and AC -- without this the machine suspends within a
+         minute of being left alone and the site drops, game or no game.
+         caffeinate holds the assertion only while its child (python) is
+         running and releases it automatically on exit, so KeepAlive
+         restarting this job can't leak the assertion. -->
     <key>ProgramArguments</key>
     <array>
+        <string>/usr/bin/caffeinate</string>
+        <string>-i</string>
         <string>/Users/ericsayre/Documents/cream_cheese/venv/bin/python</string>
         <string>serve.py</string>
     </array>
