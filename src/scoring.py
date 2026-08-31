@@ -61,6 +61,13 @@ COMEBACK_EROSION_THRESHOLD = 0.84
 CLOSE_GAME_MARGIN = 8
 CLOSE_GAME_MIN_SECONDS_LEFT = 180
 
+# --- comeback_erosion: every credit calculation clamps its endpoint here,
+# not the model's raw reading at that play -- see _comeback_erosion_walk's
+# docstring for why (isolates the score-driven erosion this metric measures
+# from clutch_finish's territory: how dramatic the specific decisive play
+# was). ---
+PARITY = 0.5
+
 # --- UW rooting bias: flat bonus for a Washington Huskies loss. Deliberate,
 # not a general watchability signal (plans/personal_notes/personal_notes.md:
 # "extra credit for a UW loss (rooting bias, deliberate -- not a general
@@ -391,6 +398,32 @@ def _comeback_erosion_walk(plays, credit_open_arc):
          unconditionally because `best` only ever keeps the single largest
          value seen across the whole walk -- checking more often just adds
          candidate moments, it can't double-count.
+
+    Only trigger 1 (an arc actually closing -- score_diff hits zero or
+    flips sign) clamps its credit endpoint at PARITY (0.5): `hi - min(w,
+    PARITY)` / `max(w, PARITY) - lo`, not the model's raw reading `hi - w` /
+    `w - lo`. By construction, score_diff==0 or a sign flip means the
+    scoreboard itself has reached (or passed through) neutral -- but Model
+    C is situational, so its reading at that exact play can say something
+    else ("what's about to happen on THIS play," via down/distance/field
+    position) rather than "the lead is now neutralized." That's
+    clutch_finish's domain (rewarding a dramatic decisive play), not this
+    metric's. Confirmed concretely on 401628516 (USC/PSU): two arcs closed
+    on an exact scoreboard TIE (score_diff=0) where the model still read
+    w=0.372 and w=0.334 -- 13-17 points of "erosion" credit in each case was
+    situational texture at that instant, not the lead shrinking further
+    than a tie. Clamping isolates the score-driven component this metric is
+    meant to measure; `hi` itself stays fully situational (a genuinely
+    commanding peak legitimately benefits from down/distance richness) --
+    only the arc-close endpoint is clamped.
+
+    Triggers 2 and 3 deliberately use the RAW (unclamped) w -- score_diff
+    is generally nonzero there (still leading by up to CLOSE_GAME_MARGIN,
+    or an open arc that hasn't closed at all), so there's no "the scoreboard
+    says neutral" fact to enforce; clamping there would wrongly inflate
+    credit for a team that's still clearly, numerically ahead (confirmed:
+    an early version clamped all three triggers and gave a leader up 7
+    -- nowhere near neutral -- the same credit as an actual tie).
     """
     plays = _sanitized_situational_plays(plays)
     if not plays:
@@ -401,12 +434,17 @@ def _comeback_erosion_walk(plays, credit_open_arc):
     for play in plays:
         sd = play["home_score"] - play["away_score"]
         w = _coinflip_home_wp(play)
+        # credit = hi - w must not exceed hi - PARITY -- so w gets a FLOOR
+        # at PARITY here (raising an under-parity reading up to PARITY),
+        # not a ceiling. Symmetric floor->ceiling swap for the lo branch.
+        w_for_hi_branch = max(w, PARITY)
+        w_for_lo_branch = min(w, PARITY)
         new_state = 1 if sd > 0 else (-1 if sd < 0 else 0)
         if new_state != state:
             if hi >= COMEBACK_EROSION_THRESHOLD:
-                best = max(best, hi - w)
+                best = max(best, hi - w_for_hi_branch)
             if lo <= 1 - COMEBACK_EROSION_THRESHOLD:
-                best = max(best, w - lo)
+                best = max(best, w_for_lo_branch - lo)
             lo = hi = w
             state = new_state
         else:
