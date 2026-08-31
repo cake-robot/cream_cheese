@@ -53,7 +53,7 @@ import unittest
 
 import numpy as np
 
-from src import live, live_replay, scoring
+from src import db, espn, live, live_replay, scoring
 
 # Quiet the wp_now deviation warning during bulk sweeps -- it fires on
 # legitimate rapid swings (a pick-six, a muffed punt) as well as genuine
@@ -149,52 +149,75 @@ class FixtureTests(unittest.TestCase):
         self.assertTrue(late)
         self.assertLess(late[-1]["wp_now"], 0.5, "home favorite should be trailing late in this upset")
 
+    def _situational_plays(self, game_id):
+        """Regulation-only, per-play down/distance/field-position feed --
+        what comeback_erosion/comeback_erosion_live actually consume as of
+        the 2026-08-31 Model C redesign (src/scoring.py), replacing the old
+        win_probability-row-based wp_rows for these two metrics only."""
+        row = self.conn.execute(
+            "SELECT home_team_id FROM games WHERE game_id = ?", (game_id,)
+        ).fetchone()
+        raw = db.get_game_raw_json(self.conn, game_id)
+        return espn.extract_situational_plays(raw, row["home_team_id"])
+
     def test_comeback_erosion_live_matches_retrospective_when_consummated(self):
-        # BC @ MSU, 2025 -- a real, completed comeback (lead change). Once an
-        # arc actually ends, comeback_erosion_live shouldn't diverge from
-        # comeback_erosion -- crediting the open arc on top of an
-        # already-scored closed one would double-count.
-        wp_rows = self.conn.execute(
-            "SELECT home_win_pct, home_score, away_score, period_number, clock_seconds_elapsed "
-            "FROM win_probability WHERE game_id = ? ORDER BY play_sequence, id",
-            ("401752816",),
-        ).fetchall()
-        self.assertGreaterEqual(scoring.comeback_erosion_live(wp_rows), 0.4)
+        # SDSU @ USU, 2024, final USU 41-20 -- a real, completed comeback:
+        # USU's coin-flip WP fell as low as 0.110 (SDSU built a real early
+        # lead), then USU retook the lead outright (a genuine flip, not just
+        # a close-game approach) late in Q2, before pulling away to the
+        # final margin. Once that arc actually closes, comeback_erosion_live
+        # shouldn't diverge from comeback_erosion -- crediting the open arc
+        # on top of an already-scored closed one would double-count. (This
+        # replaces the old fixture, BC@MSU/401752816 -- that game's old
+        # 0.444 credit was a fabricated artifact of corrupted post-regulation
+        # rows, not a real comeback; see watchability_algorithm_open_items.md's
+        # 2026-08-31 correction. It now correctly scores 0.0 under the
+        # OT-excluded redesign, which is why it can no longer serve this
+        # test's purpose.)
+        plays = self._situational_plays("401643766")
+        self.assertGreaterEqual(scoring.comeback_erosion_live(plays), 0.3)
         self.assertAlmostEqual(
-            scoring.comeback_erosion_live(wp_rows), scoring.comeback_erosion(wp_rows),
+            scoring.comeback_erosion_live(plays), scoring.comeback_erosion(plays),
         )
 
-    def test_comeback_erosion_live_credits_unconsummated_comeback(self):
+    def test_comeback_erosion_live_credits_unconsummated_comeback_more_than_retrospective(self):
         # FSU @ LSU, 2022 w1 -- FSU built as much as a ~95% coin-flip win
         # probability, then LSU clawed back to trailing by just 1 at the
         # final whistle without ever tying or taking the lead. The arc never
-        # "ends" (no lead change/tie), so the retrospective metric -- which
-        # only credits erosion once an arc closes -- correctly scores this
-        # 0.0. comeback_erosion_live must credit the in-progress recovery
-        # anyway, per the "unconsummated comebacks still count" requirement.
-        wp_rows = self.conn.execute(
-            "SELECT home_win_pct, home_score, away_score, period_number, clock_seconds_elapsed "
-            "FROM win_probability WHERE game_id = ? ORDER BY play_sequence, id",
-            ("401403867",),
-        ).fetchall()
-        self.assertEqual(scoring.comeback_erosion(wp_rows), 0.0)
-        self.assertGreaterEqual(scoring.comeback_erosion_live(wp_rows), 0.3)
+        # closes (no lead change/tie), so comeback_erosion's only credit
+        # comes from the close-game trigger (within CLOSE_GAME_MARGIN points
+        # with time left) -- real credit, but gated/partial. comeback_erosion_live
+        # additionally checks the open arc's own swing on every play with no
+        # such gate (per the "unconsummated comebacks still count, without
+        # needing the margin/time restriction" requirement for the live
+        # in-progress signal), so it credits substantially more here.
+        plays = self._situational_plays("401403867")
+        retrospective = scoring.comeback_erosion(plays)
+        live_value = scoring.comeback_erosion_live(plays)
+        self.assertGreater(retrospective, 0.0)
+        self.assertGreater(live_value, retrospective + 0.2)
 
     def test_comeback_erosion_live_rejects_favorite_pulling_away(self):
-        # UVA (56% pregame favorite) building a clean, never-threatened 17-0
-        # lead over NC State was the case that motivated this metric: raw WP
-        # climbs steadily off a near-coinflip line even though NC State never
-        # had a lead or a real WP edge to come back from. Coin-flip
-        # normalization means that climb never reaches
-        # COMEBACK_EROSION_THRESHOLD, unlike the old comeback_magnitude
-        # (which scored this ~0.35 on raw WP alone).
-        wp_rows = [
-            {"home_win_pct": 0.5641, "home_score": 0, "away_score": 0, "period_number": 1, "clock_seconds_elapsed": 6},
-            {"home_win_pct": 0.6447, "home_score": 3, "away_score": 0, "period_number": 1, "clock_seconds_elapsed": 589},
-            {"home_win_pct": 0.7927, "home_score": 10, "away_score": 0, "period_number": 1, "clock_seconds_elapsed": 743},
-            {"home_win_pct": 0.9056, "home_score": 17, "away_score": 0, "period_number": 2, "clock_seconds_elapsed": 1107},
+        # A mild favorite building a clean, never-threatened lead was the
+        # case that motivated this metric (real trigger: UVA/NC State,
+        # comeback_magnitude=0.35 on raw WP alone off a 56% pregame line
+        # with NC State never holding a real lead or WP edge). Synthetic
+        # here (neutral 1st-and-10-at-midfield situational context at each
+        # checkpoint, isolating the score+time trend) so the peak stays
+        # deliberately just under COMEBACK_EROSION_THRESHOLD under Model C's
+        # own scale -- confirmed via direct wp_situational.coinflip_wp_offense
+        # calls at these exact checkpoints before picking the final margin.
+        plays = [
+            {"elapsed_seconds": 6, "off_is_home": True, "down": 1, "distance": 10,
+             "yards_to_go": 65, "goal_to_go": 0, "home_score": 0, "away_score": 0},
+            {"elapsed_seconds": 589, "off_is_home": True, "down": 1, "distance": 10,
+             "yards_to_go": 65, "goal_to_go": 0, "home_score": 3, "away_score": 0},
+            {"elapsed_seconds": 743, "off_is_home": True, "down": 1, "distance": 10,
+             "yards_to_go": 65, "goal_to_go": 0, "home_score": 10, "away_score": 0},
+            {"elapsed_seconds": 1107, "off_is_home": True, "down": 1, "distance": 10,
+             "yards_to_go": 65, "goal_to_go": 0, "home_score": 12, "away_score": 0},
         ]
-        self.assertEqual(scoring.comeback_erosion_live(wp_rows), 0.0)
+        self.assertEqual(scoring.comeback_erosion_live(plays), 0.0)
 
     def test_severe_score_corruption_no_crash(self):
         # home_score goes negative (-38 / -3) for dozens of consecutive rows
@@ -291,7 +314,8 @@ class UniversalInvariantTests(unittest.TestCase):
                 continue
             period, remaining = live_replay._status_from_wp_row(first_wp)
             ctx = live.build_live_context(
-                wp_rows=[first_wp], home_rank=row["home_rank"], away_rank=row["away_rank"],
+                wp_rows=[first_wp], situational_plays=[],
+                home_rank=row["home_rank"], away_rank=row["away_rank"],
                 initial_home_wp=row["initial_home_wp"],
                 status_period=period, status_clock_seconds=remaining,
             )
