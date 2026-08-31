@@ -347,8 +347,27 @@ def extract_situational_plays(summary, home_team_id):
     {play_id, elapsed_seconds, off_is_home, down, distance, yards_to_go,
     goal_to_go, home_score, away_score}. play_id joins back onto the
     win_probability table's own play_id (see scoring.coinflip_wp_by_play_id).
+
+    home_score/away_score are the score AS OF THE SNAP -- i.e. NOT a
+    scoring play's own homeScore/awayScore field, which ESPN already
+    updates to include that same play's points (and, for a touchdown, its
+    try). down/distance/field position always describe the situation
+    BEFORE the snap, so pairing them with a not-yet-true post-play score
+    would hand the model an impossible combination: great field position
+    AND the lead it's about to produce, stacked. Confirmed concretely on
+    game 401752854 (PSU@Oregon): the play that ties the game -- 1st &
+    Goal at the ORE 7, PSU trailing 10-17 -- carries homeScore=17 (the
+    tying score already applied) on its own play record. Feeding the
+    model that pairing read as 70% for PSU; feeding it the correct
+    pre-snap margin (down 7) reads 23%, matching the surrounding drive's
+    trend. Tracked here as a running score updated from EVERY play's own
+    recorded score (not just the ones that pass the down/distance filter
+    below), so a scoring play that itself isn't a valid scrimmage down
+    (a kickoff/punt/INT return TD) still advances the count for whatever
+    real scrimmage play comes next.
     """
     plays = []
+    prev_home_score, prev_away_score = 0, 0
     for drive in _iter_drives(summary):
         off_team = str(drive.get("team", {}).get("id", ""))
         if not off_team:
@@ -357,39 +376,58 @@ def extract_situational_plays(summary, home_team_id):
 
         for play in drive.get("plays", []):
             period = (play.get("period") or {}).get("number")
-            if period is None or period > 4:
-                continue
+            if period is not None and period <= 4:
+                start = play.get("start", {})
+                down = start.get("down")
+                distance = start.get("distance")
+                yards_to_go = start.get("yardsToEndzone")
+                secs_remaining = _parse_clock((play.get("clock") or {}).get("displayValue") or "")
+                valid = (
+                    down is not None and distance is not None and yards_to_go is not None
+                    and 1 <= down <= 4 and 0 < yards_to_go <= 100 and distance >= 0
+                    and secs_remaining is not None
+                )
+                if valid:
+                    elapsed_seconds = (period - 1) * 900 + (900 - secs_remaining)
+                    plays.append({
+                        "play_id": str(play.get("id", "")),
+                        "elapsed_seconds": elapsed_seconds,
+                        "off_is_home": off_is_home,
+                        "down": down,
+                        "distance": distance,
+                        "yards_to_go": yards_to_go,
+                        "goal_to_go": int(distance >= yards_to_go),
+                        "home_score": prev_home_score,
+                        "away_score": prev_away_score,
+                    })
 
-            start = play.get("start", {})
-            down = start.get("down")
-            distance = start.get("distance")
-            yards_to_go = start.get("yardsToEndzone")
-            if down is None or distance is None or yards_to_go is None:
-                continue
-            if not (1 <= down <= 4) or not (0 < yards_to_go <= 100) or distance < 0:
-                continue
+            home_score_after = play.get("homeScore")
+            away_score_after = play.get("awayScore")
+            if home_score_after is not None:
+                prev_home_score = home_score_after
+            if away_score_after is not None:
+                prev_away_score = away_score_after
 
-            home_score = play.get("homeScore")
-            away_score = play.get("awayScore")
-            if home_score is None or away_score is None:
-                continue
-
-            secs_remaining = _parse_clock((play.get("clock") or {}).get("displayValue") or "")
-            if secs_remaining is None:
-                continue
-            elapsed_seconds = (period - 1) * 900 + (900 - secs_remaining)
-
-            plays.append({
-                "play_id": str(play.get("id", "")),
-                "elapsed_seconds": elapsed_seconds,
-                "off_is_home": off_is_home,
-                "down": down,
-                "distance": distance,
-                "yards_to_go": yards_to_go,
-                "goal_to_go": int(distance >= yards_to_go),
-                "home_score": home_score,
-                "away_score": away_score,
-            })
+    # The scoring-play-that-ends-the-game case: pushing score onto the NEXT
+    # valid play (above) fixes the double-count bug, but if that scoring
+    # play is also the last valid situational play in the game (its own
+    # ensuing kickoff/kneel-down never got a valid down/distance reading,
+    # or there simply isn't a next play), the score change it caused would
+    # otherwise never appear anywhere in the returned list at all --
+    # comeback_erosion's arc-walk needs to see a game's final score change
+    # to credit a game-ending comeback/lead-change. Confirmed empirically
+    # this isn't rare: ~9% of a random sample had a final valid play whose
+    # scoreboard doesn't match the game's real final score. Patched with
+    # one synthetic closing entry, reusing the last play's situational read
+    # (the best available proxy -- there's no "postgame" down/distance) but
+    # the true final score. play_id is blanked so this doesn't collide with
+    # the real play's own entry in coinflip_wp_by_play_id's join.
+    if plays and (plays[-1]["home_score"], plays[-1]["away_score"]) != (prev_home_score, prev_away_score):
+        closer = dict(plays[-1])
+        closer["play_id"] = ""
+        closer["home_score"] = prev_home_score
+        closer["away_score"] = prev_away_score
+        plays.append(closer)
 
     return plays
 
