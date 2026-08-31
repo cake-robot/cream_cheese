@@ -209,13 +209,13 @@ class FixtureTests(unittest.TestCase):
         # calls at these exact checkpoints before picking the final margin.
         plays = [
             {"elapsed_seconds": 6, "off_is_home": True, "down": 1, "distance": 10,
-             "yards_to_go": 65, "goal_to_go": 0, "home_score": 0, "away_score": 0},
+             "yards_to_go": 65, "home_score": 0, "away_score": 0},
             {"elapsed_seconds": 589, "off_is_home": True, "down": 1, "distance": 10,
-             "yards_to_go": 65, "goal_to_go": 0, "home_score": 3, "away_score": 0},
+             "yards_to_go": 65, "home_score": 3, "away_score": 0},
             {"elapsed_seconds": 743, "off_is_home": True, "down": 1, "distance": 10,
-             "yards_to_go": 65, "goal_to_go": 0, "home_score": 10, "away_score": 0},
+             "yards_to_go": 65, "home_score": 10, "away_score": 0},
             {"elapsed_seconds": 1107, "off_is_home": True, "down": 1, "distance": 10,
-             "yards_to_go": 65, "goal_to_go": 0, "home_score": 12, "away_score": 0},
+             "yards_to_go": 65, "home_score": 12, "away_score": 0},
         ]
         self.assertEqual(scoring.comeback_erosion_live(plays), 0.0)
 

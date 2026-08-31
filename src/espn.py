@@ -345,8 +345,13 @@ def extract_situational_plays(summary, home_team_id):
 
     Returns a list of dicts in the drives' own (chronological) order:
     {play_id, elapsed_seconds, off_is_home, down, distance, yards_to_go,
-    goal_to_go, home_score, away_score}. play_id joins back onto the
-    win_probability table's own play_id (see scoring.coinflip_wp_by_play_id).
+    home_score, away_score}. play_id joins back onto the win_probability
+    table's own play_id (see scoring.coinflip_wp_by_play_id). No goal_to_go
+    field -- dropped 2026-09-01 as a Model C feature (see
+    scripts/build_wp_situational_module.py) once a likelihood-ratio test
+    confirmed it carries no information beyond distance/yards_to_go
+    (goal_to_go is deterministic on those two: it's just "distance to a
+    first down and distance to the end zone have converged").
 
     home_score/away_score are the score AS OF THE SNAP -- i.e. NOT a
     scoring play's own homeScore/awayScore field, which ESPN already
@@ -396,32 +401,49 @@ def extract_situational_plays(summary, home_team_id):
                         "down": down,
                         "distance": distance,
                         "yards_to_go": yards_to_go,
-                        "goal_to_go": int(distance >= yards_to_go),
                         "home_score": prev_home_score,
                         "away_score": prev_away_score,
                     })
 
-            home_score_after = play.get("homeScore")
-            away_score_after = play.get("awayScore")
-            if home_score_after is not None:
-                prev_home_score = home_score_after
-            if away_score_after is not None:
-                prev_away_score = away_score_after
+            # Gated on period <= 4, same as the emit check above -- an OT
+            # play must never move this tracker, for two reasons at once:
+            # (1) on a game with the documented "drive spans non-adjacent
+            # periods" corruption, an out-of-order OT play could otherwise
+            # retroactively corrupt a LATER-emitted regulation play's score
+            # (confirmed on 401628439, the known-bad 8-OT game); (2) it's
+            # also what the closing entry below reads once the loop ends --
+            # gating here means that value freezes at the true end-of-
+            # regulation score, so a game that goes to OT gets closed out
+            # on its (by definition, tied) regulation-ending score rather
+            # than however OT actually resolved it. Model C is never meant
+            # to know OT happened at all, and this is the last place OT's
+            # outcome could otherwise sneak back in.
+            if period is not None and period <= 4:
+                home_score_after = play.get("homeScore")
+                away_score_after = play.get("awayScore")
+                if home_score_after is not None:
+                    prev_home_score = home_score_after
+                if away_score_after is not None:
+                    prev_away_score = away_score_after
 
-    # The scoring-play-that-ends-the-game case: pushing score onto the NEXT
-    # valid play (above) fixes the double-count bug, but if that scoring
-    # play is also the last valid situational play in the game (its own
-    # ensuing kickoff/kneel-down never got a valid down/distance reading,
-    # or there simply isn't a next play), the score change it caused would
-    # otherwise never appear anywhere in the returned list at all --
-    # comeback_erosion's arc-walk needs to see a game's final score change
-    # to credit a game-ending comeback/lead-change. Confirmed empirically
-    # this isn't rare: ~9% of a random sample had a final valid play whose
-    # scoreboard doesn't match the game's real final score. Patched with
-    # one synthetic closing entry, reusing the last play's situational read
+    # The scoring-play-that-ends-regulation case: pushing score onto the
+    # NEXT valid play (above) fixes the double-count bug, but if that
+    # scoring play is also the last valid situational play in regulation
+    # (its own ensuing kickoff/kneel-down never got a valid down/distance
+    # reading, or there simply isn't a next regulation play), the score
+    # change it caused would otherwise never appear anywhere in the
+    # returned list at all -- comeback_erosion's arc-walk needs to see
+    # that final regulation-era score change to credit a game-ending
+    # comeback/lead-change. Confirmed empirically this isn't rare: ~9% of
+    # a random sample had a final valid play whose scoreboard doesn't
+    # match the game's real end-of-regulation score. Patched with one
+    # synthetic closing entry, reusing the last play's situational read
     # (the best available proxy -- there's no "postgame" down/distance) but
-    # the true final score. play_id is blanked so this doesn't collide with
-    # the real play's own entry in coinflip_wp_by_play_id's join.
+    # the score AS OF THE END OF REGULATION (prev_home_score/prev_away_score
+    # are now frozen there for an OT game, per the period gate above -- NOT
+    # the game's true whole-game final score, which would smuggle OT's
+    # outcome in here). play_id is blanked so this doesn't collide with the
+    # real play's own entry in coinflip_wp_by_play_id's join.
     if plays and (plays[-1]["home_score"], plays[-1]["away_score"]) != (prev_home_score, prev_away_score):
         closer = dict(plays[-1])
         closer["play_id"] = ""

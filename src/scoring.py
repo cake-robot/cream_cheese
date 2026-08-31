@@ -365,7 +365,7 @@ def coinflip_home_wp(play):
     sd_off = sd_home if play["off_is_home"] else -sd_home
     p_off = wp_situational.coinflip_wp_offense(
         down=play["down"], distance=play["distance"], yards_to_go=play["yards_to_go"],
-        goal_to_go=play["goal_to_go"], score_diff=sd_off, elapsed_seconds=play["elapsed_seconds"],
+        score_diff=sd_off, elapsed_seconds=play["elapsed_seconds"],
     )
     return p_off if play["off_is_home"] else 1 - p_off
 
