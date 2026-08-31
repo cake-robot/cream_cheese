@@ -344,8 +344,9 @@ def extract_situational_plays(summary, home_team_id):
     shape.
 
     Returns a list of dicts in the drives' own (chronological) order:
-    {elapsed_seconds, off_is_home, down, distance, yards_to_go, goal_to_go,
-    home_score, away_score}.
+    {play_id, elapsed_seconds, off_is_home, down, distance, yards_to_go,
+    goal_to_go, home_score, away_score}. play_id joins back onto the
+    win_probability table's own play_id (see scoring.coinflip_wp_by_play_id).
     """
     plays = []
     for drive in _iter_drives(summary):
@@ -379,6 +380,7 @@ def extract_situational_plays(summary, home_team_id):
             elapsed_seconds = (period - 1) * 900 + (900 - secs_remaining)
 
             plays.append({
+                "play_id": str(play.get("id", "")),
                 "elapsed_seconds": elapsed_seconds,
                 "off_is_home": off_is_home,
                 "down": down,
