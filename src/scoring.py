@@ -1,6 +1,6 @@
 import sqlite3
 
-from . import db, wp_baseline
+from . import db, espn, wp_situational
 
 # --- Normalization caps (tunable) ---
 MAX_VOLATILITY = 10.0
@@ -42,12 +42,24 @@ CLUTCH_FINISH_OT_FLOOR = 0.7
 
 # --- comeback_erosion: how far a side's coin-flip-normalized WP must have
 # climbed before a later decline off it counts as eroding a real lead.
-# Chosen empirically: a coinflip team up 14 at Q1 end implies ~79-83% by
-# wp_baseline (verified against 82.4% actual win rate in 51 comparable
-# historical games); 0.84 sits above that, requiring something closer to a
-# genuine 3rd-quarter-or-later command of the game, not just a good
-# Q1 lead. ---
+# Originally chosen empirically against wp_baseline (a coinflip team up 14
+# at Q1 end implied ~79-83% there, verified against 82.4% actual win rate in
+# 51 comparable historical games; 0.84 sits above that). Carried over as-is
+# to wp_situational (2026-08-31 model swap) -- NOT independently
+# re-validated against Model C's own calibration, since Model C's outputs
+# aren't guaranteed to sit on the identical scale wp_baseline's did. Worth
+# rechecking against real up-14-at-Q1-end-style benchmarks if this metric's
+# corpus-wide distribution looks off after the swap. ---
 COMEBACK_EROSION_THRESHOLD = 0.84
+
+# --- comeback_erosion: a second, independent way to bank credit -- pulling
+# back to within one possession (a TD + 2pt try) with real time left counts
+# as real erosion even if the trailing side never actually ties the game or
+# takes the lead. "Real time left" is deliberately not "any time left" --
+# a defense taking a knee up 9 with 30 seconds left shouldn't suddenly
+# start counting as vulnerable just because 9 isn't a huge margin anymore.
+CLOSE_GAME_MARGIN = 8
+CLOSE_GAME_MIN_SECONDS_LEFT = 180
 
 # --- UW rooting bias: flat bonus for a Washington Huskies loss. Deliberate,
 # not a general watchability signal (plans/personal_notes/personal_notes.md:
@@ -278,88 +290,117 @@ def upset_risk(initial_home_wp, home_rank, away_rank):
     return (skew ** UPSET_RISK_POWER) * quality
 
 
-def _sanitized_score_events(wp_rows):
+def _sanitized_situational_plays(plays):
     """
-    Collapse wp_rows to a chronological list of (clock_seconds_elapsed,
-    score_diff) for each *real* score change, in two passes:
+    Two-pass score sanitization -- same two shapes documented in
+    data_quality_findings.md, same fix as the old _sanitized_score_events --
+    applied to a per-PLAY situational event list (espn.extract_situational_plays)
+    instead of collapsing to score-change events only. comeback_erosion's
+    play-level walk needs every play's own down/distance/field position
+    (that's the whole point of switching to wp_situational), not just the
+    moments the score changed, so this keeps every play but still guards
+    the home_score/away_score fields they carry:
 
-    1. Drop isolated spikes -- a distinct (home,away) tuple immediately
-       followed by a LOWER one in either coordinate is noise that gets
-       reverted, not a real score (confirmed example: an away score
-       reading 13 -> 16 -> 13 for a single row). This is the failure mode
-       the classic non-decreasing/running-max guard (used below, and in
-       lead_changes()/clutch_finish()) actually makes WORSE, not better --
-       it would lock in the bad high value as the new floor and reject the
-       correct lower readings that follow. Iterated to a fixed point in
-       case of adjacent spikes.
-    2. Standard non-decreasing sanitization (defends against the OTHER
-       failure mode, a row reverting to a stale LOWER value -- confirmed
-       example: a score reading -1 for 14 consecutive rows), now that
-       spikes are already gone.
+    1. Drop isolated spikes -- a play immediately followed by one with a
+       LOWER score in either coordinate is noise that gets reverted, not a
+       real score (confirmed example: an away score reading 13 -> 16 -> 13).
+       Iterated to a fixed point in case of adjacent spikes.
+    2. Standard non-decreasing sanitization (a play reverting to a stale
+       lower value), now that spikes are already gone.
+
+    Restricted to regulation only by construction (espn.extract_situational_plays
+    never emits an OT play), which matters here specifically: the one
+    confirmed case where this exact two-pass heuristic backfired (401752816,
+    see watchability_algorithm_open_items.md's 2026-08-31 correction) was a
+    corrupted OT-boundary score reset that looked exactly like the shape
+    this filter is built to fix, causing it to delete the correct value and
+    keep the corrupted one. That failure mode is concentrated almost
+    entirely at the OT boundary (confirmed: malformed ESPN drive objects are
+    21/154 in OT games vs. 1/387 in a same-size non-OT sample) -- excluding
+    OT outright removes the one place this heuristic was shown to backfire.
     """
-    distinct = []
-    last = None
-    for r in wp_rows:
-        if r["clock_seconds_elapsed"] is None:
-            continue
-        cur = (r["home_score"], r["away_score"])
-        if cur != last:
-            distinct.append((r["clock_seconds_elapsed"], cur[0], cur[1]))
-            last = cur
-
+    seq = list(plays)
     changed = True
     while changed:
         changed = False
         cleaned = []
         i = 0
-        while i < len(distinct):
-            if i < len(distinct) - 1:
-                _, h, a = distinct[i]
-                _, h2, a2 = distinct[i + 1]
-                if (h is not None and h2 is not None and h > h2) or \
-                   (a is not None and a2 is not None and a > a2):
+        while i < len(seq):
+            if i < len(seq) - 1:
+                h, a = seq[i]["home_score"], seq[i]["away_score"]
+                h2, a2 = seq[i + 1]["home_score"], seq[i + 1]["away_score"]
+                if h > h2 or a > a2:
                     changed = True
                     i += 1
                     continue
-            cleaned.append(distinct[i])
+            cleaned.append(seq[i])
             i += 1
-        distinct = cleaned
+        seq = cleaned
 
-    events = []
-    last = (None, None)
-    home_max, away_max = 0, 0
-    for elapsed, h, a in distinct:
-        if h is not None and h >= home_max:
-            home_max = h
-        if a is not None and a >= away_max:
-            away_max = a
-        cur = (home_max, away_max)
-        if cur != last:
-            events.append((elapsed, cur[0] - cur[1]))
-            last = cur
-    return events
+    out = []
+    hmax = amax = -1
+    for p in seq:
+        h, a = p["home_score"], p["away_score"]
+        if h < hmax or a < amax:
+            continue
+        hmax, amax = max(hmax, h), max(amax, a)
+        out.append(p)
+    return out
 
 
-def _comeback_erosion_walk(wp_rows, credit_open_arc):
-    """Shared arc-walk for comeback_erosion/comeback_erosion_live: segments
-    _sanitized_score_events into "arcs" (stretches between lead changes),
-    tracking each arc's coin-flip-normalized WP extreme (lo/hi) via
-    wp_baseline.coinflip_wp_elapsed. See comeback_erosion's docstring for why
-    coin-flip normalization and arc segmentation both matter.
+def _coinflip_home_wp(play):
+    """wp_situational.coinflip_wp_offense(), converted from the offense's
+    own perspective (what the model actually predicts, since down/distance/
+    field position are only meaningful relative to whoever has the ball) to
+    home-team perspective (what the arc-walk tracks)."""
+    sd_home = play["home_score"] - play["away_score"]
+    sd_off = sd_home if play["off_is_home"] else -sd_home
+    p_off = wp_situational.coinflip_wp_offense(
+        down=play["down"], distance=play["distance"], yards_to_go=play["yards_to_go"],
+        goal_to_go=play["goal_to_go"], score_diff=sd_off, elapsed_seconds=play["elapsed_seconds"],
+    )
+    return p_off if play["off_is_home"] else 1 - p_off
 
-    credit_open_arc controls whether the current (still-open, not yet ended
-    by a lead change/tie) arc's own running lo/hi is also checked against the
-    current point on every event, not just at the moment an arc ends -- see
-    comeback_erosion_live's docstring.
+
+def _comeback_erosion_walk(plays, credit_open_arc):
+    """Shared arc-walk for comeback_erosion/comeback_erosion_live: walks
+    every regulation scrimmage play (espn.extract_situational_plays, via
+    _sanitized_situational_plays), segmenting into "arcs" (stretches between
+    lead changes) and tracking each arc's coin-flip-normalized WP extreme
+    (lo/hi) via wp_situational -- the down/distance/field-position model
+    (see plans/algorithm/wp_situational_model.md), not just score+time+line.
+    See comeback_erosion's docstring for why coin-flip normalization and arc
+    segmentation both matter.
+
+    Regulation-only by construction: `plays` never contains an OT play
+    (espn.extract_situational_plays filters period<=4), so this never scores
+    into overtime, deliberately -- see comeback_erosion's docstring.
+
+    Three ways an arc's credit gets banked, all sharing the same
+    hi-vs-COMEBACK_EROSION_THRESHOLD / lo-vs-(1-threshold) check:
+      1. The arc closes (a lead change or a tie) -- comeback_erosion's
+         original behavior.
+      2. credit_open_arc=True: the CURRENT (still-open) arc's own lo/hi is
+         also checked on every play, not just when it closes -- see
+         comeback_erosion_live's docstring.
+      3. Unconditionally (regardless of credit_open_arc): the score comes
+         within CLOSE_GAME_MARGIN points with more than
+         CLOSE_GAME_MIN_SECONDS_LEFT left in regulation -- a real one-
+         possession game re-emerging counts as erosion even if the trailing
+         side never actually ties it or takes the lead. Safe to check
+         unconditionally because `best` only ever keeps the single largest
+         value seen across the whole walk -- checking more often just adds
+         candidate moments, it can't double-count.
     """
-    events = _sanitized_score_events(wp_rows)
-    if not events:
+    plays = _sanitized_situational_plays(plays)
+    if not plays:
         return 0.0
     best = 0.0
     lo = hi = 0.5
     state = 0  # -1 away ahead, +1 home ahead, 0 tied
-    for elapsed, sd in events:
-        w = wp_baseline.coinflip_wp_elapsed(elapsed, sd)
+    for play in plays:
+        sd = play["home_score"] - play["away_score"]
+        w = _coinflip_home_wp(play)
         new_state = 1 if sd > 0 else (-1 if sd < 0 else 0)
         if new_state != state:
             if hi >= COMEBACK_EROSION_THRESHOLD:
@@ -376,10 +417,17 @@ def _comeback_erosion_walk(wp_rows, credit_open_arc):
                     best = max(best, hi - w)
                 if lo <= 1 - COMEBACK_EROSION_THRESHOLD:
                     best = max(best, w - lo)
+
+        seconds_left = 3600 - play["elapsed_seconds"]
+        if abs(sd) <= CLOSE_GAME_MARGIN and seconds_left > CLOSE_GAME_MIN_SECONDS_LEFT:
+            if hi >= COMEBACK_EROSION_THRESHOLD:
+                best = max(best, hi - w)
+            if lo <= 1 - COMEBACK_EROSION_THRESHOLD:
+                best = max(best, w - lo)
     return best
 
 
-def comeback_erosion(wp_rows):
+def comeback_erosion(situational_plays):
     """
     Did a real, commanding lead get torn down -- credited once per "arc"
     (the stretch between lead changes), at the moment the arc ends, using
@@ -391,12 +439,12 @@ def comeback_erosion(wp_rows):
     continued Q4 margin-building on top of that inflated it to 0.90 in an
     earlier, unsegmented version of this metric).
 
-    "Commanding" is judged in coin-flip terms (wp_baseline.coinflip_wp_elapsed
-    -- the pregame line forced to 50/50), not raw WP, so a heavy pregame
-    favorite's WP being high because it was already expected to be doesn't
-    count on its own (confirmed case: Alabama's 93% WP off a modest early
-    lead against 9%-underdog FSU was mostly the pregame anchor, not a real
-    lead -- coin-flip-normalized it never reaches COMEBACK_EROSION_THRESHOLD).
+    "Commanding" is judged in coin-flip terms (wp_situational.coinflip_wp_offense
+    -- the offense's own pregame WP forced to 50/50), not raw WP, so a heavy
+    pregame favorite's WP being high because it was already expected to be
+    doesn't count on its own (confirmed case: Alabama's 93% WP off a modest
+    early lead against 9%-underdog FSU was mostly the pregame anchor, not a
+    real lead -- coin-flip-normalized it never reaches COMEBACK_EROSION_THRESHOLD).
 
     A tie counts as full erosion of whoever was ahead, same as the
     opponent actually taking the lead -- checked explicitly, not just on
@@ -405,22 +453,38 @@ def comeback_erosion(wp_rows):
     whose real drama was USC's lead getting fully erased into a tie before
     PSU won in OT).
 
-    Uses elapsed-time directly (via coinflip_wp_elapsed), not quarter
-    buckets, so it evaluates Q4/OT rows too -- extrapolating
-    wp_baseline.ELAPSED_MODEL (fit on Q1-3 only) past its trained range,
-    same accepted-but-unverified tradeoff as elsewhere in wp_baseline.
+    NEVER evaluates overtime -- situational_plays (espn.extract_situational_plays)
+    excludes OT plays outright. This is deliberate, not an oversight: any
+    pre-OT lead necessarily already eroded to a tie before OT could happen
+    at all, and that's credited the moment it ties regardless of what
+    happens next, so no real erosion signal is lost by stopping at
+    regulation. What excluding OT actually buys is dodging a documented,
+    confirmed failure mode -- game 401752816 (BC@MSU) scored a fabricated
+    0.444 from two corrupted post-regulation rows that the old sanitizer's
+    spike-removal pass made worse, not better (see
+    watchability_algorithm_open_items.md's 2026-08-31 correction) -- rather
+    than trying to sanitize around ESPN's confirmed OT data-quality problems
+    (corrupted play-by-play, drive objects spanning non-adjacent periods,
+    coin-flip-model extrapolation past its trained range) on a metric this
+    session found doesn't actually need OT to do its job.
 
-    Only credits an arc once it *ends* (a lead change or tie) -- an ongoing
-    comeback attempt that hasn't yet flipped the game gets zero credit here,
-    even in the final, still-open arc of a completed game. That's correct
-    for the retrospective corpus (the outcome is known, so "erosion" that
-    never actually happened isn't real erosion). See comeback_erosion_live
-    for the in-progress counterpart that credits this case.
+    Also credited without a tie or lead change ever happening: the score
+    pulling within CLOSE_GAME_MARGIN points with more than
+    CLOSE_GAME_MIN_SECONDS_LEFT left in regulation -- see
+    _comeback_erosion_walk's docstring, trigger 3.
+
+    Only credits a fully-closed arc's peak, OR the close-game trigger above
+    -- an ongoing comeback attempt that hasn't yet flipped the game AND
+    hasn't yet pulled within one possession with time left gets zero credit
+    here. That's correct for the retrospective corpus (the outcome is
+    known, so erosion that never actually happened, and never even got
+    genuinely close, isn't real erosion). See comeback_erosion_live for the
+    in-progress counterpart that also credits any open-arc swing.
     """
-    return _comeback_erosion_walk(wp_rows, credit_open_arc=False)
+    return _comeback_erosion_walk(situational_plays, credit_open_arc=False)
 
 
-def comeback_erosion_live(wp_rows):
+def comeback_erosion_live(situational_plays):
     """
     Live counterpart to comeback_erosion for a game still in progress: same
     coin-flip-normalized, arc-segmented, COMEBACK_EROSION_THRESHOLD-gated
@@ -439,7 +503,7 @@ def comeback_erosion_live(wp_rows):
     56% pregame line and a lead that was never really in question).
 
     Unlike comeback_erosion, an ongoing arc's own lo/hi is checked against
-    the current point on every event (see _comeback_erosion_walk's
+    the current point on every play (see _comeback_erosion_walk's
     credit_open_arc), not just at the arc's end -- the whole point of a live
     "so far" signal is to catch a real comeback attempt while it's still
     unresolved, per the explicit request that this not require consummation.
@@ -448,7 +512,7 @@ def comeback_erosion_live(wp_rows):
     credit for that -- same protection as comeback_erosion, just also
     evaluated before an arc formally ends.
     """
-    return _comeback_erosion_walk(wp_rows, credit_open_arc=True)
+    return _comeback_erosion_walk(situational_plays, credit_open_arc=True)
 
 
 def uw_loss_bonus(home_team_id, away_team_id, home_score, away_score):
@@ -477,7 +541,7 @@ METRICS = [
     {"name": "upset_risk",       "fn": lambda ctx: upset_risk(ctx["initial_home_wp"], ctx["home_rank"], ctx["away_rank"]), "weight": 1.0, "cap": None},
     {"name": "late_volatility",  "fn": lambda ctx: late_volatility(ctx["wp_rows"]),                   "weight": 0.5, "cap": MAX_LATE_VOLATILITY},
     {"name": "clutch_finish",    "fn": lambda ctx: clutch_finish(ctx["wp_rows"]),                      "weight": 1.0, "cap": MAX_CLUTCH_FINISH},
-    {"name": "comeback_erosion", "fn": lambda ctx: comeback_erosion(ctx["wp_rows"]),                    "weight": 1.0, "cap": None},
+    {"name": "comeback_erosion", "fn": lambda ctx: comeback_erosion(ctx["situational_plays"]),           "weight": 1.0, "cap": None},
 ]
 
 METRICS_BY_NAME = {m["name"]: m for m in METRICS}
@@ -724,8 +788,12 @@ def score_games(conn, game_ids=None, rescore=False):
             print(f"[{i}/{n}] {label} — no WP data, skipping.")
             continue
 
+        raw = db.get_game_raw_json(conn, game_id)
+        situational_plays = espn.extract_situational_plays(raw, row["home_team_id"]) if raw else []
+
         context = {
             "wp_rows": wp_rows,
+            "situational_plays": situational_plays,
             "home_rank": row["home_rank"],
             "away_rank": row["away_rank"],
             "initial_home_wp": row["initial_home_wp"],

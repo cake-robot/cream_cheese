@@ -249,7 +249,7 @@ def _elapsed_from_status(period, clock_remaining):
     return 3600 + (period - 5) * 100
 
 
-def build_live_context(*, wp_rows, home_rank, away_rank, initial_home_wp,
+def build_live_context(*, wp_rows, situational_plays, home_rank, away_rank, initial_home_wp,
                         status_period, status_clock_seconds):
     """
     Assemble the context dict consumed by score_live() / composite_from().
@@ -262,7 +262,10 @@ def build_live_context(*, wp_rows, home_rank, away_rank, initial_home_wp,
     clock by multiple cycles, which is fine: quality_so_far metrics operate
     on whatever prefix of the series is available, and elapsed/progress are
     derived from the fresher scoreboard clock rather than the WP series's
-    own (possibly stale) tail.
+    own (possibly stale) tail. situational_plays (espn.extract_situational_plays
+    on the same freshly-fetched summary) is the regulation-only, per-play
+    down/distance/field-position feed comeback_erosion_live now needs --
+    see src/scoring.py's comeback_erosion for why it moved off wp_rows.
 
     Drops any pregame rows (period_number IS NULL) before they reach the
     metric functions -- ESPN's feed occasionally emits an extra pregame WP
@@ -283,6 +286,7 @@ def build_live_context(*, wp_rows, home_rank, away_rank, initial_home_wp,
     progress = progress_of(elapsed)
     return {
         "wp_rows": wp_rows,
+        "situational_plays": situational_plays,
         "home_rank": home_rank,
         "away_rank": away_rank,
         "initial_home_wp": initial_home_wp,
@@ -323,7 +327,7 @@ def clutch_finish_live(ctx):
 
 
 def comeback_erosion_live_ctx(ctx):
-    return scoring.comeback_erosion_live(ctx["wp_rows"])
+    return scoring.comeback_erosion_live(ctx["situational_plays"])
 
 
 def upset_in_progress_ctx(ctx):
@@ -884,7 +888,7 @@ def _process_live_game(conn, game_id, cycle_seq, mode="normal"):
                   exercise, not the steady state.
     """
     game_row = conn.execute(
-        "SELECT home_rank, away_rank, initial_home_wp, status_period, status_clock_seconds "
+        "SELECT home_team_id, home_rank, away_rank, initial_home_wp, status_period, status_clock_seconds "
         "FROM games WHERE game_id = ?",
         (game_id,),
     ).fetchone()
@@ -894,6 +898,7 @@ def _process_live_game(conn, game_id, cycle_seq, mode="normal"):
     try:
         summary = espn.fetch_game_summary(game_id)
         wp_rows, home_score, away_score, attendance, initial_home_wp = espn.parse_summary_detail(summary)
+        situational_plays = espn.extract_situational_plays(summary, game_row["home_team_id"])
     except Exception:
         logger.exception("live: failed to fetch/parse summary for %s", game_id)
         return
@@ -937,6 +942,7 @@ def _process_live_game(conn, game_id, cycle_seq, mode="normal"):
 
     ctx = build_live_context(
         wp_rows=fresh_wp,
+        situational_plays=situational_plays,
         home_rank=game_row["home_rank"], away_rank=game_row["away_rank"],
         initial_home_wp=ctx_iwp,
         status_period=game_row["status_period"], status_clock_seconds=game_row["status_clock_seconds"],

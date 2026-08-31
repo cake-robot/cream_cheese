@@ -18,7 +18,7 @@ validate the *fetcher* (src/espn.py's live parsing) or the poll loop
 for that half of verification.
 """
 
-from . import live
+from . import db, espn, live
 
 _BLOCKS = " ▁▂▃▄▅▆▇█"
 
@@ -57,7 +57,7 @@ def replay_game(conn, game_id, step=1):
     quality_so_far, drama_from_here, headline}.
     """
     row = conn.execute(
-        "SELECT home_rank, away_rank, initial_home_wp FROM games WHERE game_id = ?",
+        "SELECT home_team_id, home_rank, away_rank, initial_home_wp FROM games WHERE game_id = ?",
         (game_id,),
     ).fetchone()
     if row is None:
@@ -73,12 +73,27 @@ def replay_game(conn, game_id, step=1):
 
     n = len(all_wp)
 
+    # Full regulation-only situational play list for this game, sliced per
+    # prefix below by elapsed_seconds -- same source live.py's real poller
+    # reads from (the raw /summary payload), just archived instead of
+    # freshly fetched. A game with no game_raw_json archived (shouldn't
+    # happen for a completed/detail_fetched game, see project notes) just
+    # replays with comeback_erosion_live always 0, same as an empty list.
+    raw = db.get_game_raw_json(conn, game_id)
+    all_situational_plays = espn.extract_situational_plays(raw, row["home_team_id"]) if raw else []
+
     def _score_prefix(i):
         prefix = all_wp[:i]
         last = prefix[-1]
         period, remaining = _status_from_wp_row(last)
+        cutoff = last["clock_seconds_elapsed"]
+        situational_prefix = (
+            [p for p in all_situational_plays if p["elapsed_seconds"] <= cutoff]
+            if cutoff is not None else all_situational_plays
+        )
         ctx = live.build_live_context(
             wp_rows=prefix,
+            situational_plays=situational_prefix,
             home_rank=row["home_rank"], away_rank=row["away_rank"],
             initial_home_wp=row["initial_home_wp"],
             status_period=period, status_clock_seconds=remaining,

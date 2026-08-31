@@ -320,6 +320,78 @@ def _parse_clock(display):
         return None
 
 
+def _iter_drives(summary):
+    drives = summary.get("drives", {})
+    out = list(drives.get("previous", []))
+    current = drives.get("current")
+    if isinstance(current, dict):
+        out.append(current)
+    elif isinstance(current, list):
+        out.extend(current)
+    return out
+
+
+def extract_situational_plays(summary, home_team_id):
+    """Regulation-only (period 1-4), valid-scrimmage-down plays from a raw
+    ESPN /summary payload -- the exact same filter src/wp_situational.py's
+    fitting script (scripts/build_wp_situational_module.py) uses, so a
+    caller can feed these plays straight into wp_situational.coinflip_wp_offense().
+    OT is deliberately excluded outright (not filtered downstream) -- see
+    src/scoring.py's comeback_erosion for why.
+
+    Works identically for a completed game's archived game_raw_json and a
+    live game's freshly-fetched summary -- both are the same raw /summary
+    shape.
+
+    Returns a list of dicts in the drives' own (chronological) order:
+    {elapsed_seconds, off_is_home, down, distance, yards_to_go, goal_to_go,
+    home_score, away_score}.
+    """
+    plays = []
+    for drive in _iter_drives(summary):
+        off_team = str(drive.get("team", {}).get("id", ""))
+        if not off_team:
+            continue
+        off_is_home = off_team == str(home_team_id)
+
+        for play in drive.get("plays", []):
+            period = (play.get("period") or {}).get("number")
+            if period is None or period > 4:
+                continue
+
+            start = play.get("start", {})
+            down = start.get("down")
+            distance = start.get("distance")
+            yards_to_go = start.get("yardsToEndzone")
+            if down is None or distance is None or yards_to_go is None:
+                continue
+            if not (1 <= down <= 4) or not (0 < yards_to_go <= 100) or distance < 0:
+                continue
+
+            home_score = play.get("homeScore")
+            away_score = play.get("awayScore")
+            if home_score is None or away_score is None:
+                continue
+
+            secs_remaining = _parse_clock((play.get("clock") or {}).get("displayValue") or "")
+            if secs_remaining is None:
+                continue
+            elapsed_seconds = (period - 1) * 900 + (900 - secs_remaining)
+
+            plays.append({
+                "elapsed_seconds": elapsed_seconds,
+                "off_is_home": off_is_home,
+                "down": down,
+                "distance": distance,
+                "yards_to_go": yards_to_go,
+                "goal_to_go": int(distance >= yards_to_go),
+                "home_score": home_score,
+                "away_score": away_score,
+            })
+
+    return plays
+
+
 def parse_summary_detail(summary):
     """
     Returns:
