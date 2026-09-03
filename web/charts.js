@@ -115,7 +115,12 @@ function wpDualCard(mount, wp, game, seriesKey = "home_win_pct") {
     const hs = wp.home_score_clean[idx], as = wp.away_score_clean[idx];
     const downDistance = wp.down_distance ? wp.down_distance[idx] : null;
     const fieldPosition = wp.field_position ? wp.field_position[idx] : null;
-    const situational = downDistance ? `${downDistance}${fieldPosition ? " at " + fieldPosition : ""}` : "";
+    const possIsHome = wp.possession_is_home ? wp.possession_is_home[idx] : null;
+    const possAbbr = possIsHome === true ? homeAbbr : possIsHome === false ? awayAbbr : null;
+    const situationNote = wp.situation_note ? wp.situation_note[idx] : null;
+    const situational = downDistance ?
+      `${possAbbr ? possAbbr + " ball · " : ""}${downDistance}${fieldPosition ? " at " + fieldPosition : ""}` :
+      (situationNote || "");
     const html = `<div class="tt-value">${pct}% ${homeAbbr}${isCoinflip ? " (coin-flip)" : ""}</div>` +
       `<div class="tt-sub">${period ? period.label : ""}${clock ? " · " + clock : ""}</div>` +
       `<div class="tt-sub">${awayAbbr} ${as} – ${homeAbbr} ${hs}</div>` +
@@ -269,18 +274,22 @@ function wpDualCard(mount, wp, game, seriesKey = "home_win_pct") {
   ]);
   mount.appendChild(ladderSection);
 
-  const rows = wp.i.map((i) => [
-    String(i),
-    wp.meta.period_starts.slice().reverse().find((p) => p.i <= i)?.label || "",
-    wp.clock_display[i] || "",
-    (series[i] * 100).toFixed(1) + "%",
-    String(wp.home_score_clean[i]),
-    String(wp.away_score_clean[i]),
-    (wp.down_distance && wp.down_distance[i]) || "",
-    (wp.field_position && wp.field_position[i]) || "",
-  ]);
+  const rows = wp.i.map((i) => {
+    const possIsHome = wp.possession_is_home && wp.possession_is_home[i];
+    return [
+      String(i),
+      wp.meta.period_starts.slice().reverse().find((p) => p.i <= i)?.label || "",
+      wp.clock_display[i] || "",
+      (series[i] * 100).toFixed(1) + "%",
+      String(wp.home_score_clean[i]),
+      String(wp.away_score_clean[i]),
+      possIsHome === true ? homeAbbr : possIsHome === false ? awayAbbr : "",
+      (wp.down_distance && wp.down_distance[i]) || (wp.situation_note && wp.situation_note[i]) || "",
+      (wp.field_position && wp.field_position[i]) || "",
+    ];
+  });
   mount.appendChild(tableTwin(`Show as table (${n} plays)`,
-    ["Play #", "Period", "Clock", isCoinflip ? "Home WP (coin-flip)" : "Home WP", "Home score", "Away score", "Down & distance", "Field position"], rows));
+    ["Play #", "Period", "Clock", isCoinflip ? "Home WP (coin-flip)" : "Home WP", "Home score", "Away score", "Possession", "Down & distance", "Field position"], rows));
 
   if (isCoinflip) {
     mount.appendChild(el("div", { class: "caveat" },

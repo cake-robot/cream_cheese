@@ -1133,19 +1133,31 @@ def attach_coinflip_wp(wp_payload, wp_rows, conn, game_id, home_team_id):
     return wp_payload
 
 
-def attach_situational_text(wp_payload, wp_rows, conn, game_id):
-    """Adds per-play down/distance and field-position text to wp_payload,
-    parallel to wp_rows, for the WP chart tooltip -- the same fields for
-    both the regular and coin-flip series, since they share the same play
-    list. Straight off espn.extract_play_situations (ESPN's own
+def attach_situational_text(wp_payload, wp_rows, conn, game_id, home_team_id):
+    """Adds per-play down/distance, field-position text, and possession to
+    wp_payload, parallel to wp_rows, for the WP chart tooltip -- the same
+    fields for both the regular and coin-flip series, since they share the
+    same play list. Straight off espn.extract_play_situations (ESPN's own
     pre-formatted text), so unlike attach_coinflip_wp there's no model
     computation here -- just a join. None entries are plays with no real
-    down/distance (kickoffs, timeouts, PATs, quarter breaks) or a game with
-    no archived game_raw_json yet."""
+    down/distance (kickoffs, timeouts, PATs, quarter breaks -- those get a
+    `note` instead, see below) or a game with no archived game_raw_json yet.
+
+    possession_is_home is tracked separately from field_position's own team
+    abbreviation -- ESPN names field_position for whichever team's side of
+    the field the yard line falls on, not the offense, so a caller needs
+    this to say who actually has the ball.
+
+    situation_note is ESPN's own play-by-play narration for the plays that
+    don't get a down/distance (timeouts, kickoffs, quarter/half/game
+    breaks) -- e.g. "Timeout Kansas State, clock 01:19" -- so those rows
+    read as something instead of a blank tooltip line."""
     raw = db.get_game_raw_json(conn, game_id)
-    situations = espn.extract_play_situations(raw) if raw else {}
+    situations = espn.extract_play_situations(raw, home_team_id) if raw else {}
     wp_payload["down_distance"] = [situations.get(r["play_id"], {}).get("down_distance") for r in wp_rows]
     wp_payload["field_position"] = [situations.get(r["play_id"], {}).get("field_position") for r in wp_rows]
+    wp_payload["possession_is_home"] = [situations.get(r["play_id"], {}).get("off_is_home") for r in wp_rows]
+    wp_payload["situation_note"] = [situations.get(r["play_id"], {}).get("note") for r in wp_rows]
     return wp_payload
 
 
@@ -2145,7 +2157,7 @@ def api_game_detail(game_id):
         ).fetchall()
         wp_payload = build_wp_payload(wp_rows, row)
         attach_coinflip_wp(wp_payload, wp_rows, conn, game_id, row["home_team_id"])
-        attach_situational_text(wp_payload, wp_rows, conn, game_id)
+        attach_situational_text(wp_payload, wp_rows, conn, game_id, row["home_team_id"])
     elif show_all and row["status_state"] == "in":
         # A live-tracked game has real (partial) win_probability rows too --
         # written incrementally by src/live.py's poller -- so the chart can
@@ -2160,7 +2172,7 @@ def api_game_detail(game_id):
         if wp_rows:
             wp_payload = build_wp_payload(wp_rows, row)
             attach_coinflip_wp(wp_payload, wp_rows, conn, game_id, row["home_team_id"])
-            attach_situational_text(wp_payload, wp_rows, conn, game_id)
+            attach_situational_text(wp_payload, wp_rows, conn, game_id, row["home_team_id"])
 
     if scored and show_score:
         # Rank/percentile here (and the neighbor lookup below) are scoped
