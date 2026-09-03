@@ -1133,6 +1133,22 @@ def attach_coinflip_wp(wp_payload, wp_rows, conn, game_id, home_team_id):
     return wp_payload
 
 
+def attach_situational_text(wp_payload, wp_rows, conn, game_id):
+    """Adds per-play down/distance and field-position text to wp_payload,
+    parallel to wp_rows, for the WP chart tooltip -- the same fields for
+    both the regular and coin-flip series, since they share the same play
+    list. Straight off espn.extract_play_situations (ESPN's own
+    pre-formatted text), so unlike attach_coinflip_wp there's no model
+    computation here -- just a join. None entries are plays with no real
+    down/distance (kickoffs, timeouts, PATs, quarter breaks) or a game with
+    no archived game_raw_json yet."""
+    raw = db.get_game_raw_json(conn, game_id)
+    situations = espn.extract_play_situations(raw) if raw else {}
+    wp_payload["down_distance"] = [situations.get(r["play_id"], {}).get("down_distance") for r in wp_rows]
+    wp_payload["field_position"] = [situations.get(r["play_id"], {}).get("field_position") for r in wp_rows]
+    return wp_payload
+
+
 def build_fox_score_payload(conn, game_id, game_row):
     """Fox's own running score, shaped to match build_wp_payload's score
     fields closely enough that the same chart renderer can draw either one.
@@ -2129,6 +2145,7 @@ def api_game_detail(game_id):
         ).fetchall()
         wp_payload = build_wp_payload(wp_rows, row)
         attach_coinflip_wp(wp_payload, wp_rows, conn, game_id, row["home_team_id"])
+        attach_situational_text(wp_payload, wp_rows, conn, game_id)
     elif show_all and row["status_state"] == "in":
         # A live-tracked game has real (partial) win_probability rows too --
         # written incrementally by src/live.py's poller -- so the chart can
@@ -2143,6 +2160,7 @@ def api_game_detail(game_id):
         if wp_rows:
             wp_payload = build_wp_payload(wp_rows, row)
             attach_coinflip_wp(wp_payload, wp_rows, conn, game_id, row["home_team_id"])
+            attach_situational_text(wp_payload, wp_rows, conn, game_id)
 
     if scored and show_score:
         # Rank/percentile here (and the neighbor lookup below) are scoped

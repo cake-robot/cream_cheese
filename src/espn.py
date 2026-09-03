@@ -484,6 +484,38 @@ def extract_situational_plays(summary, home_team_id):
     return plays
 
 
+def extract_play_situations(summary):
+    """Per-play down/distance and field-position text, keyed by play_id, for
+    every real snap in the raw ESPN /summary payload -- including OT, unlike
+    extract_situational_plays (which is Model-C-specific and regulation-
+    only). Straight passthrough of ESPN's own pre-formatted
+    shortDownDistanceText ("1st & 10") and possessionText ("HAW 25") off the
+    play's `start` block, for the WP chart tooltip.
+
+    NON_SCRIMMAGE_PLAY_TYPES (Timeout/Kickoff/etc.) are skipped -- ESPN's
+    `start` block on those frequently carries a stale/phantom reading (see
+    extract_situational_plays' docstring for the confirmed corruption), and
+    those play types have no real down/distance to show anyway.
+
+    Returns {play_id: {"down_distance": str|None, "field_position": str|None}}.
+    """
+    out = {}
+    for drive in _iter_drives(summary):
+        for play in drive.get("plays", []):
+            play_type = (play.get("type") or {}).get("text")
+            if play_type in NON_SCRIMMAGE_PLAY_TYPES:
+                continue
+            play_id = str(play.get("id", ""))
+            if not play_id:
+                continue
+            start = play.get("start", {})
+            down_distance = start.get("shortDownDistanceText")
+            field_position = start.get("possessionText")
+            if down_distance or field_position:
+                out[play_id] = {"down_distance": down_distance, "field_position": field_position}
+    return out
+
+
 def parse_summary_detail(summary):
     """
     Returns:
