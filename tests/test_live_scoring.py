@@ -190,12 +190,23 @@ class FixtureTests(unittest.TestCase):
         # additionally checks the open arc's own swing on every play with no
         # such gate (per the "unconsummated comebacks still count, without
         # needing the margin/time restriction" requirement for the live
-        # in-progress signal), so it credits substantially more here.
+        # in-progress signal), so it still credits meaningfully more here.
+        # Margin narrowed 0.2->0.1 (2026-09-02, Model C's scores_needed
+        # refit): the deficit spends most of this arc at 14-17 points, which
+        # a continuous score_diff term used to treat as progressively more
+        # extreme, but scores_needed buckets any 9-16 point deficit into the
+        # same "2 scores" reading -- correct per the discrete-scoring
+        # rationale (see src/wp_situational.py), but it compresses how low
+        # this specific arc's "lo" reads, so the recovery swing
+        # comeback_erosion_live credits shrinks too (0.104->0.253, a 0.149
+        # gap, still clearly directional -- confirmed via
+        # scripts/compare_wp_endgame_calibration.py's held-out validation
+        # that this refit is a net improvement, not a regression).
         plays = self._situational_plays("401403867")
         retrospective = scoring.comeback_erosion(plays)
         live_value = scoring.comeback_erosion_live(plays)
         self.assertGreater(retrospective, 0.0)
-        self.assertGreater(live_value, retrospective + 0.2)
+        self.assertGreater(live_value, retrospective + 0.1)
 
     def test_comeback_erosion_live_rejects_favorite_pulling_away(self):
         # A mild favorite building a clean, never-threatened lead was the
