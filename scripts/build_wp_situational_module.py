@@ -24,6 +24,32 @@ Differences from the exploratory fit:
     offense's perspective. Callers needing a home-perspective value flip
     the result based on which team is on offense (see src/scoring.py's
     comeback_erosion, which needs exactly this).
+  - No goal_to_go feature (dropped 2026-09-01). It's deterministic on
+    distance/yards_to_go (goal-to-go is just "distance-to-a-first-down and
+    distance-to-the-end-zone have converged"), and once build_dataset()'s
+    score/situation pairing fix (see its own docstring) removed a confound
+    that had been inflating its apparent effect, a likelihood-ratio test
+    showed dropping it costs nothing (pseudo-R^2 0.485748 -> 0.485747,
+    p=0.34) -- distance/yards_to_go already capture everything it was
+    adding.
+  - Training set excludes games that went to overtime entirely (2026-09-01,
+    ~4.1% of games, ~4.3% of rows). A play from the 3rd quarter of a game
+    that later ties and goes to OT carries a target label (offense_won)
+    partly decided by OT's own near-coinflip resolution -- something no
+    regulation-era feature can predict -- injecting label noise concentrated
+    in exactly the close/late-game region comeback_erosion cares about
+    most. Confirmed via scripts/compare_wp_ot_exclusion.py: excluding these
+    games costs nothing on held-out accuracy (Brier 0.1049 -> 0.1046 on a
+    clean non-OT test slice; 0.1126 -> 0.1127, noise-level, on a test slice
+    that still includes OT games) while producing a slightly more decisive
+    model (e.g. logit_offense_pregame_wp 0.743 -> 0.780) -- consistent with
+    OT games being disproportionately close/back-and-forth and diluting
+    what "a comfortable situation" looks like. This is a training-set
+    choice only; a regulation play from a game that happens to go to OT is
+    still scored normally at inference time (see espn.extract_situational_plays'
+    period gate on its running score tracker for the separate,
+    inference-side guarantee that OT's outcome can never leak into a
+    regulation play's own reading).
 
 Requires numpy/pandas/statsmodels (dev-only, see requirements-dev.txt) --
 deliberately NOT a runtime dependency of src/wp_situational.py itself.
@@ -40,8 +66,7 @@ import statsmodels.api as sm
 
 sys.path.insert(0, ".")
 
-from src import db
-from src.espn import _parse_clock
+from src import db, espn
 
 EPS = 1e-4
 MAX_DISTANCE = 30
@@ -53,30 +78,42 @@ def logit(p):
     return np.log(p / (1 - p))
 
 
-def _iter_drives(raw):
-    drives = raw.get("drives", {})
-    out = list(drives.get("previous", []))
-    current = drives.get("current")
-    if isinstance(current, dict):
-        out.append(current)
-    elif isinstance(current, list):
-        out.extend(current)
-    return out
-
-
 def build_dataset(conn):
     """Regulation-only (period <= 4) scrimmage-down plays, offense
-    perspective, target = actual game outcome. Same filter fit_wp_situational_model.py
-    uses (valid down 1-4, valid distance/yardsToEndzone) -- these are the
-    exact plays the production model needs to handle at inference time too,
-    via the shared extraction helper in src/scoring.py."""
+    perspective, target = actual game outcome. Uses the same
+    espn.extract_situational_plays() the production model consumes at
+    inference time (src/scoring.py's comeback_erosion, serve.py's chart
+    toggle) -- previously this duplicated that extraction logic inline and
+    drifted out of sync with it: this script paired each play's down/
+    distance with that SAME play's own (already-updated) post-play score,
+    while the production extractor got fixed to use the score as of the
+    snap (see src/espn.py's 2026-08-31 fix, commit 8815ce7 -- a scoring
+    play's own homeScore/awayScore already includes its own points, an
+    impossible combination with its pre-snap down/distance). Reusing the
+    shared extractor here means the training set and the model's actual
+    runtime inputs can never drift apart like that again.
+
+    Synthetic closing entries (play_id=="" -- extract_situational_plays'
+    end-of-game safety net for comeback_erosion's arc-walk, not a real
+    play) are excluded: they duplicate the prior play's situational
+    reading under a different score, which isn't a real independent
+    observation for a play-level model to train on.
+
+    Games that went to overtime are excluded entirely (see the module
+    docstring's "Training set excludes..." entry) -- their regulation
+    plays' own outcome label is partly decided by OT's near-coinflip
+    resolution, not by anything a regulation-era feature could predict."""
     games = conn.execute("""
         SELECT game_id, home_team_id, home_score, away_score, initial_home_wp
-        FROM games
+        FROM games g
         WHERE completed = 1 AND detail_fetched = 1
           AND home_score IS NOT NULL AND away_score IS NOT NULL
           AND home_score != away_score
           AND initial_home_wp IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM win_probability wp
+              WHERE wp.game_id = g.game_id AND wp.period_number > 4
+          )
     """).fetchall()
 
     rows = []
@@ -88,52 +125,26 @@ def build_dataset(conn):
         n_games_used += 1
         home_won = 1 if g["home_score"] > g["away_score"] else 0
 
-        for drive in _iter_drives(raw):
-            off_team = str(drive.get("team", {}).get("id", ""))
-            if not off_team:
-                continue
-            off_is_home = off_team == g["home_team_id"]
+        for play in espn.extract_situational_plays(raw, g["home_team_id"]):
+            if not play["play_id"]:
+                continue  # synthetic closing entry, not a real play
 
-            for play in drive.get("plays", []):
-                period = (play.get("period") or {}).get("number")
-                if period is None or period > 4:  # regulation only -- OT excluded
-                    continue
+            off_is_home = play["off_is_home"]
+            offense_score = play["home_score"] if off_is_home else play["away_score"]
+            defense_score = play["away_score"] if off_is_home else play["home_score"]
+            offense_pregame_wp = g["initial_home_wp"] if off_is_home else 1 - g["initial_home_wp"]
+            offense_won = home_won if off_is_home else 1 - home_won
+            seconds_remaining_reg = max(0, 3600 - play["elapsed_seconds"])
 
-                start = play.get("start", {})
-                down = start.get("down")
-                distance = start.get("distance")
-                yards_to_go = start.get("yardsToEndzone")
-                if down is None or distance is None or yards_to_go is None:
-                    continue
-                if not (1 <= down <= 4) or not (0 < yards_to_go <= 100) or distance < 0:
-                    continue
-
-                home_score = play.get("homeScore")
-                away_score = play.get("awayScore")
-                if home_score is None or away_score is None:
-                    continue
-
-                secs_remaining = _parse_clock((play.get("clock") or {}).get("displayValue") or "")
-                if secs_remaining is None:
-                    continue
-                elapsed_seconds = (period - 1) * 900 + (900 - secs_remaining)
-                seconds_remaining_reg = max(0, 3600 - elapsed_seconds)
-
-                offense_score = home_score if off_is_home else away_score
-                defense_score = away_score if off_is_home else home_score
-                offense_pregame_wp = g["initial_home_wp"] if off_is_home else 1 - g["initial_home_wp"]
-                offense_won = home_won if off_is_home else 1 - home_won
-
-                rows.append({
-                    "down": down,
-                    "distance": min(distance, MAX_DISTANCE),
-                    "yards_to_go": yards_to_go,
-                    "goal_to_go": int(distance >= yards_to_go),
-                    "score_diff": offense_score - defense_score,
-                    "seconds_remaining_reg": seconds_remaining_reg,
-                    "offense_pregame_wp": offense_pregame_wp,
-                    "offense_won": offense_won,
-                })
+            rows.append({
+                "down": play["down"],
+                "distance": min(play["distance"], MAX_DISTANCE),
+                "yards_to_go": play["yards_to_go"],
+                "score_diff": offense_score - defense_score,
+                "seconds_remaining_reg": seconds_remaining_reg,
+                "offense_pregame_wp": offense_pregame_wp,
+                "offense_won": offense_won,
+            })
 
     return pd.DataFrame(rows), n_games_used, len(games)
 
@@ -151,7 +162,6 @@ def make_design(df):
         "down4": (df["down"] == 4).astype(int),
         "distance": df["distance"],
         "yards_to_go": df["yards_to_go"],
-        "goal_to_go": df["goal_to_go"],
     })
     return sm.add_constant(X)
 
@@ -196,7 +206,7 @@ def inv_logit(x):
     return 1 / (1 + math.exp(-x))
 
 
-def predict_wp_offense(*, down, distance, yards_to_go, goal_to_go,
+def predict_wp_offense(*, down, distance, yards_to_go,
                         score_diff, elapsed_seconds, offense_pregame_wp):
     """Win probability for the team on offense, given their own down/
     distance/field position, the score (offense - defense), elapsed game
@@ -214,18 +224,17 @@ def predict_wp_offense(*, down, distance, yards_to_go, goal_to_go,
               + m["b_down3"] * (1 if down == 3 else 0)
               + m["b_down4"] * (1 if down == 4 else 0)
               + m["b_distance"] * min(distance, {max_distance})
-              + m["b_yards_to_go"] * yards_to_go
-              + m["b_goal_to_go"] * (1 if goal_to_go else 0))
+              + m["b_yards_to_go"] * yards_to_go)
     return inv_logit(l_pred)
 
 
-def coinflip_wp_offense(*, down, distance, yards_to_go, goal_to_go,
+def coinflip_wp_offense(*, down, distance, yards_to_go,
                          score_diff, elapsed_seconds):
     """predict_wp_offense() with the offense's own pregame WP forced to a
     50/50 coin flip -- the anchor-free scale to judge an in-game swing
     against, same rationale as wp_baseline.coinflip_wp_elapsed()."""
     return predict_wp_offense(
-        down=down, distance=distance, yards_to_go=yards_to_go, goal_to_go=goal_to_go,
+        down=down, distance=distance, yards_to_go=yards_to_go,
         score_diff=score_diff, elapsed_seconds=elapsed_seconds, offense_pregame_wp=0.5,
     )
 '''
@@ -245,7 +254,6 @@ def write_module(model, n_games, n_rows, pseudo_r2):
         "down4": "b_down4",
         "distance": "b_distance",
         "yards_to_go": "b_yards_to_go",
-        "goal_to_go": "b_goal_to_go",
     }
     entries = "\n".join(
         COEF_TEMPLATE.format(name=out_name, value=float(model.params[in_name]))

@@ -355,18 +355,34 @@ def _sanitized_situational_plays(plays):
     return out
 
 
-def _coinflip_home_wp(play):
+def coinflip_home_wp(play):
     """wp_situational.coinflip_wp_offense(), converted from the offense's
     own perspective (what the model actually predicts, since down/distance/
     field position are only meaningful relative to whoever has the ball) to
-    home-team perspective (what the arc-walk tracks)."""
+    home-team perspective (what the arc-walk tracks, and what the game-detail
+    chart's coinflip-WP overlay plots -- see coinflip_wp_by_play_id)."""
     sd_home = play["home_score"] - play["away_score"]
     sd_off = sd_home if play["off_is_home"] else -sd_home
     p_off = wp_situational.coinflip_wp_offense(
         down=play["down"], distance=play["distance"], yards_to_go=play["yards_to_go"],
-        goal_to_go=play["goal_to_go"], score_diff=sd_off, elapsed_seconds=play["elapsed_seconds"],
+        score_diff=sd_off, elapsed_seconds=play["elapsed_seconds"],
     )
     return p_off if play["off_is_home"] else 1 - p_off
+
+
+def coinflip_wp_by_play_id(situational_plays):
+    """play_id -> coinflip_home_wp(play) for every situational play that
+    carries a play_id, so a caller (serve.py's game-detail payload) can join
+    this onto the win_probability table's own play_id-indexed rows to build
+    a same-x-axis overlay series. Regulation-only and gappy by construction
+    (espn.extract_situational_plays skips OT and any play missing down/
+    distance, e.g. kickoffs/PATs) -- the caller is expected to forward-fill
+    gaps for a continuous line, same as build_wp_payload does for period."""
+    return {
+        play["play_id"]: coinflip_home_wp(play)
+        for play in situational_plays
+        if play.get("play_id")
+    }
 
 
 def _comeback_erosion_walk(plays, credit_open_arc):
@@ -433,7 +449,7 @@ def _comeback_erosion_walk(plays, credit_open_arc):
     state = 0  # -1 away ahead, +1 home ahead, 0 tied
     for play in plays:
         sd = play["home_score"] - play["away_score"]
-        w = _coinflip_home_wp(play)
+        w = coinflip_home_wp(play)
         # credit = hi - w must not exceed hi - PARITY -- so w gets a FLOOR
         # at PARITY here (raising an under-parity reading up to PARITY),
         # not a ceiling. Symmetric floor->ceiling swap for the lo branch.

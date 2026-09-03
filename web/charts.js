@@ -35,8 +35,10 @@ function linScale(domain, range) {
  * everything else (a 10-unit label in a 1000-unit box rendered at 714px
  * comes out at 7.1px), so real px type has to live outside the viewBox.
  * ------------------------------------------------------------------- */
-function wpDualCard(mount, wp, game) {
+function wpDualCard(mount, wp, game, seriesKey = "home_win_pct") {
   const n = wp.n;
+  const series = wp[seriesKey] || wp.home_win_pct;
+  const isCoinflip = seriesKey === "home_win_pct_coinflip";
   const homeAbbr = game.home.abbr, awayAbbr = game.away.abbr;
   const PAD_L = 44, PAD_R = 12, TOP = 14, plotW = 1000 - PAD_L - PAD_R;
   // Both charts render at width:100% off the same 1000-unit-wide card, so
@@ -48,7 +50,7 @@ function wpDualCard(mount, wp, game) {
   const y = (wpv) => TOP + (1 - wpv) * plotH;
   const mid = y(0.5);
 
-  const wpPoints = wp.i.map((i) => `${x(i).toFixed(1)},${y(wp.home_win_pct[i]).toFixed(1)}`).join(" ");
+  const wpPoints = wp.i.map((i) => `${x(i).toFixed(1)},${y(series[i]).toFixed(1)}`).join(" ");
   const areaPoints = `${x(0).toFixed(1)},${mid.toFixed(1)} ${wpPoints} ${x(n - 1).toFixed(1)},${mid.toFixed(1)}`;
 
   const starts = wp.meta.period_starts;
@@ -83,7 +85,7 @@ function wpDualCard(mount, wp, game) {
   plotRoot.appendChild(svg("polyline", { points: wpPoints, fill: "none", stroke: "var(--g-ink-bright)", "stroke-width": "1.4", "stroke-linejoin": "round" }));
   wp.meta.score_changes.forEach((sc) => {
     plotRoot.appendChild(svg("circle", {
-      cx: x(sc.i).toFixed(1), cy: y(wp.home_win_pct[sc.i]).toFixed(1), r: "5.2",
+      cx: x(sc.i).toFixed(1), cy: y(series[sc.i]).toFixed(1), r: "5.2",
       fill: sc.team === "home" ? "var(--g-ink-bright)" : "var(--g-accent)",
       stroke: "var(--g-card)", "stroke-width": "1",
     }));
@@ -105,13 +107,13 @@ function wpDualCard(mount, wp, game) {
     crosshair.setAttribute("x2", px.toFixed(1));
     crosshair.setAttribute("visibility", "visible");
     crossDot.setAttribute("cx", px.toFixed(1));
-    crossDot.setAttribute("cy", y(wp.home_win_pct[idx]).toFixed(1));
+    crossDot.setAttribute("cy", y(series[idx]).toFixed(1));
     crossDot.setAttribute("visibility", "visible");
-    const pct = (wp.home_win_pct[idx] * 100).toFixed(1);
+    const pct = (series[idx] * 100).toFixed(1);
     const period = wp.meta.period_starts.slice().reverse().find((p) => p.i <= idx);
     const clock = wp.clock_display[idx] || "";
     const hs = wp.home_score_clean[idx], as = wp.away_score_clean[idx];
-    const html = `<div class="tt-value">${pct}% ${homeAbbr}</div>` +
+    const html = `<div class="tt-value">${pct}% ${homeAbbr}${isCoinflip ? " (coin-flip)" : ""}</div>` +
       `<div class="tt-sub">${period ? period.label : ""}${clock ? " · " + clock : ""}</div>` +
       `<div class="tt-sub">${awayAbbr} ${as} – ${homeAbbr} ${hs}</div>`;
     if (clientX !== undefined) showTooltip(html, clientX, clientY);
@@ -134,7 +136,7 @@ function wpDualCard(mount, wp, game) {
 
   plotRoot.setAttribute("tabindex", "0");
   plotRoot.setAttribute("role", "img");
-  plotRoot.setAttribute("aria-label", `Win probability, ${awayAbbr} at ${homeAbbr}, ${n} plays`);
+  plotRoot.setAttribute("aria-label", `${isCoinflip ? "Coin-flip win" : "Win"} probability, ${awayAbbr} at ${homeAbbr}, ${n} plays`);
   let focusIdx = 0;
   plotRoot.addEventListener("keydown", (ev) => {
     if (["ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"].includes(ev.key)) ev.preventDefault();
@@ -267,14 +269,19 @@ function wpDualCard(mount, wp, game) {
     String(i),
     wp.meta.period_starts.slice().reverse().find((p) => p.i <= i)?.label || "",
     wp.clock_display[i] || "",
-    (wp.home_win_pct[i] * 100).toFixed(1) + "%",
+    (series[i] * 100).toFixed(1) + "%",
     String(wp.home_score_clean[i]),
     String(wp.away_score_clean[i]),
   ]);
   mount.appendChild(tableTwin(`Show as table (${n} plays)`,
-    ["Play #", "Period", "Clock", "Home WP", "Home score", "Away score"], rows));
+    ["Play #", "Period", "Clock", isCoinflip ? "Home WP (coin-flip)" : "Home WP", "Home score", "Away score"], rows));
 
-  if (wp.meta.wp_final !== null && wp.meta.wp_final > 0.02 && wp.meta.wp_final < 0.98) {
+  if (isCoinflip) {
+    mount.appendChild(el("div", { class: "caveat" },
+      "Coin-flip win probability: our own down/distance/field-position model (Model C), with each team's " +
+      "pregame favoritism forced to 50/50 -- this isolates on-field WP swings from the pregame line. " +
+      "Regulation only; the line holds flat through any overtime."));
+  } else if (wp.meta.wp_final !== null && wp.meta.wp_final > 0.02 && wp.meta.wp_final < 0.98) {
     const finalPct = (wp.meta.wp_final * 100).toFixed(1);
     mount.appendChild(el("div", { class: "caveat" },
       `Note: ESPN's final win-probability value for this game is ${finalPct}%, which disagrees with the ` +

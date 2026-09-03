@@ -156,6 +156,54 @@ function renderProvenance(mount, detail) {
 let REGISTRY_LABEL = {};
 let LIVE_REGISTRY = { so_far: [], from_here: [] };
 
+// Shared by renderLive() and renderScored(): the WP chart card, plus (when
+// detail.wp.has_coinflip -- a completed game with an archived game_raw_json,
+// see serve.py's attach_coinflip_wp) an ESPN/Coin-flip toggle that swaps
+// which WP series wpDualCard plots without touching anything else on the
+// page. Toggle state persists across page loads via sessionStorage, same
+// pattern as the drivers-view radial/bars toggle below.
+function renderWpCard(g, wp, titleText, subtitleText) {
+  const wpCard = el("div", { class: "g-card" });
+  const headChildren = [
+    el("div", {}, [
+      el("div", { class: "g-card-title", text: titleText }),
+      el("div", { class: "g-card-sub", text: subtitleText }),
+    ]),
+    el("div", { class: "g-wp-legend" }, [
+      el("span", { class: "sw" }, [el("i", { style: "background:var(--g-ink-bright)" }), g.home.name.toUpperCase()]),
+      el("span", { class: "sw" }, [el("i", { style: "background:var(--g-accent)" }), g.away.name.toUpperCase()]),
+    ]),
+  ];
+  const wpBody = el("div", { class: "g-wp-body" });
+  if (wp.has_coinflip) {
+    let wpSeries = sessionStorage.getItem("wp-series") === "coinflip" ? "coinflip" : "espn";
+    const wpToggle = el("div", { class: "g-view-toggle" }, [
+      el("button", { type: "button", "data-series": "espn", text: "ESPN" }),
+      el("button", { type: "button", "data-series": "coinflip", text: "Coin-flip" }),
+    ]);
+    function renderWpSeries() {
+      wpToggle.querySelectorAll("button").forEach((b) => b.classList.toggle("active", b.dataset.series === wpSeries));
+      wpBody.innerHTML = "";
+      wpDualCard(wpBody, wp, g, wpSeries === "coinflip" ? "home_win_pct_coinflip" : "home_win_pct");
+    }
+    wpToggle.querySelectorAll("button").forEach((b) => {
+      b.addEventListener("click", () => {
+        if (wpSeries === b.dataset.series) return;
+        wpSeries = b.dataset.series;
+        sessionStorage.setItem("wp-series", wpSeries);
+        renderWpSeries();
+      });
+    });
+    headChildren.push(wpToggle);
+    renderWpSeries();
+  } else {
+    wpDualCard(wpBody, wp, g);
+  }
+  wpCard.appendChild(el("div", { class: "g-card-head g-wp-head" }, headChildren));
+  wpCard.appendChild(wpBody);
+  return wpCard;
+}
+
 function renderLive(mount, detail) {
   const g = detail.game;
   const live = detail.live;
@@ -204,21 +252,8 @@ function renderLive(mount, detail) {
   }
 
   if (detail.wp) {
-    const wpCard = el("div", { class: "g-card" });
-    wpCard.appendChild(el("div", { class: "g-card-head g-wp-head" }, [
-      el("div", {}, [
-        el("div", { class: "g-card-title", text: "Win probability (live)" }),
-        el("div", { class: "g-card-sub", text: `${g.home.name} win probability and the score ladder so far, across ${detail.wp.n} plays.` }),
-      ]),
-      el("div", { class: "g-wp-legend" }, [
-        el("span", { class: "sw" }, [el("i", { style: "background:var(--g-ink-bright)" }), g.home.name.toUpperCase()]),
-        el("span", { class: "sw" }, [el("i", { style: "background:var(--g-accent)" }), g.away.name.toUpperCase()]),
-      ]),
-    ]));
-    const wpBody = el("div", { class: "g-wp-body" });
-    wpDualCard(wpBody, detail.wp, g);
-    wpCard.appendChild(wpBody);
-    mount.appendChild(wpCard);
+    mount.appendChild(renderWpCard(g, detail.wp, "Win probability (live)",
+      `${g.home.name} win probability and the score ladder so far, across ${detail.wp.n} plays.`));
   }
 
   // so_far/from_here metrics are {} below LEVEL_FULL (component detail),
@@ -405,21 +440,8 @@ function renderScored(mount, detail) {
   mount.appendChild(el("div", { class: "g-body" }, [mainCol, railCol]));
 
   if (detail.wp) {
-    const wpCard = el("div", { class: "g-card" });
-    wpCard.appendChild(el("div", { class: "g-card-head g-wp-head" }, [
-      el("div", {}, [
-        el("div", { class: "g-card-title", text: "Win probability" }),
-        el("div", { class: "g-card-sub", text: `${g.home.name} win probability and the score ladder, given equal weight across ${detail.wp.n} plays.` }),
-      ]),
-      el("div", { class: "g-wp-legend" }, [
-        el("span", { class: "sw" }, [el("i", { style: "background:var(--g-ink-bright)" }), g.home.name.toUpperCase()]),
-        el("span", { class: "sw" }, [el("i", { style: "background:var(--g-accent)" }), g.away.name.toUpperCase()]),
-      ]),
-    ]));
-    const wpBody = el("div", { class: "g-wp-body" });
-    wpDualCard(wpBody, detail.wp, g);
-    wpCard.appendChild(wpBody);
-    mainCol.appendChild(wpCard);
+    mainCol.appendChild(renderWpCard(g, detail.wp, "Win probability",
+      `${g.home.name} win probability and the score ladder, given equal weight across ${detail.wp.n} plays.`));
   }
 
   const driversCard = el("div", { class: "g-card g-card-pad" });

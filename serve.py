@@ -26,7 +26,7 @@ from flask_limiter import Limiter
 REPO_ROOT = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from src import config, corrections as corrections_module, live, scoring, spoilers, users  # noqa: E402
+from src import config, corrections as corrections_module, db, espn, live, scoring, spoilers, users  # noqa: E402
 
 DB_FILE = (REPO_ROOT / config.DB_PATH).resolve()
 WEB_DIR = REPO_ROOT / "web"
@@ -1086,6 +1086,53 @@ def build_wp_payload(wp_rows, game_row):
     }
 
 
+def attach_coinflip_wp(wp_payload, wp_rows, conn, game_id, home_team_id):
+    """Adds a "coinflip" WP overlay to wp_payload: the same win-probability
+    series but with pregame favoritism removed (src/wp_situational.py's
+    Model C, run with offense_pregame_wp forced to 0.5 -- see
+    scoring.coinflip_home_wp), so the chart can show what the game's WP
+    swings would look like between two evenly-matched teams.
+
+    Only available for games with an archived game_raw_json (completed
+    games that have gone through pipeline.py's detail fetch/backfill --
+    live in-progress games and any not-yet-backfilled legacy game don't have
+    it, see project notes) since serve.py never makes outbound ESPN calls
+    itself. Sets has_coinflip=False and leaves the series absent when
+    unavailable, rather than fetching over the network to fill it in.
+
+    The join is by play_id (win_probability rows <-> situational plays), and
+    is gappy by construction -- OT and non-down plays (kickoffs, PATs) have
+    no situational reading -- so gaps are forward-filled from the last known
+    value for a continuous line, same technique build_wp_payload uses for
+    period. A game that reaches OT will show a flat coinflip line through
+    the OT rows: the model deliberately never extrapolates into overtime
+    (see comeback_erosion's docstring for why), not a bug in this chart.
+    """
+    raw = db.get_game_raw_json(conn, game_id)
+    if not raw:
+        wp_payload["has_coinflip"] = False
+        return wp_payload
+
+    situational_plays = espn.extract_situational_plays(raw, home_team_id)
+    by_play_id = scoring.coinflip_wp_by_play_id(situational_plays)
+
+    series = []
+    last = None
+    for r in wp_rows:
+        val = by_play_id.get(r["play_id"])
+        if val is not None:
+            last = val
+        series.append(last)
+    # Back-fill any leading gap (before the first situational reading) with
+    # the first known value, so the line doesn't start with a null run.
+    first_known = next((v for v in series if v is not None), None)
+    series = [v if v is not None else first_known for v in series]
+
+    wp_payload["has_coinflip"] = first_known is not None
+    wp_payload["home_win_pct_coinflip"] = series
+    return wp_payload
+
+
 def build_fox_score_payload(conn, game_id, game_row):
     """Fox's own running score, shaped to match build_wp_payload's score
     fields closely enough that the same chart renderer can draw either one.
@@ -2081,6 +2128,7 @@ def api_game_detail(game_id):
             (game_id,),
         ).fetchall()
         wp_payload = build_wp_payload(wp_rows, row)
+        attach_coinflip_wp(wp_payload, wp_rows, conn, game_id, row["home_team_id"])
     elif show_all and row["status_state"] == "in":
         # A live-tracked game has real (partial) win_probability rows too --
         # written incrementally by src/live.py's poller -- so the chart can
@@ -2094,6 +2142,7 @@ def api_game_detail(game_id):
         ).fetchall()
         if wp_rows:
             wp_payload = build_wp_payload(wp_rows, row)
+            attach_coinflip_wp(wp_payload, wp_rows, conn, game_id, row["home_team_id"])
 
     if scored and show_score:
         # Rank/percentile here (and the neighbor lookup below) are scoped
