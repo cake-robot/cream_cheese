@@ -113,7 +113,11 @@ function fmtCountdown(seconds) {
 function fmtClock(iso) {
   if (!iso) return "—";
   const d = new Date(iso);
-  return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const time = d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const sameDay = d.toDateString() === new Date().toDateString();
+  if (sameDay) return time;
+  const date = d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return `${date}, ${time}`;
 }
 
 function fmtBytes(n) {
