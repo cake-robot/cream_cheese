@@ -484,23 +484,37 @@ def extract_situational_plays(summary, home_team_id):
     return plays
 
 
-def extract_play_situations(summary):
-    """Per-play down/distance and field-position text, keyed by play_id, for
-    every real snap in the raw ESPN /summary payload -- including OT, unlike
-    extract_situational_plays (which is Model-C-specific and regulation-
-    only). Straight passthrough of ESPN's own pre-formatted
-    shortDownDistanceText ("1st & 10") and possessionText ("HAW 25") off the
-    play's `start` block, for the WP chart tooltip.
+def extract_play_situations(summary, home_team_id):
+    """Per-play down/distance, field-position text, and possession, keyed by
+    play_id, for every real snap in the raw ESPN /summary payload --
+    including OT, unlike extract_situational_plays (which is Model-C-
+    specific and regulation-only). down_distance/field_position are a
+    straight passthrough of ESPN's own pre-formatted shortDownDistanceText
+    ("1st & 10") and possessionText off the play's `start` block, for the
+    WP chart tooltip.
+
+    field_position's team abbreviation is NOT reliably the offense's own --
+    ESPN names it for whichever team's side of the field the yard line
+    falls on (e.g. an Iowa State drive reaching the Kansas State 8 reads
+    "KSU 8", not "ISU 8"), so off_is_home is tracked separately (from the
+    drive's own team, same source extract_situational_plays uses for
+    off_is_home) so a caller can show who actually has the ball.
 
     NON_SCRIMMAGE_PLAY_TYPES (Timeout/Kickoff/etc.) are skipped -- ESPN's
     `start` block on those frequently carries a stale/phantom reading (see
     extract_situational_plays' docstring for the confirmed corruption), and
     those play types have no real down/distance to show anyway.
 
-    Returns {play_id: {"down_distance": str|None, "field_position": str|None}}.
+    Returns {play_id: {"down_distance": str|None, "field_position": str|None,
+    "off_is_home": bool}}.
     """
     out = {}
     for drive in _iter_drives(summary):
+        off_team = str(drive.get("team", {}).get("id", ""))
+        if not off_team:
+            continue
+        off_is_home = off_team == str(home_team_id)
+
         for play in drive.get("plays", []):
             play_type = (play.get("type") or {}).get("text")
             if play_type in NON_SCRIMMAGE_PLAY_TYPES:
@@ -512,7 +526,11 @@ def extract_play_situations(summary):
             down_distance = start.get("shortDownDistanceText")
             field_position = start.get("possessionText")
             if down_distance or field_position:
-                out[play_id] = {"down_distance": down_distance, "field_position": field_position}
+                out[play_id] = {
+                    "down_distance": down_distance,
+                    "field_position": field_position,
+                    "off_is_home": off_is_home,
+                }
     return out
 
 
