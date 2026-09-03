@@ -48,9 +48,31 @@ Deliberately does NOT write src/wp_situational.py or touch production --
 purely a comparison, per the explicit ask to look before converting
 anything over.
 
+ROUND 2 (same script, same session): the cubic+inv-sqrt urgency fix above
+helped a lot but was STILL undershooting real outcomes specifically for
+narrow (1-3 point) leads with a fresh set of downs and little time left --
+confirmed via a separate empirical check (not in this script -- see
+scripts/_scratch_empirical_endgame.py in this session's history) that
+teams leading by 1-3 with a fresh 1st & 10 and <=30s left actually win
+~92% of the time in real games, while even the round-1 fix predicted only
+~86%. User's insight: football scoring is discrete (a field goal is always
+3 points), so a 1-point deficit and a 2-point deficit are functionally
+IDENTICAL -- both are erased by the same single made field goal -- but
+every urgency term above is linear/polynomial in the raw continuous
+score_diff, spreading them out as if they were meaningfully different
+magnitudes. `scores_needed()` buckets any deficit of 1-8 (up to one
+TD+2pt) into a single discrete count, mirroring how the game actually
+resolves. `design_scores_needed_final` (the `- sn_urgency2` parsimony
+pass) is the round-2 winner: every term significant at p<0.001 on a
+full-corpus fit, and it nearly closes the 1-3pt calibration gap entirely
+(92.5% predicted vs. 92.0% actual, vs. round 1's 85.7% and production's
+73.1%) at the cost of a barely-measurable full-game brier regression
+(0.1068->0.1071). Still NOT productionized -- same rule as round 1.
+
 Usage:
     venv/bin/python3 scripts/compare_wp_endgame_calibration.py [path/to/cfb.db]
 """
+import math
 import random
 import sys
 
@@ -206,19 +228,98 @@ def design_cubic_plus_inv_sqrt(df):
     (the term that actually diverges at the literal buzzer, unlike any
     polynomial in time_frac, which caps out at (1-time_frac)=1 for every
     power once time_frac hits exactly 0) -- see design_inv_sqrt_urgency's
-    docstring. Best-of-both candidate."""
+    docstring. Best-of-both candidate. (Previously the winning candidate --
+    kept here as the new baseline the scores_needed candidates below are
+    measured against.)"""
     X = design_cubic_urgency(df)
     X["inv_sqrt_urgency"] = df["score_diff"] / np.sqrt(df["seconds_remaining_reg"] + 5.0)
     return X
 
 
+def scores_needed(score_diff):
+    """Signed 'possessions needed' -- football scoring is discrete (FG=3,
+    TD=6/7/8), so a 1-point deficit and a 2-point deficit are functionally
+    identical (either is erased by a single made field goal); the model's
+    urgency terms treating them as continuously different magnitudes is
+    exactly backwards. Maps any deficit of 1-8 (anything up to a single
+    TD+2pt) to "1 score", 9-16 to "2 scores", etc. -- the standard discrete
+    bucketing real WP models use, capped at the max points obtainable in
+    one possession (8). Sign preserved so a trailing offense reads
+    negative. Zero maps to zero (tied)."""
+    if score_diff == 0:
+        return 0
+    return math.copysign(math.ceil(abs(score_diff) / 8.0), score_diff)
+
+
+def design_cubic_invsqrt_plus_scores_needed(df):
+    """Adds a scores_needed-based urgency family ON TOP of the current-best
+    cubic+inv-sqrt candidate -- same shapes (linear/quadratic/cubic/inv-sqrt
+    in (1-time_frac) or seconds_remaining) but driven by the discrete
+    scores_needed count instead of raw score_diff, so the model can learn
+    a separate, non-linear-in-deficit response that collapses same-bucket
+    deficits (1 vs 2 vs 3 vs ... vs 8 points) instead of spreading them out
+    continuously. Keeps every raw-score_diff term too (still useful for the
+    smooth, non-endgame part of the game) -- this is additive, not a
+    replacement."""
+    X = design_cubic_plus_inv_sqrt(df)
+    time_frac = _base_fields(df)
+    sn = df["score_diff"].map(scores_needed)
+    X["sn_urgency"] = sn * (1 - time_frac)
+    X["sn_urgency2"] = sn * (1 - time_frac) ** 2
+    X["sn_urgency3"] = sn * (1 - time_frac) ** 3
+    X["sn_inv_sqrt_urgency"] = sn / np.sqrt(df["seconds_remaining_reg"] + 5.0)
+    return X
+
+
+def design_scores_needed_replaces_urgency(df):
+    """Stronger version: REPLACES every score_diff-based urgency term
+    (linear/quad/cubic/inv-sqrt) with the scores_needed equivalent, instead
+    of adding both. Keeps the plain linear score_diff term (not an urgency
+    interaction, just the base effect) and down/distance/yards_to_go
+    unchanged. Tests whether the discrete quantity is a strictly better
+    driver of the late-game interaction than the continuous one, not just
+    a helpful addition."""
+    time_frac = _base_fields(df)
+    sn = df["score_diff"].map(scores_needed)
+    X = pd.DataFrame({
+        "logit_offense_pregame_wp": logit(df["offense_pregame_wp"].to_numpy()),
+        "score_diff": df["score_diff"],
+        "time_remaining_frac": time_frac,
+        "down2": (df["down"] == 2).astype(int),
+        "down3": (df["down"] == 3).astype(int),
+        "down4": (df["down"] == 4).astype(int),
+        "distance": df["distance"],
+        "yards_to_go": df["yards_to_go"],
+        "sn_urgency": sn * (1 - time_frac),
+        "sn_urgency2": sn * (1 - time_frac) ** 2,
+        "sn_urgency3": sn * (1 - time_frac) ** 3,
+        "sn_time_remaining_frac2": time_frac ** 2,
+        "sn_inv_sqrt_urgency": sn / np.sqrt(df["seconds_remaining_reg"] + 5.0),
+    })
+    return sm.add_constant(X, has_constant="add")
+
+
+def design_scores_needed_final(df):
+    """design_scores_needed_replaces_urgency() minus sn_urgency2 -- a
+    full-corpus fit of the 'replaces' design found every term significant
+    (p<0.001) EXCEPT the quadratic sn_urgency2 (p=0.223), while in the
+    ADDED design every raw score_diff-based urgency term (linear/quad/
+    cubic/inv-sqrt) became non-significant (p=0.18-0.62) once the sn_*
+    terms were present -- i.e. scores_needed doesn't just help, it fully
+    subsumes the continuous urgency story. This is the parsimony pass:
+    drop the one insignificant sn term and keep everything else, matching
+    the project's existing goal_to_go-drop precedent (verify via held-out
+    comparison, not just p-values, before treating this as final)."""
+    X = design_scores_needed_replaces_urgency(df)
+    return X.drop(columns=["sn_urgency2"])
+
+
 CANDIDATES = {
     "current (production)": design_current,
-    "+ quad urgency": design_quad_urgency,
-    "+ quad urgency + quad time": design_quad_both,
-    "+ cubic urgency": design_cubic_urgency,
-    "+ inv-sqrt urgency (replaces linear)": design_inv_sqrt_urgency,
-    "+ cubic + inv-sqrt urgency": design_cubic_plus_inv_sqrt,
+    "+ cubic + inv-sqrt urgency (prior best)": design_cubic_plus_inv_sqrt,
+    "+ scores-needed urgency (added)": design_cubic_invsqrt_plus_scores_needed,
+    "scores-needed urgency (replaces)": design_scores_needed_replaces_urgency,
+    "scores-needed (replaces, parsimonious)": design_scores_needed_final,
 }
 
 
@@ -280,6 +381,34 @@ EXAMPLE_PLAYS = [
         "score_diff": 1, "seconds_remaining_reg": 0,
         "offense_pregame_wp": 0.5,
         "note": "offense (UGA) just needs to not fumble/be scored on -- should read near-certain",
+    },
+    {
+        "label": "Synthetic: leading by 1, fresh 1st & 10 (own 25), 15s left",
+        "down": 1, "distance": 10, "yards_to_go": 75,
+        "score_diff": 1, "seconds_remaining_reg": 15,
+        "offense_pregame_wp": 0.5,
+        "note": "empirical (n=43, 0-30s bucket): offense wins 93.0% of these in real games",
+    },
+    {
+        "label": "Synthetic: leading by 2, fresh 1st & 10 (own 25), 15s left",
+        "down": 1, "distance": 10, "yards_to_go": 75,
+        "score_diff": 2, "seconds_remaining_reg": 15,
+        "offense_pregame_wp": 0.5,
+        "note": "empirical (n=30, 0-30s bucket): offense wins 100.0% of these in real games",
+    },
+    {
+        "label": "Synthetic: leading by 3, fresh 1st & 10 (own 25), 15s left",
+        "down": 1, "distance": 10, "yards_to_go": 75,
+        "score_diff": 3, "seconds_remaining_reg": 15,
+        "offense_pregame_wp": 0.5,
+        "note": "empirical (n=77, 0-30s bucket): offense wins 93.5% of these in real games",
+    },
+    {
+        "label": "Synthetic: leading by 7, fresh 1st & 10 (own 25), 15s left",
+        "down": 1, "distance": 10, "yards_to_go": 75,
+        "score_diff": 7, "seconds_remaining_reg": 15,
+        "offense_pregame_wp": 0.5,
+        "note": "empirical (n=76, 0-30s bucket): offense wins 100.0% of these in real games",
     },
 ]
 
@@ -355,10 +484,42 @@ def main():
         evaluate(name, pred, outcome, mask=mask_30s)
 
     print("\n=== Calibration check (last 2 min, <=120s left): predicted decile vs actual observed win rate ===")
-    print("current (production):")
-    calibration_table("current (production)", models["current (production)"].predict(design_current(df_test)).to_numpy()[mask_2min], outcome[mask_2min])
-    calibration_table("+ inv-sqrt urgency (replaces linear)", models["+ inv-sqrt urgency (replaces linear)"].predict(design_inv_sqrt_urgency(df_test)).to_numpy()[mask_2min], outcome[mask_2min])
-    calibration_table("+ cubic + inv-sqrt urgency", models["+ cubic + inv-sqrt urgency"].predict(design_cubic_plus_inv_sqrt(df_test)).to_numpy()[mask_2min], outcome[mask_2min])
+    for name, design_fn in CANDIDATES.items():
+        pred = models[name].predict(design_fn(df_test)).to_numpy()
+        calibration_table(name, pred[mask_2min], outcome[mask_2min])
+
+    # Targeted slice: this is the exact bucket the user flagged -- offense
+    # LEADING by a single score (1-8, i.e. one made field goal or touchdown
+    # would flip or tie it) with the ball, a FRESH set of downs (down==1,
+    # distance==10, so field position noise doesn't confound it), and <=30s
+    # left. Split at the FG/TD boundary (<=3 vs 4-8) since football scoring
+    # is discrete -- a 1, 2, or 3-point deficit are ALL erased by a single
+    # made field goal (identical "how many scores does the trailing team
+    # need" answer), which the raw continuous score_diff term can't express
+    # but the scores_needed candidates are specifically built to.
+    fresh_downs_mask = (df_test["down"] == 1).to_numpy() & (df_test["distance"] == 10).to_numpy()
+    one_score_lead_mask = (df_test["score_diff"] >= 1).to_numpy() & (df_test["score_diff"] <= 8).to_numpy()
+    narrow_mask = fresh_downs_mask & one_score_lead_mask & (secs_left <= 30)
+    fg_range_mask = narrow_mask & (df_test["score_diff"] <= 3).to_numpy()
+    td_range_mask = narrow_mask & (df_test["score_diff"] >= 4).to_numpy()
+
+    print("\n=== Targeted slice: offense leading 1-8, fresh 1st & 10, <=30s left (the reported concern) ===")
+    for name, design_fn in CANDIDATES.items():
+        pred = models[name].predict(design_fn(df_test)).to_numpy()
+        evaluate(name, pred, outcome, mask=narrow_mask)
+    print("\n  ...split at the FG/TD boundary (1-3 pt deficit vs 4-8 pt deficit):")
+    for name, design_fn in CANDIDATES.items():
+        pred = models[name].predict(design_fn(df_test)).to_numpy()
+        evaluate(name + " [1-3 pt]", pred, outcome, mask=fg_range_mask)
+    for name, design_fn in CANDIDATES.items():
+        pred = models[name].predict(design_fn(df_test)).to_numpy()
+        evaluate(name + " [4-8 pt]", pred, outcome, mask=td_range_mask)
+
+    print("\n  mean predicted vs actual, 1-3pt slice:")
+    for name, design_fn in CANDIDATES.items():
+        pred = models[name].predict(design_fn(df_test)).to_numpy()[fg_range_mask]
+        act = outcome[fg_range_mask]
+        print(f"    {name:<40s} n={len(act):>4d}  mean_pred={pred.mean():.3f}  actual={act.mean():.3f}")
 
     print("\n=== The three reported example plays, predicted WP for the OFFENSE under each candidate ===")
     for ex in EXAMPLE_PLAYS:
