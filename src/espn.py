@@ -331,6 +331,33 @@ def _iter_drives(summary):
     return out
 
 
+# Administrative/non-snap play types whose `start` block ESPN still
+# populates with a syntactically valid-looking down/distance -- usually a
+# stale or preview reading, not the actual situation of a real snap -- so
+# they pass the numeric "valid" check below unless excluded by type text.
+# Confirmed via game 401754543 (FSU@UVA): a "Timeout" logged right after a
+# go-ahead TD carries the PRE-score score fields alongside a down/distance
+# attributed to the scoring team's drive (off_is_home comes from the drive,
+# not the play's own team, which for these two types frequently disagree),
+# producing a nonsense situational read -- e.g. the team that just scored
+# shown as "1st & 10 at own 25" while the score fields haven't caught up to
+# their own TD yet. Spot-checked against a 200-game random sample of every
+# archived game_raw_json: 198/200 games contained at least one such bogus
+# Timeout/Kickoff reading (~13.7/game on average) -- not rare at all, and it
+# was corrupting both the coin-flip WP chart overlay and comeback_erosion's
+# arc-walk for essentially every game. "Kickoff Return (Offense)" is the
+# same failure mode (a fixed touchback-position placeholder start regardless
+# of actual return yardage, team field inconsistent with the drive it's
+# bucketed under) -- checked and excluded too. Punt/Punt Return/Penalty were
+# checked and are NOT included here: their start fields are genuine pre-snap
+# reads consistent with the drive's own team.
+NON_SCRIMMAGE_PLAY_TYPES = {
+    "Timeout", "Kickoff", "Kickoff Return (Offense)",
+    "End Period", "End of Half", "End of Regulation", "End of Game",
+    "Coin Toss",
+}
+
+
 def extract_situational_plays(summary, home_team_id):
     """Regulation-only (period 1-4), valid-scrimmage-down plays from a raw
     ESPN /summary payload -- the exact same filter src/wp_situational.py's
@@ -381,7 +408,8 @@ def extract_situational_plays(summary, home_team_id):
 
         for play in drive.get("plays", []):
             period = (play.get("period") or {}).get("number")
-            if period is not None and period <= 4:
+            play_type = (play.get("type") or {}).get("text")
+            if period is not None and period <= 4 and play_type not in NON_SCRIMMAGE_PLAY_TYPES:
                 start = play.get("start", {})
                 down = start.get("down")
                 distance = start.get("distance")
@@ -405,8 +433,10 @@ def extract_situational_plays(summary, home_team_id):
                         "away_score": prev_away_score,
                     })
 
-            # Gated on period <= 4, same as the emit check above -- an OT
-            # play must never move this tracker, for two reasons at once:
+            # Gated on period <= 4 (deliberately NOT on play_type, unlike the
+            # emit check above -- see the docstring on why every play's own
+            # score counts here) -- an OT play must never move this tracker,
+            # for two reasons at once:
             # (1) on a game with the documented "drive spans non-adjacent
             # periods" corruption, an out-of-order OT play could otherwise
             # retroactively corrupt a LATER-emitted regulation play's score
