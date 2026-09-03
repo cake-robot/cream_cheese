@@ -113,9 +113,13 @@ function wpDualCard(mount, wp, game, seriesKey = "home_win_pct") {
     const period = wp.meta.period_starts.slice().reverse().find((p) => p.i <= idx);
     const clock = wp.clock_display[idx] || "";
     const hs = wp.home_score_clean[idx], as = wp.away_score_clean[idx];
+    const downDistance = wp.down_distance ? wp.down_distance[idx] : null;
+    const fieldPosition = wp.field_position ? wp.field_position[idx] : null;
+    const situational = downDistance ? `${downDistance}${fieldPosition ? " at " + fieldPosition : ""}` : "";
     const html = `<div class="tt-value">${pct}% ${homeAbbr}${isCoinflip ? " (coin-flip)" : ""}</div>` +
       `<div class="tt-sub">${period ? period.label : ""}${clock ? " · " + clock : ""}</div>` +
-      `<div class="tt-sub">${awayAbbr} ${as} – ${homeAbbr} ${hs}</div>`;
+      `<div class="tt-sub">${awayAbbr} ${as} – ${homeAbbr} ${hs}</div>` +
+      (situational ? `<div class="tt-sub">${situational}</div>` : "");
     if (clientX !== undefined) showTooltip(html, clientX, clientY);
   }
 
@@ -272,9 +276,11 @@ function wpDualCard(mount, wp, game, seriesKey = "home_win_pct") {
     (series[i] * 100).toFixed(1) + "%",
     String(wp.home_score_clean[i]),
     String(wp.away_score_clean[i]),
+    (wp.down_distance && wp.down_distance[i]) || "",
+    (wp.field_position && wp.field_position[i]) || "",
   ]);
   mount.appendChild(tableTwin(`Show as table (${n} plays)`,
-    ["Play #", "Period", "Clock", isCoinflip ? "Home WP (coin-flip)" : "Home WP", "Home score", "Away score"], rows));
+    ["Play #", "Period", "Clock", isCoinflip ? "Home WP (coin-flip)" : "Home WP", "Home score", "Away score", "Down & distance", "Field position"], rows));
 
   if (isCoinflip) {
     mount.appendChild(el("div", { class: "caveat" },
