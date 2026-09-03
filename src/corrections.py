@@ -76,6 +76,36 @@ CORRECTIONS = [
         ),
     },
     {
+        "game_id": "401628439",  # Georgia Tech @ Georgia, 2024-11-30
+        "metric_name": "comeback_erosion",
+        "raw_value": 0.4541,
+        "reason": (
+            "espn.extract_situational_plays' output for this game is unusable for the "
+            "same reason lead_changes needed hand-correction above, but manifesting "
+            "differently: ESPN's raw drives are severely out of chronological order "
+            "(not just the OT stretch -- a full regulation drive is misplaced), so "
+            "_sanitized_situational_plays' non-decreasing floor gives up at elapsed=2107s "
+            "(~Q2) even though the raw feed claims to reach 3600s, discarding the entire "
+            "second half. Recomputed instead from Fox's play-by-play (fox_event_id=40983), "
+            "which tracks scoring cleanly and in correct chronological order through all "
+            "of regulation (confirmed 'unusable' by fox_reconcile only because of the "
+            "same OT-truncation issue as lead_changes -- Fox's own final doesn't match "
+            "the box score -- but that's irrelevant here since comeback_erosion never "
+            "evaluates OT anyway). Fox's play-by-play has no down/distance/field-position "
+            "fields, so it can't feed Model C (src/wp_situational.py) -- fed instead "
+            "through wp_baseline.coinflip_wp_elapsed, the same score+time+line-only "
+            "fallback already used to backfill win_probability for ESPN-WP-less games. "
+            "Ran the actual arc-walk algorithm (scripts/compute_fox_comeback_erosion.py -- "
+            "same COMEBACK_EROSION_THRESHOLD=0.84, same PARITY=0.5 clamp at arc-close "
+            "only, same close-game trigger as scoring._comeback_erosion_walk, just a "
+            "different win-probability function) against Fox's regulation-only score "
+            "sequence: Georgia Tech builds to a 94.4% coin-flip peak up 17-0, Georgia "
+            "answers to within 3 (6-17), GT extends to an even bigger 95.4% peak up 14 "
+            "(13-27), and Georgia claws all the way back to a 27-27 tie at the very end "
+            "of regulation, right before OT began. Corrected value: 0.4541."
+        ),
+    },
+    {
         "game_id": "401677087",  # USF @ San Jose State, Hawaii Bowl, 2024-12-24
         "metric_name": "lead_changes",
         "raw_value": 10,
