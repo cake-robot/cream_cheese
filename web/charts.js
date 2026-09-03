@@ -117,8 +117,10 @@ function wpDualCard(mount, wp, game, seriesKey = "home_win_pct") {
     const fieldPosition = wp.field_position ? wp.field_position[idx] : null;
     const possIsHome = wp.possession_is_home ? wp.possession_is_home[idx] : null;
     const possAbbr = possIsHome === true ? homeAbbr : possIsHome === false ? awayAbbr : null;
+    const situationNote = wp.situation_note ? wp.situation_note[idx] : null;
     const situational = downDistance ?
-      `${possAbbr ? possAbbr + " ball · " : ""}${downDistance}${fieldPosition ? " at " + fieldPosition : ""}` : "";
+      `${possAbbr ? possAbbr + " ball · " : ""}${downDistance}${fieldPosition ? " at " + fieldPosition : ""}` :
+      (situationNote || "");
     const html = `<div class="tt-value">${pct}% ${homeAbbr}${isCoinflip ? " (coin-flip)" : ""}</div>` +
       `<div class="tt-sub">${period ? period.label : ""}${clock ? " · " + clock : ""}</div>` +
       `<div class="tt-sub">${awayAbbr} ${as} – ${homeAbbr} ${hs}</div>` +
@@ -282,7 +284,7 @@ function wpDualCard(mount, wp, game, seriesKey = "home_win_pct") {
       String(wp.home_score_clean[i]),
       String(wp.away_score_clean[i]),
       possIsHome === true ? homeAbbr : possIsHome === false ? awayAbbr : "",
-      (wp.down_distance && wp.down_distance[i]) || "",
+      (wp.down_distance && wp.down_distance[i]) || (wp.situation_note && wp.situation_note[i]) || "",
       (wp.field_position && wp.field_position[i]) || "",
     ];
   });

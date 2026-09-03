@@ -500,13 +500,18 @@ def extract_play_situations(summary, home_team_id):
     drive's own team, same source extract_situational_plays uses for
     off_is_home) so a caller can show who actually has the ball.
 
-    NON_SCRIMMAGE_PLAY_TYPES (Timeout/Kickoff/etc.) are skipped -- ESPN's
-    `start` block on those frequently carries a stale/phantom reading (see
-    extract_situational_plays' docstring for the confirmed corruption), and
-    those play types have no real down/distance to show anyway.
+    NON_SCRIMMAGE_PLAY_TYPES (Timeout/Kickoff/etc.) get no down_distance/
+    field_position/off_is_home -- ESPN's `start` block on those frequently
+    carries a stale/phantom reading (see extract_situational_plays'
+    docstring for the confirmed corruption) -- but DO get a `note`: ESPN's
+    own play-by-play narration text ("Timeout Kansas State, clock 01:19",
+    "Simon McClannan kickoff for 65 yds for a touchback"), which is a
+    separate field from the untrustworthy `start` block and safe to show
+    as-is. Real scrimmage plays get `note=None` -- their down_distance
+    already says what a caller needs.
 
     Returns {play_id: {"down_distance": str|None, "field_position": str|None,
-    "off_is_home": bool}}.
+    "off_is_home": bool|None, "note": str|None}}.
     """
     out = {}
     for drive in _iter_drives(summary):
@@ -517,10 +522,16 @@ def extract_play_situations(summary, home_team_id):
 
         for play in drive.get("plays", []):
             play_type = (play.get("type") or {}).get("text")
-            if play_type in NON_SCRIMMAGE_PLAY_TYPES:
-                continue
             play_id = str(play.get("id", ""))
             if not play_id:
+                continue
+            if play_type in NON_SCRIMMAGE_PLAY_TYPES:
+                note = play.get("text")
+                if note:
+                    out[play_id] = {
+                        "down_distance": None, "field_position": None,
+                        "off_is_home": None, "note": note,
+                    }
                 continue
             start = play.get("start", {})
             down_distance = start.get("shortDownDistanceText")
@@ -530,6 +541,7 @@ def extract_play_situations(summary, home_team_id):
                     "down_distance": down_distance,
                     "field_position": field_position,
                     "off_is_home": off_is_home,
+                    "note": None,
                 }
     return out
 
