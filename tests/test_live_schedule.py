@@ -59,7 +59,7 @@ class TestScheduleInterval(unittest.TestCase):
     def test_live_game_dominates_even_with_a_far_off_next_kickoff(self):
         _insert_game(self.conn, "g1", _fmt(self.now + timedelta(days=3)), "pre")
         _insert_game(self.conn, "g2", _fmt(self.now - timedelta(hours=1)), "in")
-        seconds, hold_awake, reason = live._schedule_interval(self.conn, now=self.now)
+        seconds, hold_awake, reason, _ = live._schedule_interval(self.conn, now=self.now)
         self.assertEqual(seconds, float(live.LIVE_INTERVAL_SECONDS))
         self.assertTrue(hold_awake)
         self.assertIn("in progress", reason)
@@ -67,14 +67,14 @@ class TestScheduleInterval(unittest.TestCase):
     def test_kickoff_exactly_at_lead_boundary_is_active(self):
         kick = self.now + timedelta(seconds=live.LIVE_KICKOFF_LEAD_SECONDS)
         _insert_game(self.conn, "g1", _fmt(kick), "pre")
-        seconds, hold_awake, _ = live._schedule_interval(self.conn, now=self.now)
+        seconds, hold_awake, _, _ = live._schedule_interval(self.conn, now=self.now)
         self.assertEqual(seconds, float(live.LIVE_INTERVAL_SECONDS))
         self.assertTrue(hold_awake)
 
     def test_kickoff_just_past_lead_boundary_floors_to_fast_interval(self):
         kick = self.now + timedelta(seconds=live.LIVE_KICKOFF_LEAD_SECONDS + 1)
         _insert_game(self.conn, "g1", _fmt(kick), "pre")
-        seconds, _, _ = live._schedule_interval(self.conn, now=self.now)
+        seconds, _, _, _ = live._schedule_interval(self.conn, now=self.now)
         self.assertEqual(seconds, float(live.LIVE_INTERVAL_SECONDS))
 
     def test_kickoff_25_minutes_out_sleeps_exactly_to_the_lead(self):
@@ -84,7 +84,7 @@ class TestScheduleInterval(unittest.TestCase):
         # candidate and this collapses to the pre-rewrite behavior exactly.
         kick = self.now + timedelta(minutes=25)
         _insert_game(self.conn, "g1", _fmt(kick), "pre")
-        seconds, hold_awake, _ = live._schedule_interval(self.conn, now=self.now)
+        seconds, hold_awake, _, _ = live._schedule_interval(self.conn, now=self.now)
         self.assertEqual(seconds, timedelta(minutes=25).total_seconds() - live.LIVE_KICKOFF_LEAD_SECONDS)
         self.assertTrue(hold_awake)  # inside the 3h caffeinate lead
 
@@ -95,10 +95,11 @@ class TestScheduleInterval(unittest.TestCase):
         # gap.
         kick = self.now + timedelta(hours=2)
         _insert_game(self.conn, "g1", _fmt(kick), "pre")
-        seconds, hold_awake, reason = live._schedule_interval(self.conn, now=self.now)
+        seconds, hold_awake, reason, needs_poll = live._schedule_interval(self.conn, now=self.now)
         self.assertEqual(seconds, timedelta(hours=2).total_seconds() - live.LIVE_KICKOFF_LEAD_SECONDS)
         self.assertTrue(hold_awake)  # still inside the 3h caffeinate lead
         self.assertIn("kickoff lead", reason)
+        self.assertTrue(needs_poll)  # unlike caffeinate lead, this wake exists to catch pre->in
 
     def test_caffeinate_lead_wins_over_kickoff_lead_when_it_is_the_closer_boundary(self):
         # Kickoff far enough out that T-3h (caffeinate lead) lands before
@@ -107,20 +108,61 @@ class TestScheduleInterval(unittest.TestCase):
         # second call lands exactly at that boundary.
         kick = self.now + timedelta(hours=5)
         _insert_game(self.conn, "g1", _fmt(kick), "pre")
-        seconds, hold_awake, reason = live._schedule_interval(self.conn, now=self.now)
+        seconds, hold_awake, reason, _ = live._schedule_interval(self.conn, now=self.now)
         expected = timedelta(hours=5).total_seconds() - live.LIVE_CAFFEINATE_LEAD_SECONDS
         self.assertEqual(seconds, expected)
         self.assertFalse(hold_awake)  # not yet inside the 3h caffeinate lead
         self.assertIn("caffeinate lead", reason)
 
-        _, hold_awake_at_boundary, _ = live._schedule_interval(
+        _, hold_awake_at_boundary, _, _ = live._schedule_interval(
             self.conn, now=self.now + timedelta(seconds=seconds))
         self.assertTrue(hold_awake_at_boundary)
+
+    def test_caffeinate_lead_wake_does_not_need_a_poll(self):
+        # The caffeinate-lead boundary exists purely to arm the idle-sleep
+        # assertion ahead of a long sleep -- nothing about a game hours
+        # from kickoff can change between polls, so this is the one wake
+        # reason that shouldn't cost a real ESPN request. Confirmed as the
+        # root cause of two valueless production `scoreboard` calls,
+        # 2026-09-04.
+        kick = self.now + timedelta(hours=5)
+        _insert_game(self.conn, "g1", _fmt(kick), "pre")
+        _, _, reason, needs_poll = live._schedule_interval(self.conn, now=self.now)
+        self.assertIn("caffeinate lead", reason)
+        self.assertFalse(needs_poll)
+
+    def test_caffeinate_lead_wake_is_not_floored_to_the_fast_interval(self):
+        # Unlike a poll-needing wake (floored to LIVE_INTERVAL_SECONDS so a
+        # boundary 61s out can't produce a 1-second sleep and a wasted
+        # request), a caffeinate-lead wake makes no request either way, so
+        # flooring it would just add a pointless extra wake before the real
+        # (kickoff lead) target. Kickoff at 3h5m out puts caffeinate lead
+        # (kickoff - 3h) 5 minutes away -- well under the 900s/15min floor.
+        # (game_date is minute-precision -- GAME_DATE_FMT has no seconds
+        # field -- so this stays a whole number of minutes to round-trip
+        # exactly through storage.)
+        kick = self.now + timedelta(hours=3, minutes=5)
+        _insert_game(self.conn, "g1", _fmt(kick), "pre")
+        seconds, _, reason, needs_poll = live._schedule_interval(self.conn, now=self.now)
+        self.assertIn("caffeinate lead", reason)
+        self.assertFalse(needs_poll)
+        self.assertAlmostEqual(seconds, timedelta(minutes=5).total_seconds(), delta=1.0)
+
+    def test_live_game_and_near_kickoff_wakes_need_a_poll(self):
+        _insert_game(self.conn, "g1", _fmt(self.now - timedelta(hours=1)), "in")
+        _, _, _, needs_poll = live._schedule_interval(self.conn, now=self.now)
+        self.assertTrue(needs_poll)
+
+        conn2 = _fresh_conn(tempfile.mkdtemp())
+        kick = self.now + timedelta(seconds=live.LIVE_KICKOFF_LEAD_SECONDS)
+        _insert_game(conn2, "g1", _fmt(kick), "pre")
+        _, _, _, needs_poll = live._schedule_interval(conn2, now=self.now)
+        self.assertTrue(needs_poll)
 
     def test_kickoff_three_hours_past_still_pre_is_active_inside_grace(self):
         kick = self.now - timedelta(hours=3)
         _insert_game(self.conn, "g1", _fmt(kick), "pre")
-        seconds, hold_awake, reason = live._schedule_interval(self.conn, now=self.now)
+        seconds, hold_awake, reason, _ = live._schedule_interval(self.conn, now=self.now)
         self.assertEqual(seconds, float(live.LIVE_INTERVAL_SECONDS))
         self.assertTrue(hold_awake)
         self.assertIn("kickoff", reason)
@@ -133,7 +175,7 @@ class TestScheduleInterval(unittest.TestCase):
         # rather than silently jumping to whatever's discovered next.
         kick = self.now - timedelta(hours=7)
         _insert_game(self.conn, "g1", _fmt(kick), "pre")
-        seconds, hold_awake, reason = live._schedule_interval(self.conn, now=self.now)
+        seconds, hold_awake, reason, _ = live._schedule_interval(self.conn, now=self.now)
         # self.now (14:00 ET) is itself past both this week's Tuesday
         # anchor and today's 08:00 ET day-of anchor, so every candidate is
         # already behind us -- the "keep checking through today" fallback.
@@ -142,7 +184,7 @@ class TestScheduleInterval(unittest.TestCase):
         self.assertIn("refresh window passed", reason)
 
     def test_empty_schedule_with_no_history_returns_the_no_schedule_backstop(self):
-        seconds, hold_awake, reason = live._schedule_interval(self.conn, now=self.now)
+        seconds, hold_awake, reason, _ = live._schedule_interval(self.conn, now=self.now)
         self.assertEqual(seconds, float(live.LIVE_NO_SCHEDULE_BACKSTOP_SECONDS))
         self.assertFalse(hold_awake)
         self.assertIn("no scheduled kickoff", reason)
@@ -154,7 +196,7 @@ class TestScheduleInterval(unittest.TestCase):
         # a genuinely empty schedule, so it polls daily instead of sleeping
         # a year.
         _insert_game(self.conn, "g1", _fmt(self.now - timedelta(days=3)), "post", season_type=2)
-        seconds, hold_awake, reason = live._schedule_interval(self.conn, now=self.now)
+        seconds, hold_awake, reason, _ = live._schedule_interval(self.conn, now=self.now)
         self.assertEqual(seconds, float(live.LIVE_BLIND_BACKSTOP_SECONDS))
         self.assertFalse(hold_awake)
         self.assertIn("postseason not yet discovered", reason)
@@ -164,21 +206,21 @@ class TestScheduleInterval(unittest.TestCase):
         # season_type=3 -- the blind backstop must not arm here, since
         # there's no reason to expect a same-season game still coming.
         _insert_game(self.conn, "g1", _fmt(self.now - timedelta(days=2)), "post", season_type=3)
-        seconds, hold_awake, reason = live._schedule_interval(self.conn, now=self.now)
+        seconds, hold_awake, reason, _ = live._schedule_interval(self.conn, now=self.now)
         self.assertEqual(seconds, float(live.LIVE_NO_SCHEDULE_BACKSTOP_SECONDS))
         self.assertFalse(hold_awake)
         self.assertIn("no scheduled kickoff", reason)
 
     def test_old_regular_season_game_outside_the_blind_window_does_not_trigger_it(self):
         _insert_game(self.conn, "g1", _fmt(self.now - timedelta(days=30)), "post", season_type=2)
-        seconds, hold_awake, reason = live._schedule_interval(self.conn, now=self.now)
+        seconds, hold_awake, reason, _ = live._schedule_interval(self.conn, now=self.now)
         self.assertEqual(seconds, float(live.LIVE_NO_SCHEDULE_BACKSTOP_SECONDS))
         self.assertFalse(hold_awake)
         self.assertIn("no scheduled kickoff", reason)
 
     def test_past_season_row_never_surfaces_as_next_kickoff(self):
         _insert_game(self.conn, "old", _fmt(self.now - timedelta(days=700)), "pre", season_year=2024)
-        seconds, hold_awake, reason = live._schedule_interval(self.conn, now=self.now)
+        seconds, hold_awake, reason, _ = live._schedule_interval(self.conn, now=self.now)
         self.assertEqual(seconds, float(live.LIVE_NO_SCHEDULE_BACKSTOP_SECONDS))
         self.assertFalse(hold_awake)
         self.assertIn("no scheduled kickoff", reason)
@@ -190,11 +232,12 @@ class TestScheduleInterval(unittest.TestCase):
         now = datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc)  # Wednesday
         kick = datetime(2026, 9, 19, 19, 0, tzinfo=timezone.utc)  # Saturday, 10 days out
         _insert_game(self.conn, "g1", _fmt(kick), "pre")
-        seconds, hold_awake, reason = live._schedule_interval(self.conn, now=now)
+        seconds, hold_awake, reason, needs_poll = live._schedule_interval(self.conn, now=now)
         expected_wake = live._et_anchor(datetime(2026, 9, 15))  # that Saturday's own Tuesday
         self.assertEqual(seconds, (expected_wake - now).total_seconds())
         self.assertFalse(hold_awake)  # nowhere near kickoff or caffeinate lead yet
         self.assertIn("week anchor", reason)
+        self.assertTrue(needs_poll)  # exists to catch a newly-added/rescheduled game
 
     def test_all_tbd_saturday_wakes_at_day_of_refresh_once_grace_ages_out(self):
         # Every game this Saturday shares an ET-midnight TBD placeholder
@@ -209,7 +252,7 @@ class TestScheduleInterval(unittest.TestCase):
         placeholder = live._et_anchor(datetime(2026, 9, 12), hour=0)  # 00:00 ET Saturday
         _insert_game(self.conn, "g1", _fmt(placeholder), "pre")
         now = live._et_anchor(datetime(2026, 9, 12), hour=7)  # 07:00 ET, same Saturday
-        seconds, hold_awake, reason = live._schedule_interval(self.conn, now=now)
+        seconds, hold_awake, reason, _ = live._schedule_interval(self.conn, now=now)
         expected_wake = live._et_anchor(datetime(2026, 9, 12))  # 08:00 ET, same Saturday
         self.assertEqual(seconds, (expected_wake - now).total_seconds())
         self.assertFalse(hold_awake)  # no credible next_kickoff to hold awake for
@@ -227,7 +270,7 @@ class TestScheduleInterval(unittest.TestCase):
         _insert_game(self.conn, "g1", _fmt(this_week), "pre")
         _insert_game(self.conn, "g2", _fmt(next_week), "pre")
         now = live._et_anchor(datetime(2026, 9, 12), hour=7)  # 07:00 ET, past this week's grace
-        seconds, hold_awake, reason = live._schedule_interval(self.conn, now=now)
+        seconds, hold_awake, reason, _ = live._schedule_interval(self.conn, now=now)
         expected_wake = live._et_anchor(datetime(2026, 9, 12))  # still today, not next Saturday
         self.assertEqual(seconds, (expected_wake - now).total_seconds())
         self.assertIn("2026-09-12", reason)
@@ -240,7 +283,7 @@ class TestScheduleInterval(unittest.TestCase):
         _insert_game(self.conn, "sf", _fmt(self.now - timedelta(days=1)), "post", season_type=3)
         champ = self.now + timedelta(days=9)
         _insert_game(self.conn, "champ", _fmt(champ), "pre", season_type=3)
-        seconds, hold_awake, reason = live._schedule_interval(self.conn, now=self.now)
+        seconds, hold_awake, reason, _ = live._schedule_interval(self.conn, now=self.now)
         self.assertNotIn("no scheduled kickoff", reason)
         self.assertNotIn("postseason not yet discovered", reason)
         self.assertGreater(seconds, 0)
@@ -253,7 +296,7 @@ class TestScheduleInterval(unittest.TestCase):
         now = datetime(2026, 1, 21, 0, 0, tzinfo=timezone.utc)  # day after the 2026-01-20 CFP final
         opener = datetime(2026, 8, 29, 16, 0, tzinfo=timezone.utc)  # ~7 months out
         _insert_game(self.conn, "opener", _fmt(opener), "pre", season_year=2026, season_type=2, week=1)
-        seconds, hold_awake, reason = live._schedule_interval(self.conn, now=now)
+        seconds, hold_awake, reason, _ = live._schedule_interval(self.conn, now=now)
         expected_wake = live._et_anchor(datetime(2026, 8, 25))  # opener week's Tuesday
         self.assertEqual(seconds, (expected_wake - now).total_seconds())
         self.assertFalse(hold_awake)
@@ -264,7 +307,7 @@ class TestScheduleInterval(unittest.TestCase):
         # window -- must fall to the (effectively unbounded) no-schedule
         # backstop, not a recurring daily/weekly check.
         now = datetime(2026, 3, 1, tzinfo=timezone.utc)
-        seconds, hold_awake, reason = live._schedule_interval(self.conn, now=now)
+        seconds, hold_awake, reason, _ = live._schedule_interval(self.conn, now=now)
         self.assertEqual(seconds, float(live.LIVE_NO_SCHEDULE_BACKSTOP_SECONDS))
         self.assertFalse(hold_awake)
         self.assertIn("no scheduled kickoff", reason)
@@ -385,7 +428,7 @@ class TestPollerStatePersistence(unittest.TestCase):
             exit before the schedule-write this test is checking (see
             run_forever: that write only happens on the non-break path)."""
 
-        expected_period, _, expected_reason = live._schedule_interval(self.conn)
+        expected_period, _, expected_reason, _ = live._schedule_interval(self.conn)
 
         # No real network calls -- Tier 1 would otherwise hit the live
         # ESPN API. Empty slate keeps run_cycle's own logic (upserts,
@@ -409,6 +452,47 @@ class TestPollerStatePersistence(unittest.TestCase):
         # entirely and leaves a genuinely crashed poller's row stopped_at
         # NULL, which is what makes the field meaningful in production.
         self.assertIsNotNone(row["stopped_at"])
+
+    def test_second_wake_on_a_caffeinate_lead_only_schedule_skips_the_poll(self):
+        # A game 5h out: the very first wake always polls regardless (see
+        # run_forever's cycle_seq == 0 rule), but nothing changes about the
+        # schedule between the first and second wake here (still 5h out,
+        # give or take milliseconds of test runtime) -- so the second wake
+        # should be the caffeinate-lead-only case, and skip run_cycle
+        # entirely rather than costing a second real ESPN call. Root cause
+        # of two valueless production `scoreboard` calls, 2026-09-04.
+        now = datetime.now(timezone.utc)
+        kick = now + timedelta(hours=5)
+        _insert_game(self.conn, "g1", _fmt(kick), "pre")
+
+        class _StopLoop(Exception):
+            pass
+
+        scoreboard = Mock(return_value=[])
+        # First call: let the loop continue to a second iteration. Second
+        # call: escape before a third.
+        sleep_calls = {"n": 0}
+
+        def _fake_sleep(*a, **kw):
+            sleep_calls["n"] += 1
+            if sleep_calls["n"] >= 2:
+                raise _StopLoop
+
+        with patch.object(live.espn, "fetch_scoreboard_dates", scoreboard), \
+             patch.object(live, "_sleep_until", side_effect=_fake_sleep):
+            with self.assertRaises(_StopLoop):
+                live.run_forever(self.conn, once=False, mode="normal", dates="20260101")
+
+        self.assertEqual(scoreboard.call_count, 1)  # only the forced first-wake poll
+
+        row = self.conn.execute("SELECT * FROM poller_state WHERE poller='live'").fetchone()
+        # Unchanged since the (only) real cycle: the skip never touches
+        # last_cycle_*/cycle_seq, since nothing was actually fetched.
+        self.assertEqual(row["cycle_seq"], 1)
+        # But schedule bookkeeping still advances on the skip -- it's a
+        # real (if brief) sleep, not a no-op.
+        self.assertIn("caffeinate lead", row["interval_reason"])
+        self.assertIsNotNone(row["next_wake_at"])
 
 
 class TestSleepUntil(unittest.TestCase):
