@@ -51,6 +51,7 @@
 
   <div class="section-title">
     <span>Final</span><span class="rule"></span>
+    <button type="button" id="completed-group-toggle" class="mini-toggle">Group by day</button>
   </div>
   <div id="completed-section"></div>
 
@@ -318,6 +319,121 @@ function renderLiveSection(games) {
 
 // ---- completed section --------------------------------------------------------
 
+// Whether the Final section is one flat watchability-ranked list across the
+// whole scope window, or split into one ranked sub-list per calendar day --
+// a display preference, not shareable filter state like scope/date, so it
+// lives in localStorage rather than the URL.
+const GROUP_COMPLETED_KEY = "slate.completedGroupByDay";
+let GROUP_COMPLETED_BY_DAY = localStorage.getItem(GROUP_COMPLETED_KEY) === "1";
+
+// Calendar day in the viewer's own local timezone -- same basis fmtKickoff
+// already displays kickoff times in, so a game grouped under "Thursday"
+// here is the same Thursday its kickoff time reads as elsewhere on the row.
+function localDayKey(iso) {
+  const d = new Date(iso);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function dayHeaderLabel(iso) {
+  return new Date(iso).toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" }).toUpperCase();
+}
+
+function setGroupCompletedByDay(on) {
+  GROUP_COMPLETED_BY_DAY = on;
+  localStorage.setItem(GROUP_COMPLETED_KEY, on ? "1" : "0");
+  document.getElementById("completed-group-toggle").classList.toggle("active", on);
+  if (CURRENT_SLATE) renderCompletedSection(CURRENT_SLATE.sections.completed);
+}
+
+// 1-based "#rank of n" among just the scored games in `games`, keyed by
+// game_id -- the within-day equivalent of the server's all-time g.rank, so
+// a grouped day's badge reads e.g. "#2 of 6" for the games actually being
+// compared instead of an all-time number that says nothing about how that
+// day's slate stacked up against itself. `games` is expected pre-sorted by
+// watchability_score desc (true of everything renderCompletedSection is
+// ever called with), so array position alone gives the rank.
+function localRanks(games) {
+  const scored = games.filter((g) => g.watchability_score !== null);
+  const map = new Map();
+  scored.forEach((g, i) => map.set(g.game_id, `#${i + 1} of ${scored.length}`));
+  return map;
+}
+
+// One completed-game row -- shared by the flat and grouped-by-day layouts,
+// which differ only in how `rankText` was computed (global all-time rank
+// vs. rank within one day's finished games).
+function completedRow(g, rankText) {
+  const expanded = EXPANDED.has("c" + g.game_id);
+  const hasMetrics = Object.values(g.metrics || {}).some((v) => v.applicable);
+  const chevron = el("div", { class: "chevron" + (expanded ? " open" : ""), text: expanded ? "︿" : "⌄" });
+  if (!hasMetrics) chevron.style.visibility = "hidden";
+  const scoreCell = g.watchability_score === null
+    ? el("div", { class: "score-big", text: "—" })
+    : el("div", { class: "score-with-meter" }, [
+        el("span", { class: "val", text: fmtScore(g.watchability_score) }),
+        el("div", { class: "meter" }, el("i", { style: `width:${Math.min(100, (g.watchability_score / 0.70) * 100)}%` })),
+        el("span", { class: "pctile", text: g.percentile !== null ? fmtPct(g.percentile) : "" }),
+      ]);
+
+  // A real, clickable "Hidden" button, LEVEL_HIDDEN games only -- one
+  // click reveals the watchability score (a real, persistent
+  // LEVEL_SCORE override through the same /api/spoilers/game route
+  // Settings' game-override card and game.html's "Show watchability
+  // score" button both use, so it's visible/undoable from Settings on
+  // any device going forward, not a client-side-only bypass). Placed
+  // before the name in the matchup line, replacing the plain static
+  // HIDDEN chip renderChips() would otherwise also render there.
+  let hiddenBtn = null;
+  if (g.spoiler_level === 0) {
+    hiddenBtn = el("button", { class: "chip chip-btn", type: "button", text: "Hidden", title: "Reveal the watchability score" });
+    hiddenBtn.addEventListener("click", async (ev) => {
+      ev.stopPropagation();
+      hiddenBtn.disabled = true;
+      hiddenBtn.textContent = "Loading…";
+      try {
+        await apiPost("/spoilers/game", { game_id: g.game_id, level: 1 });
+        await loadSlate();
+      } catch (e) {
+        hiddenBtn.disabled = false;
+        hiddenBtn.textContent = `Failed: ${e.message}`;
+      }
+    });
+  }
+  const chips = renderChips(g).filter((c) => !(hiddenBtn && c.textContent === "HIDDEN"));
+
+  const row = el("div", { class: "slate-row row-completed" }, [
+    scoreCell,
+    el("div", { class: "row-info" }, [
+      el("div", { class: "matchup-line" }, [hiddenBtn, el("span", { class: "name", text: fmtMatchup(g) }), ...chips]),
+      el("div", { class: "row-sub" }, [
+        el("span", { class: "kickoff-time", text: fmtKickoff(g.game_date) }),
+        rankText ? ` · ${rankText}` : null,
+      ]),
+    ]),
+    chevron,
+  ]);
+
+  const expandWrap = el("div", { class: "expand-panel", style: expanded ? "" : "display:none" });
+  if (hasMetrics) {
+    chevron.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      const showing = expandWrap.style.display !== "none";
+      expandWrap.style.display = showing ? "none" : "block";
+      chevron.classList.toggle("open", !showing);
+      chevron.textContent = showing ? "⌄" : "︿";
+      if (showing) { EXPANDED.delete("c" + g.game_id); return; }
+      EXPANDED.add("c" + g.game_id);
+      if (expandWrap.children.length === 0) renderRetroExpand(expandWrap, g);
+    });
+    if (expanded) renderRetroExpand(expandWrap, g);
+  }
+  row.addEventListener("click", (ev) => {
+    if (chevron.contains(ev.target)) return;
+    location.href = `/game.html?id=${g.game_id}`;
+  });
+
+  return el("div", {}, [row, expandWrap]);
+}
+
 function renderCompletedSection(games) {
   const wrap = document.getElementById("completed-section");
   wrap.innerHTML = "";
@@ -331,86 +447,35 @@ function renderCompletedSection(games) {
       text: "Ranked by watchability",
     }));
   }
-  const list = el("div", { class: "slate-list" });
-  games.forEach((g) => {
-    const expanded = EXPANDED.has("c" + g.game_id);
-    const hasMetrics = Object.values(g.metrics || {}).some((v) => v.applicable);
-    const chevron = el("div", { class: "chevron" + (expanded ? " open" : ""), text: expanded ? "︿" : "⌄" });
-    if (!hasMetrics) chevron.style.visibility = "hidden";
+
+  if (!GROUP_COMPLETED_BY_DAY) {
     // g.rank is already null below LEVEL_SCORE (see redact_game_full) --
     // no separate spoiler_hidden gate needed here, and none should be
     // added: a LEVEL_SCORE game's rank is exactly what that tier reveals
     // (see the two-tier-spoiler plan's decision 1), so gating this on
     // spoiler_hidden the way it used to would wrongly withhold it.
-    const rankText = g.rank ? `#${g.rank} overall` : null;
-    const scoreCell = g.watchability_score === null
-      ? el("div", { class: "score-big", text: "—" })
-      : el("div", { class: "score-with-meter" }, [
-          el("span", { class: "val", text: fmtScore(g.watchability_score) }),
-          el("div", { class: "meter" }, el("i", { style: `width:${Math.min(100, (g.watchability_score / 0.70) * 100)}%` })),
-          el("span", { class: "pctile", text: g.percentile !== null ? fmtPct(g.percentile) : "" }),
-        ]);
+    const list = el("div", { class: "slate-list" });
+    games.forEach((g) => list.appendChild(completedRow(g, g.rank ? `#${g.rank} overall` : null)));
+    wrap.appendChild(list);
+    return;
+  }
 
-    // A real, clickable "Hidden" button, LEVEL_HIDDEN games only -- one
-    // click reveals the watchability score (a real, persistent
-    // LEVEL_SCORE override through the same /api/spoilers/game route
-    // Settings' game-override card and game.html's "Show watchability
-    // score" button both use, so it's visible/undoable from Settings on
-    // any device going forward, not a client-side-only bypass). Placed
-    // before the name in the matchup line, replacing the plain static
-    // HIDDEN chip renderChips() would otherwise also render there.
-    let hiddenBtn = null;
-    if (g.spoiler_level === 0) {
-      hiddenBtn = el("button", { class: "chip chip-btn", type: "button", text: "Hidden", title: "Reveal the watchability score" });
-      hiddenBtn.addEventListener("click", async (ev) => {
-        ev.stopPropagation();
-        hiddenBtn.disabled = true;
-        hiddenBtn.textContent = "Loading…";
-        try {
-          await apiPost("/spoilers/game", { game_id: g.game_id, level: 1 });
-          await loadSlate();
-        } catch (e) {
-          hiddenBtn.disabled = false;
-          hiddenBtn.textContent = `Failed: ${e.message}`;
-        }
-      });
-    }
-    const chips = renderChips(g).filter((c) => !(hiddenBtn && c.textContent === "HIDDEN"));
-
-    const row = el("div", { class: "slate-row row-completed" }, [
-      scoreCell,
-      el("div", { class: "row-info" }, [
-        el("div", { class: "matchup-line" }, [hiddenBtn, el("span", { class: "name", text: fmtMatchup(g) }), ...chips]),
-        el("div", { class: "row-sub" }, [
-          el("span", { class: "kickoff-time", text: fmtKickoff(g.game_date) }),
-          rankText ? ` · ${rankText}` : null,
-        ]),
-      ]),
-      chevron,
-    ]);
-
-    const expandWrap = el("div", { class: "expand-panel", style: expanded ? "" : "display:none" });
-    if (hasMetrics) {
-      chevron.addEventListener("click", (ev) => {
-        ev.stopPropagation();
-        const showing = expandWrap.style.display !== "none";
-        expandWrap.style.display = showing ? "none" : "block";
-        chevron.classList.toggle("open", !showing);
-        chevron.textContent = showing ? "⌄" : "︿";
-        if (showing) { EXPANDED.delete("c" + g.game_id); return; }
-        EXPANDED.add("c" + g.game_id);
-        if (expandWrap.children.length === 0) renderRetroExpand(expandWrap, g);
-      });
-      if (expanded) renderRetroExpand(expandWrap, g);
-    }
-    row.addEventListener("click", (ev) => {
-      if (chevron.contains(ev.target)) return;
-      location.href = `/game.html?id=${g.game_id}`;
-    });
-
-    list.appendChild(el("div", {}, [row, expandWrap]));
+  const groups = new Map();
+  games.forEach((g) => {
+    const key = localDayKey(g.game_date);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(g);
   });
-  wrap.appendChild(list);
+  // Most recent day first -- the day someone's checking the Final section
+  // for is the one that just finished, not the start of the window.
+  Array.from(groups.keys()).sort().reverse().forEach((key) => {
+    const dayGames = groups.get(key);
+    const ranks = localRanks(dayGames);
+    wrap.appendChild(el("div", { class: "day-group-title", text: dayHeaderLabel(dayGames[0].game_date) }));
+    const list = el("div", { class: "slate-list" });
+    dayGames.forEach((g) => list.appendChild(completedRow(g, ranks.get(g.game_id) || null)));
+    wrap.appendChild(list);
+  });
 }
 
 // ---- upcoming section ----------------------------------------------------------
@@ -541,6 +606,9 @@ function wireFilters() {
   document.getElementById("f-date").addEventListener("change", () => loadSlate({ push: true }));
   document.getElementById("date-prev").addEventListener("click", () => stepSlate(-1));
   document.getElementById("date-next").addEventListener("click", () => stepSlate(1));
+  const groupToggle = document.getElementById("completed-group-toggle");
+  groupToggle.classList.toggle("active", GROUP_COMPLETED_BY_DAY);
+  groupToggle.addEventListener("click", () => setGroupCompletedByDay(!GROUP_COMPLETED_BY_DAY));
 }
 
 (async function init() {

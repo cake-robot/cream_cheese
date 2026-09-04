@@ -487,6 +487,24 @@ body[data-page="slate"] .slate-frame main {
 .section-title .meta { font-family: var(--font-mono); font-size: 11px; letter-spacing: .06em; text-transform: none; color: var(--ink-muted); }
 .section-title.live { color: var(--series-1); }
 
+/* Standalone on/off toggle button (vs. .scope-toggle's multi-segment
+   picker) -- same filled-when-active treatment, one button. */
+.mini-toggle {
+  font-family: var(--font-display); font-size: 11px; letter-spacing: .16em; text-transform: uppercase;
+  padding: 6px 12px; cursor: pointer; border: 1px solid var(--grid-2); background: transparent; color: var(--ink-muted);
+}
+.mini-toggle:hover { border-color: var(--series-1); color: var(--ink-1); }
+.mini-toggle.active { background: var(--ink-2); color: var(--page); border-color: var(--ink-2); }
+
+/* Sub-header for one calendar day's worth of completed games, when the
+   Final section is split by day -- lighter weight than .section-title so
+   it reads as a subdivision of "Final", not a sibling top-level section. */
+.day-group-title {
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--ink-muted); margin: 22px 0 8px;
+}
+.day-group-title:first-of-type { margin-top: 0; }
+
 /* A note line ABOVE a list (e.g. "scores hidden for spoiler-protected
    games") -- lives outside the bordered list, not padded inside it. */
 .slate-note { font-family: var(--font-mono); font-size: 11px; color: var(--ink-muted); letter-spacing: .04em; margin-bottom: 10px; }
