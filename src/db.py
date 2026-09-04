@@ -29,11 +29,13 @@ CREATE TABLE IF NOT EXISTS games (
     home_team_abbr      TEXT NOT NULL,
     home_team_name      TEXT NOT NULL,
     home_rank           INTEGER,
+    home_conference_id  INTEGER,
 
     away_team_id        TEXT NOT NULL REFERENCES teams(team_id),
     away_team_abbr      TEXT NOT NULL,
     away_team_name      TEXT NOT NULL,
     away_rank           INTEGER,
+    away_conference_id  INTEGER,
 
     conference_game     INTEGER NOT NULL DEFAULT 0,
     neutral_site        INTEGER NOT NULL DEFAULT 0,
@@ -434,6 +436,18 @@ def init_db(path=None):
     if "live_updated_at" not in game_cols:
         conn.execute("ALTER TABLE games ADD COLUMN live_updated_at TEXT")
 
+    # ESPN's team.conferenceId, captured off scoreboard competitors only --
+    # not present on the /summary or team-schedule endpoints. Season-accurate
+    # (not "current conference"): a historical `dates=` scoreboard query
+    # returns the conference a team actually belonged to that season, not
+    # its conference today (verified live: USC returns Pac-12 for a 2022
+    # week-1 query, Big Ten for 2024). Captured going forward only here --
+    # existing rows are NULL until `pipeline.py --backfill-conferences` runs.
+    if "home_conference_id" not in game_cols:
+        conn.execute("ALTER TABLE games ADD COLUMN home_conference_id INTEGER")
+    if "away_conference_id" not in game_cols:
+        conn.execute("ALTER TABLE games ADD COLUMN away_conference_id INTEGER")
+
     # live_scores.decided removed -- the flag was found to force
     # drama_from_here to 0 on games that were still genuinely live (a real
     # final drive briefly crossing an extreme WP reading), while barely
@@ -502,8 +516,8 @@ def upsert_game(conn, game):
     conn.execute("""
         INSERT INTO games (
             game_id, season_year, season_type, week, game_date,
-            home_team_id, home_team_abbr, home_team_name, home_rank,
-            away_team_id, away_team_abbr, away_team_name, away_rank,
+            home_team_id, home_team_abbr, home_team_name, home_rank, home_conference_id,
+            away_team_id, away_team_abbr, away_team_name, away_rank, away_conference_id,
             conference_game, neutral_site, venue_name, event_note,
             status_state, completed,
             status_period, status_clock_display, status_clock_seconds, status_detail,
@@ -512,8 +526,8 @@ def upsert_game(conn, game):
             detail_fetched, watchability_score
         ) VALUES (
             :game_id, :season_year, :season_type, :week, :game_date,
-            :home_team_id, :home_team_abbr, :home_team_name, :home_rank,
-            :away_team_id, :away_team_abbr, :away_team_name, :away_rank,
+            :home_team_id, :home_team_abbr, :home_team_name, :home_rank, :home_conference_id,
+            :away_team_id, :away_team_abbr, :away_team_name, :away_rank, :away_conference_id,
             :conference_game, :neutral_site, :venue_name, :event_note,
             :status_state, :completed,
             :status_period, :status_clock_display, :status_clock_seconds, :status_detail,
@@ -530,10 +544,12 @@ def upsert_game(conn, game):
             home_team_abbr  = excluded.home_team_abbr,
             home_team_name  = excluded.home_team_name,
             home_rank       = excluded.home_rank,
+            home_conference_id = COALESCE(excluded.home_conference_id, games.home_conference_id),
             away_team_id    = excluded.away_team_id,
             away_team_abbr  = excluded.away_team_abbr,
             away_team_name  = excluded.away_team_name,
             away_rank       = excluded.away_rank,
+            away_conference_id = COALESCE(excluded.away_conference_id, games.away_conference_id),
             conference_game = excluded.conference_game,
             neutral_site    = excluded.neutral_site,
             venue_name      = excluded.venue_name,
@@ -551,6 +567,8 @@ def upsert_game(conn, game):
             watchability_score = COALESCE(excluded.watchability_score, games.watchability_score)
     """, {
         **game,
+        "home_conference_id": game.get("home_conference_id"),
+        "away_conference_id": game.get("away_conference_id"),
         "home_score": game.get("home_score"),
         "away_score": game.get("away_score"),
         "attendance": game.get("attendance"),

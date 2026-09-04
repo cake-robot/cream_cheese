@@ -811,16 +811,20 @@ def shape_game(row, metrics_map, rank=None, n_scored=None, has_fox_correction=Fa
         "event_note": row["event_note"],
         "game_date": row["game_date"],
         "away": {
+            "team_id": row["away_team_id"],
             "abbr": row["away_team_abbr"],
             "name": row["away_team_name"],
             "rank": row["away_rank"],
             "score": row["away_score"],
+            "conference_id": (row["away_conference_id"] if "away_conference_id" in row.keys() else None),
         },
         "home": {
+            "team_id": row["home_team_id"],
             "abbr": row["home_team_abbr"],
             "name": row["home_team_name"],
             "rank": row["home_rank"],
             "score": row["home_score"],
+            "conference_id": (row["home_conference_id"] if "home_conference_id" in row.keys() else None),
         },
         "venue_name": row["venue_name"],
         "attendance": row["attendance"],
@@ -1382,11 +1386,24 @@ def api_meta():
         GROUP BY abbr ORDER BY name
     """).fetchall()
 
+    # Power-conference membership is season-dependent (see
+    # config.power_conference_ids -- the Pac-12 dropped out of "power" after
+    # 2023), so this is keyed by season rather than a single static flag,
+    # letting the frontend resolve a game's tier from its own season_year
+    # without hardcoding the 2024 cutover itself.
+    conferences = [{"id": cid, "name": name} for cid, name in sorted(config.FBS_CONFERENCES.items())]
+    power_by_season = {
+        str(year): sorted(config.power_conference_ids(year)) for year in seasons
+    }
+
     return jsonify({
         "seasons": seasons,
         "season_types": season_types,
         "weeks": weeks,
         "teams": [{"abbr": r["abbr"], "name": r["name"]} for r in team_rows],
+        "conferences": conferences,
+        "power_conference_ids_by_season": power_by_season,
+        "notre_dame_team_id": config.NOTRE_DAME_TEAM_ID,
     })
 
 

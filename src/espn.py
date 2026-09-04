@@ -102,6 +102,20 @@ def fetch_game_summary(game_id):
     return fetch_json(url, kind="summary", game_id=game_id)
 
 
+def _get_conference_id(team):
+    """ESPN's team.conferenceId, present on scoreboard competitors only (not
+    /summary, not the team-schedule endpoint). Season-accurate, not "current
+    conference" -- a historical `dates=` scoreboard query returns the
+    conference a team actually belonged to that season. TBD bowl placeholders
+    (team id -1/-2) carry no conferenceId; None here is the correct result
+    for those, not a parse failure."""
+    conf_id = team.get("conferenceId")
+    try:
+        return int(conf_id)
+    except (TypeError, ValueError):
+        return None
+
+
 def _get_rank(competitor):
     curated = competitor.get("curatedRank")
     if curated:
@@ -214,10 +228,12 @@ def _parse_competition(event, comp):
         "home_team_abbr": home_team.get("abbreviation", ""),
         "home_team_name": home_team.get("displayName", ""),
         "home_rank": _get_rank(home),
+        "home_conference_id": _get_conference_id(home_team),
         "away_team_id": str(away_team.get("id", "")),
         "away_team_abbr": away_team.get("abbreviation", ""),
         "away_team_name": away_team.get("displayName", ""),
         "away_rank": _get_rank(away),
+        "away_conference_id": _get_conference_id(away_team),
         "conference_game": conference_game,
         "neutral_site": int(bool(comp.get("neutralSite", False))),
         "venue_name": venue_name,
@@ -283,10 +299,15 @@ def parse_summary_game_meta(summary):
         "home_team_abbr": home_team.get("abbreviation", ""),
         "home_team_name": home_team.get("displayName", ""),
         "home_rank": _get_rank(home),
+        # /summary's competitor.team carries no conferenceId at all (unlike
+        # the scoreboard) -- this bootstrap path leaves it for the
+        # --backfill-conferences pass rather than guessing.
+        "home_conference_id": None,
         "away_team_id": str(away_team.get("id", "")),
         "away_team_abbr": away_team.get("abbreviation", ""),
         "away_team_name": away_team.get("displayName", ""),
         "away_rank": _get_rank(away),
+        "away_conference_id": None,
         "conference_game": conference_game,
         "neutral_site": int(bool(comp.get("neutralSite", False))),
         "venue_name": venue_name,

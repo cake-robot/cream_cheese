@@ -252,6 +252,64 @@ def backfill_raw_json(conn, limit):
           f"{total_remaining - n} still remaining.")
 
 
+def backfill_conferences(conn):
+    """Backfill games.home_conference_id/away_conference_id for games that
+    predate conference capture (added to discover_games()'s scoreboard-fed
+    upserts) or were discovered via --team mode's team-schedule endpoint,
+    which carries no conferenceId at all. One scoreboard call per
+    (season, week[, season_type]) group present in the DB, not per game --
+    a real request per group but cheap (~80 total for the whole 2022-2026
+    history) since a single scoreboard fetch covers every game in that
+    week. Idempotent/safe to re-run: only groups with at least one NULL
+    conference id are fetched, and the UPDATE below never clobbers an
+    already-good value.
+
+    Matches each fetched game back to its stored row by team_id rather than
+    assuming ESPN's home/away orientation always matches what's stored --
+    defensive, not known to actually happen, but cheap to guard against."""
+    groups = conn.execute("""
+        SELECT DISTINCT season_year, season_type, week FROM games
+        WHERE week IS NOT NULL
+          AND (home_conference_id IS NULL OR away_conference_id IS NULL)
+        ORDER BY season_year, season_type, week
+    """).fetchall()
+
+    if not groups:
+        print("0 (season, week) groups need conference backfill.")
+        return
+
+    n_updated = 0
+    for i, grp in enumerate(groups, 1):
+        season, season_type, week = grp["season_year"], grp["season_type"], grp["week"]
+        # season_type=3 (postseason) is unreliable without an explicit
+        # week=1 -- see the week=1 comment in discover_games()'s full-season
+        # branch. Postseason rows are always stored with week=1 already, so
+        # this just makes the fetch match what's on disk.
+        fetch_week = 1 if season_type == 3 else week
+        print(f"[{i}/{len(groups)}] Fetching scoreboard season={season} "
+              f"season_type={season_type} week={fetch_week}...", end=" ", flush=True)
+        games = espn.fetch_scoreboard(season, week=fetch_week, season_type=season_type)
+        for g in games:
+            conn.execute("""
+                UPDATE games SET
+                    home_conference_id = CASE
+                        WHEN home_team_id = :home_team_id THEN COALESCE(:home_conference_id, home_conference_id)
+                        WHEN home_team_id = :away_team_id THEN COALESCE(:away_conference_id, home_conference_id)
+                        ELSE home_conference_id END,
+                    away_conference_id = CASE
+                        WHEN away_team_id = :home_team_id THEN COALESCE(:home_conference_id, away_conference_id)
+                        WHEN away_team_id = :away_team_id THEN COALESCE(:away_conference_id, away_conference_id)
+                        ELSE away_conference_id END
+                WHERE game_id = :game_id
+            """, g)
+        conn.commit()
+        print(f"{len(games)} games")
+        n_updated += len(games)
+
+    print(f"Conference backfill complete: {len(groups)} (season, week) groups, "
+          f"{n_updated} game rows touched.")
+
+
 def handle_game_arg(conn, game_id):
     """Ensure a game row exists when --game is specified; return [game_id]."""
     row = conn.execute("SELECT game_id FROM games WHERE game_id = ?", (game_id,)).fetchone()
@@ -667,6 +725,11 @@ def main():
                               "normal detail-fetch path), safe to re-run repeatedly")
     parser.add_argument("--backfill-raw-json-limit", type=int, default=25, metavar="N",
                          help="Max games to fetch per --backfill-raw-json run (default 25)")
+    parser.add_argument("--backfill-conferences", action="store_true",
+                         help="Backfill home_conference_id/away_conference_id for games discovered "
+                              "before conference capture existed, or via --team mode's team-schedule "
+                              "path (which carries no conferenceId). One scoreboard call per "
+                              "(season, week) group, idempotent, safe to re-run.")
     parser.add_argument("--find-team", type=str, metavar="NAME")
     parser.add_argument("--seed-teams", action="store_true", help="Populate teams table from ESPN teams list")
     parser.add_argument("--fox-pull", action="store_true",
@@ -853,6 +916,10 @@ def main():
 
     if args.backfill_raw_json:
         backfill_raw_json(conn, args.backfill_raw_json_limit)
+        sys.exit(0)
+
+    if args.backfill_conferences:
+        backfill_conferences(conn)
         sys.exit(0)
 
     if args.score_only:
