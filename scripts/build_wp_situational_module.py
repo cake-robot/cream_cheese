@@ -80,6 +80,36 @@ Differences from the exploratory fit:
     how this stacks up against ESPN's own live WP (closes most, not all, of
     that gap too -- ESPN remains sharper in the literal final seconds,
     likely from real-time inputs like timeouts that aren't in this dataset).
+  - Every scores_needed urgency term now also gets a yards_to_go interaction
+    (2026-09-03), fixing a goal-line blind spot found via game 401521330
+    (OSU 1st & goal from the 1, trailing by 4, 7s left -- production read
+    27.9%, ESPN read 65.1%, and the corpus-wide empirical win rate for this
+    exact shape is 53-66%). Root cause: sn_urgency/sn_urgency3/
+    sn_inv_sqrt_urgency are functions of ONLY scores_needed and
+    time_remaining -- they collapse a trailing team's WP toward the
+    leader's regardless of how far that team actually has to travel.
+    Correct when they're 75 yards away with 7 seconds left (nearly
+    hopeless); badly wrong when they're 1 yard away with 7 seconds left
+    (a single play away from winning). Unlike the down4 x yards_to_go test
+    (scripts/compare_wp_fg_range_interaction.py, negative result -- that
+    interaction got diluted into insignificance by the overwhelming mass
+    of low-leverage 4th downs all game long), the urgency terms are
+    ALREADY concentrated in exactly the late/close-game situations that
+    matter by construction ((1-time_frac) and 1/sqrt(seconds_remaining)
+    both shrink to ~0 everywhere else), so an interaction with yards_to_go
+    only ever activates in that same narrow window and isn't drowned out
+    the same way. Confirmed via scripts/compare_wp_urgency_field_position.py:
+    all three new terms significant (p=0.0000/0.0174/0.0000), held-out
+    brier improves on ALL plays (0.1071->0.1070), on the goal-line bug's
+    exact shape (n=29, brier 0.3659->0.3038), AND on the far-field slice
+    those original urgency terms were built for (n=254, brier
+    0.1093->0.1010 -- also improves, doesn't just avoid regressing). The
+    OSU goal-line anchor moves from 26.6% to 43.6% offense WP (ESPN: 65.1%
+    -- a real but incomplete improvement; ESPN likely has real-time inputs
+    like personnel/formation this dataset doesn't) while the Hail-Mary
+    anchor (1st & 10 from the 44, trailing by 4, 0s left) correctly stays
+    put at ~12.6%/12.7%, confirming the interaction doesn't fire outside
+    its intended range.
 
 Requires numpy/pandas/statsmodels (dev-only, see requirements-dev.txt) --
 deliberately NOT a runtime dependency of src/wp_situational.py itself.
@@ -202,7 +232,13 @@ def make_design(df):
     omitted -- a full-corpus fit found it non-significant (p=0.223) once
     the linear/cubic/inv-sqrt scores_needed terms were present, and
     dropping it changed held-out metrics by nothing (matching the existing
-    goal_to_go-drop precedent above)."""
+    goal_to_go-drop precedent above).
+
+    Round 3 (2026-09-03): each scores_needed urgency term also gets a
+    yards_to_go interaction (sn_urgency_x_ytg etc, scaled by /50 to keep
+    coefficients in a comparable range to the base terms) -- see the
+    module docstring's "Every scores_needed urgency term now also gets a
+    yards_to_go interaction" entry for the full rationale and validation."""
     time_frac = df["seconds_remaining_reg"] / 3600.0
     sn = df["score_diff"].map(scores_needed)
     X = pd.DataFrame({
@@ -218,6 +254,9 @@ def make_design(df):
         "sn_urgency3": sn * (1 - time_frac) ** 3,
         "sn_time_remaining_frac2": time_frac ** 2,
         "sn_inv_sqrt_urgency": sn / np.sqrt(df["seconds_remaining_reg"] + 5.0),
+        "sn_urgency_x_ytg": sn * (1 - time_frac) * df["yards_to_go"] / 50.0,
+        "sn_urgency3_x_ytg": sn * (1 - time_frac) ** 3 * df["yards_to_go"] / 50.0,
+        "sn_inv_sqrt_urgency_x_ytg": (sn / np.sqrt(df["seconds_remaining_reg"] + 5.0)) * df["yards_to_go"] / 50.0,
     })
     return sm.add_constant(X, has_constant="add")
 
@@ -247,6 +286,11 @@ spreading them apart was underselling how safe a narrow late lead really
 is (see scripts/compare_wp_endgame_calibration.py and
 scripts/validate_endgame_lead_win_rate.py for the full investigation and
 held-out validation).
+
+Each urgency term also interacts with yards_to_go, so a trailing team
+right on the doorstep with no time left isn't penalized the same as a
+trailing team 75 yards away with no time left (see
+scripts/compare_wp_urgency_field_position.py).
 
 predict_wp_offense()/coinflip_wp_offense() take the offense's own down/
 distance/field position plus score/time/pregame WP and return the win
@@ -302,7 +346,10 @@ def predict_wp_offense(*, down, distance, yards_to_go,
               + m["b_sn_urgency"] * sn * (1 - time_remaining_frac)
               + m["b_sn_urgency3"] * sn * (1 - time_remaining_frac) ** 3
               + m["b_sn_time_remaining_frac2"] * time_remaining_frac ** 2
-              + m["b_sn_inv_sqrt_urgency"] * sn / math.sqrt(max(0.0, 3600 - elapsed_seconds) + 5.0))
+              + m["b_sn_inv_sqrt_urgency"] * sn / math.sqrt(max(0.0, 3600 - elapsed_seconds) + 5.0)
+              + m["b_sn_urgency_x_ytg"] * sn * (1 - time_remaining_frac) * yards_to_go / 50.0
+              + m["b_sn_urgency3_x_ytg"] * sn * (1 - time_remaining_frac) ** 3 * yards_to_go / 50.0
+              + m["b_sn_inv_sqrt_urgency_x_ytg"] * (sn / math.sqrt(max(0.0, 3600 - elapsed_seconds) + 5.0)) * yards_to_go / 50.0)
     return inv_logit(l_pred)
 
 
@@ -335,6 +382,9 @@ def write_module(model, n_games, n_rows, pseudo_r2):
         "sn_urgency3": "b_sn_urgency3",
         "sn_time_remaining_frac2": "b_sn_time_remaining_frac2",
         "sn_inv_sqrt_urgency": "b_sn_inv_sqrt_urgency",
+        "sn_urgency_x_ytg": "b_sn_urgency_x_ytg",
+        "sn_urgency3_x_ytg": "b_sn_urgency3_x_ytg",
+        "sn_inv_sqrt_urgency_x_ytg": "b_sn_inv_sqrt_urgency_x_ytg",
     }
     entries = "\n".join(
         COEF_TEMPLATE.format(name=out_name, value=float(model.params[in_name]))
