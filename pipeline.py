@@ -161,6 +161,58 @@ def fetch_details(conn, game_ids=None):
     print(f"Detail fetch complete: {n} games processed.")
 
 
+def refetch_detail(conn, game_id):
+    """Re-pull an already detail-fetched game from ESPN, safely -- unlike
+    fetch_details() (which only ever touches a game with detail_fetched=0,
+    so it can never be used to correct one), this always deletes the game's
+    existing win_probability rows before re-inserting the fresh set.
+
+    That delete-first step matters because upsert_win_probability() is
+    INSERT OR IGNORE keyed on (game_id, play_id): re-fetching on top of an
+    existing row silently keeps the OLD row (old sequence_number, old
+    score/period/clock) instead of the new one. A play seen by an earlier,
+    incomplete pull (an ESPN payload that hadn't been fully backfilled yet,
+    or -- the case this was built for -- one the live poller already wrote
+    mid-game) then keeps whatever position it had at that time forever,
+    scrambling every play's chronological order that the two pulls happen
+    to disagree on. src/live.py's handle_completions() already does this
+    delete-first dance for the live->final transition; this is the same
+    safety for the "an already-completed game's ESPN data looked
+    incomplete/wrong, try pulling it again" case, which has no other safe,
+    reusable entry point.
+
+    Also recomputes play_sequence (order depends on the freshly-inserted
+    sequence_numbers) -- scoring is the caller's job, same as
+    fetch_details(), since a caller might want to refetch several games
+    before scoring them all in one score_games() call (it runs
+    apply_corrections() internally, which iterates the full corrections
+    table on every invocation -- batch, don't call per-game).
+    """
+    row = conn.execute(
+        "SELECT away_team_abbr, home_team_abbr FROM games WHERE game_id = ?", (game_id,)
+    ).fetchone()
+    if not row:
+        print(f"Game {game_id} not in DB -- nothing to refetch.")
+        return
+    label = f"{row['away_team_abbr']} @ {row['home_team_abbr']}"
+    print(f"Refetching detail for {label} ({game_id})...")
+
+    summary = espn.fetch_game_summary(game_id)
+    wp_rows, home_score, away_score, attendance, initial_home_wp = espn.parse_summary_detail(summary)
+    if not wp_rows:
+        print("  Warning: no win probability data in this fetch either.")
+
+    with conn:
+        db.delete_win_probability(conn, game_id)
+        if wp_rows:
+            db.upsert_win_probability(conn, wp_rows)
+        db.upsert_game_raw_json(conn, game_id, summary)
+        db.mark_detail_fetched(conn, game_id, home_score, away_score, attendance, initial_home_wp)
+
+    db.compute_play_sequences(conn, game_id=game_id)
+    print(f"  {len(wp_rows)} WP rows stored, chronological order recomputed.")
+
+
 def backfill_raw_json(conn, limit):
     """Archive game_raw_json for games that were detail-fetched before that
     table existed. Incremental and resumable by design (default cap of
@@ -595,6 +647,13 @@ def main():
                               "(2=regular [default], 3=postseason)")
     parser.add_argument("--team", type=str, help="Team ID (uses team schedule endpoint)")
     parser.add_argument("--game", type=str, help="Single game ID")
+    parser.add_argument("--refetch", action="store_true",
+                         help="With --game: re-pull an already detail-fetched game from ESPN and "
+                              "rescore it, safely (deletes its win_probability rows first -- see "
+                              "refetch_detail()'s docstring for why a plain re-fetch on top of "
+                              "existing rows silently corrupts chronological order). Use when a "
+                              "completed game's ESPN data looked incomplete or wrong the first "
+                              "time and you want to try again.")
     parser.add_argument("--discover-only", action="store_true")
     parser.add_argument("--detail-only", action="store_true")
     parser.add_argument("--score-only", action="store_true", help="Only run Phase 3 scoring")
@@ -814,12 +873,15 @@ def main():
 
     if args.game:
         game_ids = handle_game_arg(conn, args.game)
-        if not args.detail_only:
-            # --game implies skip discovery; game row is bootstrapped above
-            pass
-        fetch_details(conn, game_ids)
+        if args.refetch:
+            refetch_detail(conn, args.game)
+        else:
+            fetch_details(conn, game_ids)
         if not args.skip_scoring:
-            scoring.score_games(conn, game_ids=game_ids, rescore=args.rescore)
+            # A refetch is specifically trying to correct a game's existing
+            # score/metrics, so force rescore=True regardless of --rescore --
+            # skipping it would leave the whole point of --refetch undone.
+            scoring.score_games(conn, game_ids=game_ids, rescore=(args.rescore or args.refetch))
         return
 
     if not args.detail_only:
