@@ -381,7 +381,10 @@ function renderCompletedSection(games) {
       scoreCell,
       el("div", { class: "row-info" }, [
         el("div", { class: "matchup-line" }, [hiddenBtn, el("span", { class: "name", text: fmtMatchup(g) }), ...chips]),
-        rankText ? el("div", { class: "row-sub", text: rankText }) : null,
+        el("div", { class: "row-sub" }, [
+          el("span", { class: "kickoff-time", text: fmtKickoff(g.game_date) }),
+          rankText ? ` · ${rankText}` : null,
+        ]),
       ]),
       chevron,
     ]);
