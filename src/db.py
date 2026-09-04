@@ -418,6 +418,13 @@ def init_db(path=None):
         # backfilled, so this is NULL for every game already in the DB.
         conn.execute("ALTER TABLE games ADD COLUMN event_note TEXT")
 
+    if "rivalry_name" not in game_cols:
+        # Static team-pair lookup (src/rivalries.py), not an ESPN field --
+        # ESPN's API has no structured rivalry signal. Computed at parse time
+        # from home/away team_id and stored here so slate/game-detail queries
+        # don't need to import the lookup table themselves.
+        conn.execute("ALTER TABLE games ADD COLUMN rivalry_name TEXT")
+
     # Live status mirror -- ESPN's comp.status block (period/clock/detail),
     # refreshed from the scoreboard every live-poll cycle. Always overwritten,
     # never historical (that's what live_score_history is for); belongs on
@@ -504,7 +511,7 @@ def upsert_game(conn, game):
             game_id, season_year, season_type, week, game_date,
             home_team_id, home_team_abbr, home_team_name, home_rank,
             away_team_id, away_team_abbr, away_team_name, away_rank,
-            conference_game, neutral_site, venue_name, event_note,
+            conference_game, neutral_site, venue_name, event_note, rivalry_name,
             status_state, completed,
             status_period, status_clock_display, status_clock_seconds, status_detail,
             live_updated_at,
@@ -514,7 +521,7 @@ def upsert_game(conn, game):
             :game_id, :season_year, :season_type, :week, :game_date,
             :home_team_id, :home_team_abbr, :home_team_name, :home_rank,
             :away_team_id, :away_team_abbr, :away_team_name, :away_rank,
-            :conference_game, :neutral_site, :venue_name, :event_note,
+            :conference_game, :neutral_site, :venue_name, :event_note, :rivalry_name,
             :status_state, :completed,
             :status_period, :status_clock_display, :status_clock_seconds, :status_detail,
             CASE WHEN :status_period IS NOT NULL THEN datetime('now') ELSE NULL END,
@@ -538,6 +545,7 @@ def upsert_game(conn, game):
             neutral_site    = excluded.neutral_site,
             venue_name      = excluded.venue_name,
             event_note      = excluded.event_note,
+            rivalry_name    = excluded.rivalry_name,
             status_state    = excluded.status_state,
             completed       = excluded.completed,
             status_period        = excluded.status_period,
@@ -558,6 +566,7 @@ def upsert_game(conn, game):
         "detail_fetched": game.get("detail_fetched", 0),
         "watchability_score": game.get("watchability_score"),
         "event_note": game.get("event_note"),
+        "rivalry_name": game.get("rivalry_name"),
         "status_period": game.get("status_period"),
         "status_clock_display": game.get("status_clock_display"),
         "status_clock_seconds": game.get("status_clock_seconds"),
