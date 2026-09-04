@@ -3078,6 +3078,11 @@ def api_spoilers_search():
         abort(400, description="limit must be an integer")
 
     if game_id:
+        # Exact-id lookup: used to re-label an *existing* override, so it
+        # must find the game regardless of status_state -- an override
+        # can't currently be set on a not-yet-started game (see the q
+        # branch below), but this path stays permissive in case that ever
+        # changes, rather than making "can I look this up" depend on it.
         where_sql, params = "game_id = ?", [game_id]
     elif q:
         # Split on whitespace and AND the terms together (each term OR'd
@@ -3094,15 +3099,26 @@ def api_spoilers_search():
                 "home_team_name LIKE ? OR away_team_name LIKE ? OR venue_name LIKE ?)"
             )
             params.extend([like, like, like, like, like])
+        # A per-game override only makes sense once there's something to
+        # spoil -- a "pre" game has no score/outcome yet, so excluding it
+        # here means the picklist never fills up with games there's no
+        # reason to individually toggle. Hiding a whole future week/season
+        # is still done via the week/default overrides above, which stay
+        # unfiltered by design.
+        clauses.append("status_state != 'pre'")
         where_sql = " AND ".join(clauses)
     else:
         return jsonify({"results": []})
 
+    # Closest-to-now first: a team's search otherwise gets swamped by its
+    # remaining full-season schedule (game_date DESC alone put every future
+    # game ahead of today's), pushing the live/most-recent game -- the one
+    # you're actually looking for -- past the fixed `limit` cutoff.
     rows = conn.execute(f"""
         SELECT game_id, season_year, season_type, week, event_note, game_date,
                home_team_abbr, home_team_name, away_team_abbr, away_team_name
         FROM games WHERE {where_sql}
-        ORDER BY game_date DESC LIMIT ?
+        ORDER BY ABS(julianday(game_date) - julianday('now')) ASC LIMIT ?
     """, params + [limit]).fetchall()
     results = [{
         "game_id": r["game_id"], "season_year": r["season_year"], "season_type": r["season_type"],
@@ -3147,9 +3163,20 @@ def api_spoilers_game():
         abort(400, description="game_id is required")
     level = _parse_spoiler_level(data)
 
-    exists = conn.execute("SELECT 1 FROM games WHERE game_id=? LIMIT 1", (game_id,)).fetchone()
-    if exists is None:
+    row = conn.execute("SELECT status_state FROM games WHERE game_id=? LIMIT 1", (game_id,)).fetchone()
+    if row is None:
         abort(404, description="no such game")
+    # A per-game override that reveals anything only makes sense once the
+    # game has actually started -- a "pre" game has no score/outcome to
+    # protect or reveal yet, so there's nothing a LEVEL_SCORE/LEVEL_FULL
+    # override could legitimately do beyond preemptively opting a not-yet-
+    # played game out of a future week/season-wide hide. Clearing an
+    # override (level is None) and re-hiding (LEVEL_HIDDEN) stay allowed --
+    # both are no-ops relative to a pre-game's already-hidden default, but
+    # rejecting them too would make "did I already set an override on this"
+    # a special case to reason about instead of a plain revert.
+    if row["status_state"] == "pre" and level not in (None, spoilers.LEVEL_HIDDEN):
+        abort(400, description="game hasn't started yet -- nothing to reveal")
 
     policy = spoilers.set_user_game(current_user()["user_id"], game_id, level, conn=get_users_db())
     return jsonify({"policy": policy, "active_overrides": _spoiler_active_overrides(policy)})
