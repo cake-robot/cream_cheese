@@ -63,6 +63,29 @@ function fmtKickoff(iso) {
   const d = new Date(iso);
   return d.toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" });
 }
+
+// Coarse, spoiler-safe "how far along is this live game" label. Period is
+// already capped at >4 -> null server-side for LEVEL_HIDDEN/LEVEL_SCORE
+// games (see spoilers.py's redact_live_full -- an OT period is itself an
+// outcome tell, same reasoning as the OT chip being suppressed for those
+// tiers), but a LEVEL_FULL game's status.period passes through un-redacted
+// and can legitimately be 5+ -- so this caps it again here, uniformly,
+// regardless of spoiler tier: nobody sees "OT" from this label, only "4th
+// quarter or later". A null period on a live ('in') game only happens via
+// that redaction (a real kicked-off game always has a period), so it's
+// treated the same as period >= 4 rather than as "unknown".
+const QUARTER_ORDINALS = { 1: "1st", 2: "2nd", 3: "3rd" };
+function liveQuarterLabel(period) {
+  if (period === null || period === undefined || period >= 4) return "4th quarter or later";
+  return `${QUARTER_ORDINALS[period]} quarter`;
+}
+// "Kickoff <time> · <quarter>" -- the one line every live card (hero or
+// list row) gets regardless of spoiler tier, so it's still possible to tell
+// which live games are further along even when everything else about them
+// is hidden.
+function liveProgressLabel(g) {
+  return `Kickoff ${fmtKickoff(g.game_date)} · ${liveQuarterLabel(g.live?.status?.period)}`;
+}
 function fmtMatchup(g) {
   const away = g.away.rank ? `#${g.away.rank} ${g.away.name}` : g.away.name;
   const home = g.home.rank ? `#${g.home.rank} ${g.home.name}` : g.home.name;

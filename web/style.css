@@ -527,6 +527,8 @@ body[data-page="slate"] .slate-frame main {
 .slate-row .score-with-meter .meter > i { display: block; height: 100%; background: #6e7b75; }
 .slate-row .score-with-meter .pctile { font-family: var(--font-mono); font-size: 10px; color: var(--ink-muted); letter-spacing: .06em; white-space: nowrap; }
 .kickoff-time { color: var(--series-1); font-size: 12px; font-family: var(--font-mono); letter-spacing: .06em; }
+.live-progress { color: var(--series-1); font-size: 11px; font-family: var(--font-mono); letter-spacing: .05em; margin-top: 6px; }
+.hero-card .live-progress { font-size: 13px; margin-top: 8px; }
 
 /* Expand panel (live metric breakdown / completed score breakdown) --
    recessed surface, one labeled group of thin metric bars per group. No
