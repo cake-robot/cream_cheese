@@ -836,6 +836,15 @@ def main():
             print(str(e), file=sys.stderr)
             sys.exit(1)
 
+    if args.refetch and not args.game:
+        # Without this, --refetch is silently never read (it's only checked
+        # inside the `if args.game:` branch below) and execution falls
+        # through to an unscoped discover_games() -- a full-season scoreboard
+        # walk nobody asked for. Confirmed cause of a 17-call burst from a
+        # `--refetch --discover-only` typo missing --game (2026-09-04).
+        print("--refetch requires --game GAME_ID", file=sys.stderr)
+        sys.exit(1)
+
     if args.live_replay:
         if not args.game:
             print("--live-replay requires --game GAME_ID", file=sys.stderr)
