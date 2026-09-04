@@ -38,6 +38,8 @@
       <button type="button" id="date-next" aria-label="Next">›</button>
     </div>
     <span class="date-label" id="date-label"></span>
+    <button type="button" id="f-top25" class="mini-toggle">Top 25</button>
+    <select id="f-conf" aria-label="Conference"></select>
     <div class="spacer"></div>
     <span class="feed-pill" id="feed-pill"></span>
   </div>
@@ -78,6 +80,16 @@ const PREV_LIVE_SCORES = {};
 let IN_FLIGHT = false;
 let POLL_TIMER = null;
 
+// ---- team filters (top 25 / conference) ----------------------------------
+// Client-side only: CURRENT_SLATE already holds the whole scope window, so
+// toggling either filter re-renders from it instead of re-fetching. Both
+// are "one of the teams is..." predicates (matches the user's own framing),
+// and neither touches spoiler redaction -- rank and conference are both
+// pre-kickoff facts, not outcome data.
+let META = { conferences: [], power_conference_ids_by_season: {}, notre_dame_team_id: null };
+let FILTER_TOP25 = false;
+let FILTER_CONF = "all"; // "all" | "power4" | "other" | a conference id (string)
+
 const POLL_MS = 30000; // half the live writer's ~60s cadence
 
 // Proposed friendly wording for the retrospective (completed-game) metric
@@ -110,6 +122,60 @@ function applyFiltersToForm(params) {
   // `date` and the server picks the nearest day with something still to
   // watch (see api_slate's default), rather than always landing on today.
   document.getElementById("f-date").value = params.date || "";
+  FILTER_TOP25 = params.top25 === "1";
+  FILTER_CONF = params.conf || "all";
+}
+
+// ---- team filters: predicate + select-box population ----------------------
+// Client-side only: CURRENT_SLATE already holds the whole scope window, so
+// toggling either filter re-renders from it instead of re-fetching. Both
+// are "one of the teams is..." predicates, and neither touches spoiler
+// redaction -- rank and conference are both pre-kickoff facts.
+
+function buildConfSelect() {
+  const sel = document.getElementById("f-conf");
+  sel.innerHTML = "";
+  sel.appendChild(el("option", { value: "all", text: "All conferences" }));
+  sel.appendChild(el("optgroup", { label: "Tier" }, [
+    el("option", { value: "power4", text: "Power 4 + ND" }),
+    el("option", { value: "other", text: "Everyone else" }),
+  ]));
+  sel.appendChild(el("optgroup", { label: "Conference" },
+    META.conferences.map((c) => el("option", { value: String(c.id), text: c.name }))));
+  sel.value = FILTER_CONF;
+}
+
+function isPowerConf(confId, seasonYear) {
+  if (confId === null || confId === undefined) return false;
+  const ids = META.power_conference_ids_by_season[String(seasonYear)] || [];
+  return ids.includes(confId);
+}
+
+// True if `team` (a shape_game() home/away object: {team_id, conference_id,
+// ...}) belongs to the currently-selected tier/conference. Power-tier
+// membership is looked up by the game's own season_year (power_conference_
+// ids_by_season, from /api/meta) so a 2022 Pac-12 game and a 2026 Pac-12
+// game resolve independently -- see config.power_conference_ids's docstring
+// for why the set changes after the 2023 season. Notre Dame is checked by
+// team_id, not conference_id -- ESPN files it under FBS Independents
+// alongside UConn/UMass, same as src/config.py's NOTRE_DAME_TEAM_ID.
+// A null conference_id (backfill not yet run, or a TBD bowl placeholder)
+// matches nothing but "all" -- it is never swept into "Everyone else".
+function teamMatchesConf(team, seasonYear) {
+  if (!team) return false;
+  const isND = team.team_id === META.notre_dame_team_id;
+  if (FILTER_CONF === "power4") return isND || isPowerConf(team.conference_id, seasonYear);
+  if (team.conference_id === null || team.conference_id === undefined) return false;
+  if (FILTER_CONF === "other") return !isND && !isPowerConf(team.conference_id, seasonYear);
+  return String(team.conference_id) === FILTER_CONF;
+}
+
+function matchesFilters(g) {
+  if (FILTER_TOP25 && g.home.rank === null && g.away.rank === null) return false;
+  if (FILTER_CONF !== "all" && !teamMatchesConf(g.home, g.season_year) && !teamMatchesConf(g.away, g.season_year)) {
+    return false;
+  }
+  return true;
 }
 
 function setScope(scope, { silent = false } = {}) {
@@ -228,11 +294,16 @@ function divergeNote(live) {
     : "Quiet so far, but heating up";
 }
 
-function renderLiveSection(games) {
+function renderLiveSection(unfilteredGames) {
   const wrap = document.getElementById("live-section");
   wrap.innerHTML = "";
-  if (!games.length) {
+  if (!unfilteredGames.length) {
     wrap.appendChild(el("div", { class: "empty-state", text: "No games in progress right now." }));
+    return;
+  }
+  const games = unfilteredGames.filter(matchesFilters);
+  if (!games.length) {
+    wrap.appendChild(el("div", { class: "empty-state", text: "No live games match this filter." }));
     return;
   }
 
@@ -438,14 +509,19 @@ function completedRow(g, rankText) {
   return el("div", {}, [row, expandWrap]);
 }
 
-function renderCompletedSection(games) {
+function renderCompletedSection(unfilteredGames) {
   const wrap = document.getElementById("completed-section");
   wrap.innerHTML = "";
-  if (!games.length) {
+  if (!unfilteredGames.length) {
     wrap.appendChild(el("div", { class: "empty-state", text: "No games finished in this window yet." }));
     return;
   }
-  if (games.some((g) => g.spoiler_hidden)) {
+  const visible = unfilteredGames.filter(matchesFilters);
+  if (!visible.length) {
+    wrap.appendChild(el("div", { class: "empty-state", text: "No finished games match this filter." }));
+    return;
+  }
+  if (visible.some((g) => g.spoiler_hidden)) {
     wrap.appendChild(el("div", {
       class: "slate-note",
       text: "Ranked by watchability",
@@ -459,13 +535,18 @@ function renderCompletedSection(games) {
     // (see the two-tier-spoiler plan's decision 1), so gating this on
     // spoiler_hidden the way it used to would wrongly withhold it.
     const list = el("div", { class: "slate-list" });
-    games.forEach((g) => list.appendChild(completedRow(g, g.rank ? `#${g.rank} overall` : null)));
+    visible.forEach((g) => list.appendChild(completedRow(g, g.rank ? `#${g.rank} overall` : null)));
     wrap.appendChild(list);
     return;
   }
 
+  // Ranks are computed on the full (unfiltered) day group -- see
+  // localRanks()'s docstring -- so a filter narrowing a 6-game day to 2
+  // doesn't rewrite "#2 of 6" into a misleading "#1 of 2". Days that end up
+  // with nothing visible after filtering are skipped entirely rather than
+  // rendered as an empty header.
   const groups = new Map();
-  games.forEach((g) => {
+  unfilteredGames.forEach((g) => {
     const key = localDayKey(g.game_date);
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(g);
@@ -474,10 +555,12 @@ function renderCompletedSection(games) {
   // for is the one that just finished, not the start of the window.
   Array.from(groups.keys()).sort().reverse().forEach((key) => {
     const dayGames = groups.get(key);
+    const dayVisible = dayGames.filter(matchesFilters);
+    if (!dayVisible.length) return;
     const ranks = localRanks(dayGames);
     wrap.appendChild(el("div", { class: "day-group-title", text: dayHeaderLabel(dayGames[0].game_date) }));
     const list = el("div", { class: "slate-list" });
-    dayGames.forEach((g) => list.appendChild(completedRow(g, ranks.get(g.game_id) || null)));
+    dayVisible.forEach((g) => list.appendChild(completedRow(g, ranks.get(g.game_id) || null)));
     wrap.appendChild(list);
   });
 }
@@ -494,10 +577,11 @@ function renderUpcomingSection(unsortedGames) {
   const wrap = document.getElementById("upcoming-section");
   wrap.innerHTML = "";
   const title = document.getElementById("upcoming-title");
+  const filtered = unsortedGames.filter(matchesFilters);
   // Kickoff time ascending, then (for same-time slots) the better-ranked
   // team in the game first -- the lower of home/away rank, unranked teams
   // (null) sorting last.
-  const games = unsortedGames.slice().sort((a, b) => {
+  const games = filtered.slice().sort((a, b) => {
     const dateDiff = new Date(a.game_date) - new Date(b.game_date);
     if (dateDiff !== 0) return dateDiff;
     const bestRank = (g) => Math.min(g.home.rank ?? Infinity, g.away.rank ?? Infinity);
@@ -509,7 +593,10 @@ function renderUpcomingSection(unsortedGames) {
   });
   title.textContent = soon ? "Kickoff soon" : "Upcoming";
   if (!games.length) {
-    wrap.appendChild(el("div", { class: "empty-state", text: "Nothing left to kick off in this window." }));
+    wrap.appendChild(el("div", {
+      class: "empty-state",
+      text: unsortedGames.length ? "No upcoming games match this filter." : "Nothing left to kick off in this window.",
+    }));
     return;
   }
   const list = el("div", { class: "slate-list" });
@@ -533,6 +620,25 @@ function renderUpcomingSection(unsortedGames) {
 
 // ---- load / poll ----------------------------------------------------------------
 
+// Re-renders the three sections from CURRENT_SLATE with the current
+// FILTER_TOP25/FILTER_CONF applied -- no refetch. Called both after a real
+// load and whenever a filter control changes.
+function renderSections() {
+  if (!CURRENT_SLATE) return;
+  const data = CURRENT_SLATE;
+  document.getElementById("live-meta").textContent = `${data.live_feed.tracked_games} TRACKED`;
+  renderLiveSection(data.sections.live);
+  renderCompletedSection(data.sections.completed);
+  renderUpcomingSection(data.sections.upcoming);
+}
+
+// Filter state lives in the same URL as scope/date (getParams/setParams
+// already handle arbitrary scalar params), but is never sent to /api/slate
+// -- it only decides what CURRENT_SLATE's already-fetched window renders.
+function currentDisplayFilters() {
+  return { top25: FILTER_TOP25 ? "1" : "", conf: FILTER_CONF };
+}
+
 async function loadSlate({ push = false } = {}) {
   if (IN_FLIGHT) return;
   IN_FLIGHT = true;
@@ -540,7 +646,7 @@ async function loadSlate({ push = false } = {}) {
   try {
     const f = currentFilters();
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    setParams(f, { push });
+    setParams({ ...f, ...currentDisplayFilters() }, { push });
     const data = await api("/slate", { ...f, tz });
     CURRENT_SLATE = data;
     errBox.textContent = "";
@@ -551,10 +657,7 @@ async function loadSlate({ push = false } = {}) {
     if (!dateInput.value) dateInput.value = data.date;
     renderFeedPill(data);
     renderDateLabel(data);
-    document.getElementById("live-meta").textContent = `${data.live_feed.tracked_games} TRACKED`;
-    renderLiveSection(data.sections.live);
-    renderCompletedSection(data.sections.completed);
-    renderUpcomingSection(data.sections.upcoming);
+    renderSections();
   } catch (e) {
     errBox.textContent = `Could not load slate: ${e.message}`;
   } finally {
@@ -613,15 +716,36 @@ function wireFilters() {
   const groupToggle = document.getElementById("completed-group-toggle");
   groupToggle.classList.toggle("active", GROUP_COMPLETED_BY_DAY);
   groupToggle.addEventListener("click", () => setGroupCompletedByDay(!GROUP_COMPLETED_BY_DAY));
+
+  const top25Toggle = document.getElementById("f-top25");
+  top25Toggle.classList.toggle("active", FILTER_TOP25);
+  top25Toggle.addEventListener("click", () => {
+    FILTER_TOP25 = !FILTER_TOP25;
+    top25Toggle.classList.toggle("active", FILTER_TOP25);
+    setParams(currentDisplayFilters());
+    renderSections();
+  });
+
+  document.getElementById("f-conf").addEventListener("change", (ev) => {
+    FILTER_CONF = ev.target.value;
+    setParams(currentDisplayFilters());
+    renderSections();
+  });
 }
 
 (async function init() {
-  const registry = await api("/slate/registry");
+  const [registry, meta] = await Promise.all([api("/slate/registry"), api("/meta")]);
   SLATE_REGISTRY = registry;
   LIVE_LABELS = {};
   [...registry.so_far, ...registry.from_here].forEach((m) => { LIVE_LABELS[m.name] = m.short_label || m.label; });
+  META = {
+    conferences: meta.conferences || [],
+    power_conference_ids_by_season: meta.power_conference_ids_by_season || {},
+    notre_dame_team_id: meta.notre_dame_team_id,
+  };
   const params = getParams();
   applyFiltersToForm(params);
+  buildConfSelect();
   wireFilters();
   await loadSlate();
   schedulePoll();
