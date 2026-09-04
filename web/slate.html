@@ -240,6 +240,7 @@ function renderLiveSection(games) {
   hero.appendChild(el("div", { class: "hero-toprow" }, [
     el("div", {}, [
       el("h2", {}, [fmtMatchup(top) + " ", ...renderChips(top)]),
+      el("div", { class: "live-progress", text: liveProgressLabel(top) }),
       el("div", { class: "sub", text: top.live.status.detail || (top.spoiler_hidden ? "In progress" : "") }),
     ]),
     // Keyed off live_score's own nullness, not spoiler_hidden -- a
@@ -285,6 +286,7 @@ function renderLiveSection(games) {
       el("div", { class: "score-big", text: g.live.live_score === null ? "—" : fmtScore(g.live.live_score) }),
       el("div", { class: "row-info" }, [
         el("div", { class: "matchup-line" }, [el("span", { class: "name", text: fmtMatchup(g) }), ...renderChips(g)]),
+        el("div", { class: "live-progress", text: liveProgressLabel(g) }),
         el("div", { class: "row-sub", text: whyText }),
       ]),
       chevron,
