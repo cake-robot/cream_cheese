@@ -261,6 +261,7 @@ function gameChips(g) {
   if (g.ot) chips.push(["OT", "warn"]);
   if (postseasonInfo(g)?.isCFP) chips.push(["CFP", "accent"]);
   if (g.conference_game) chips.push(["CONF", "muted"]);
+  if (g.rivalry_name) chips.push(["RIVALRY", "accent"]);
   if (g.neutral_site) chips.push(["NEU", "muted"]);
   // Deliberately separate: a real Fox-derived value substitution vs. a
   // hand-verified manual override are different provenance, and a game can
