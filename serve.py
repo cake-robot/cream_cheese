@@ -809,6 +809,7 @@ def shape_game(row, metrics_map, rank=None, n_scored=None, has_fox_correction=Fa
         "season_type": row["season_type"],
         "week": row["week"],
         "event_note": row["event_note"],
+        "rivalry_name": row["rivalry_name"],
         "game_date": row["game_date"],
         "away": {
             "team_id": row["away_team_id"],

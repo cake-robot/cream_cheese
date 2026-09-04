@@ -149,6 +149,7 @@ function topChips(g) {
   if (g.spoiler_level === 1) chips.push(["SCORE ONLY", false]);
   if (g.ot) chips.push(["OT", false]);
   if (g.conference_game) chips.push(["CONF", false]);
+  if (g.rivalry_name) chips.push(["RIVALRY", false]);
   if (g.neutral_site) chips.push(["NEU", false]);
   if (g.has_fox_correction) chips.push(["FOX", false]);
   if (g.has_manual_correction) chips.push(["MANUAL", false]);

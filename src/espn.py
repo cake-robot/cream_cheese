@@ -1,6 +1,6 @@
 import time
 import requests
-from . import fetchlog
+from . import fetchlog, rivalries
 from .config import ESPN_BASE, RATE_LIMIT_SECONDS
 
 _last_request_time = 0.0
@@ -238,6 +238,7 @@ def _parse_competition(event, comp):
         "neutral_site": int(bool(comp.get("neutralSite", False))),
         "venue_name": venue_name,
         "event_note": event_note,
+        "rivalry_name": rivalries.get_rivalry_name(home_team.get("id"), away_team.get("id")),
         "status_state": status_state,
         "completed": int(bool(status.get("completed", False))),
         "status_period": status_period,
@@ -312,6 +313,7 @@ def parse_summary_game_meta(summary):
         "neutral_site": int(bool(comp.get("neutralSite", False))),
         "venue_name": venue_name,
         "event_note": event_note,
+        "rivalry_name": rivalries.get_rivalry_name(home_team.get("id"), away_team.get("id")),
         "status_state": status.get("state", "post"),
         "completed": int(bool(status.get("completed", True))),
         # This bootstrap path (--game bootstrap of a game absent from the DB)
