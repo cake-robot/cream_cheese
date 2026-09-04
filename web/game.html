@@ -572,6 +572,23 @@ async function loadAndRenderGame() {
   }
   mount.innerHTML = "";
   neighborNav.innerHTML = "";
+  // is_scored is checked first, before spoiler_level -- it's set
+  // pre-redaction in shape_game() and reflects whether the pipeline has
+  // actually computed a score, independent of the spoiler policy (which is
+  // purely time-based). Without this, an unscored completed game that falls
+  // in a LEVEL_HIDDEN week would hit the `level === LEVEL_HIDDEN` branch
+  // below and render the "spoiler hidden, reveal it" UI for a score that
+  // doesn't exist, instead of renderNotScored()'s "not yet scored" message.
+  if (!detail.game.is_scored) {
+    if (detail.game.status_state === "in" && detail.live) {
+      const liveRegistry = await api("/slate/registry");
+      LIVE_REGISTRY = liveRegistry;
+      renderLive(mount, detail);
+    } else {
+      renderNotScored(mount, detail);
+    }
+    return;
+  }
   // Routes on spoiler_level, not spoiler_hidden -- spoiler_hidden is true
   // for both LEVEL_HIDDEN and LEVEL_SCORE (see the two-tier-spoiler plan),
   // so routing on it alone would send a LEVEL_SCORE game into
@@ -581,17 +598,10 @@ async function loadAndRenderGame() {
   const level = detail.game.spoiler_level;
   if (level === LEVEL_HIDDEN) {
     renderHidden(mount, detail);
-  } else if (detail.game.watchability_score !== null) {
-    // Completed and scored: LEVEL_SCORE gets the composite/rank-only view,
-    // LEVEL_FULL gets the full breakdown.
-    if (level === LEVEL_SCORE) renderScoreOnly(mount, detail);
-    else renderScored(mount, detail);
-  } else if (detail.game.status_state === "in" && detail.live) {
-    const liveRegistry = await api("/slate/registry");
-    LIVE_REGISTRY = liveRegistry;
-    renderLive(mount, detail);
+  } else if (level === LEVEL_SCORE) {
+    renderScoreOnly(mount, detail);
   } else {
-    renderNotScored(mount, detail);
+    renderScored(mount, detail);
   }
 }
 

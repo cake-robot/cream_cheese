@@ -842,6 +842,17 @@ def shape_game(row, metrics_map, rank=None, n_scored=None, has_fox_correction=Fa
         "has_manual_correction": bool(has_manual_correction),
         "metrics": metrics_map if scored else {},
         "applicable_weight": (applicable_weight_of(metrics_map) if scored else None),
+        # Whether the pipeline has actually computed a watchability score for
+        # this game, independent of the spoiler policy. Deliberately NOT
+        # nulled by redact_game_full()/redact_game_score_only() (neither
+        # touches this key) -- unlike watchability_score itself, "has this
+        # been scored yet" reveals nothing about the outcome, so it survives
+        # every spoiler tier. Exists so the frontend can tell "this completed
+        # game hasn't been scored yet" (route to a not-scored state) apart
+        # from "this game IS scored but the score is spoiler-hidden" (route
+        # to the hidden state) -- both look identical as a bare
+        # watchability_score-is-null check once redaction has run.
+        "is_scored": scored,
     }
     policy = spoiler_ctx()
     level = spoilers.level_of_row(row, policy)
