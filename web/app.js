@@ -242,7 +242,19 @@ function gameChips(g) {
   // alone is "Washington played and lost," no team-id check needed here.
   // Always null below LEVEL_FULL, so this chip can never fire early.
   if (g.uw_loss_bonus) chips.push(["UW LOSS", "uw"]);
-  if (g.spoiler_level === 0) chips.push(["HIDDEN", "muted"]);
+  // "NOT SCORED" means "this game is done and the pipeline has nothing" --
+  // checked before the spoiler chips below, and independent of them, via
+  // g.is_scored (set pre-redaction in shape_game(), so it's never nulled by
+  // spoiler redaction the way watchability_score is). That ordering matters:
+  // an unscored completed game can still land in a spoiler-hidden week (the
+  // policy is purely time-based, not "has this actually been scored"), and
+  // in that case there is nothing to hide, so it must get this chip instead
+  // of a misleading HIDDEN/SCORE ONLY chip implying a real score exists
+  // behind it. A live or not-yet-started game is unscored by design, not by
+  // gap, so it gets the LIVE chip (below) or no chip at all instead.
+  if (g.is_scored === false && g.status_state === "post") {
+    chips.push(["NOT SCORED", "muted"]);
+  } else if (g.spoiler_level === 0) chips.push(["HIDDEN", "muted"]);
   else if (g.spoiler_level === 1) chips.push(["SCORE ONLY", "muted"]);
   else if (g.spoiler_level === undefined && g.spoiler_hidden) chips.push(["HIDDEN", "muted"]);
   if (g.status_state === "in") chips.push(["LIVE", "accent"]);
@@ -256,17 +268,6 @@ function gameChips(g) {
   // wrongly claims Fox involvement on games only ever fixed by hand.
   if (g.has_fox_correction) chips.push(["FOX", "muted"]);
   if (g.has_manual_correction) chips.push(["MANUAL", "muted"]);
-  // "NOT SCORED" means "this game is done and we have nothing" -- a live or
-  // not-yet-started game is unscored by design, not by gap, so it gets the
-  // LIVE chip (above) or no chip at all instead of this one. A LEVEL_HIDDEN
-  // game also has a null watchability_score, but it very much HAS been
-  // scored -- the HIDDEN chip already covers that case, so exclude it here
-  // rather than showing the misleading claim that nothing exists yet. A
-  // LEVEL_SCORE game's watchability_score is non-null, so it never reaches
-  // this branch at all.
-  if (g.watchability_score === null && g.status_state === "post" && !g.spoiler_hidden) {
-    chips.push(["NOT SCORED", "muted"]);
-  }
   return chips;
 }
 function renderChips(g) {

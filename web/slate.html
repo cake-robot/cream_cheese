@@ -382,8 +382,12 @@ function completedRow(g, rankText) {
   // any device going forward, not a client-side-only bypass). Placed
   // before the name in the matchup line, replacing the plain static
   // HIDDEN chip renderChips() would otherwise also render there.
+  // Gated on g.is_scored too -- an unscored game can still fall in a
+  // LEVEL_HIDDEN week (the spoiler policy is time-based, not "has this
+  // actually been scored"), and there's nothing to reveal in that case;
+  // gameChips() already renders "NOT SCORED" for it instead of "HIDDEN".
   let hiddenBtn = null;
-  if (g.spoiler_level === 0) {
+  if (g.spoiler_level === 0 && g.is_scored) {
     hiddenBtn = el("button", { class: "chip chip-btn", type: "button", text: "Hidden", title: "Reveal the watchability score" });
     hiddenBtn.addEventListener("click", async (ev) => {
       ev.stopPropagation();
