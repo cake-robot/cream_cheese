@@ -588,12 +588,23 @@ def _et_anchor(local_date, hour=LIVE_WEEK_ANCHOR_HOUR_ET):
 
 def _schedule_interval(conn, now=None):
     """
-    How long to sleep before the next poll cycle, and whether to hold an
-    idle-sleep assertion, derived from the kickoff times in `games`.
+    How long to sleep before the next wake, whether to hold an idle-sleep
+    assertion, and whether that wake actually needs to poll ESPN at all --
+    derived from the kickoff times in `games`.
 
-    Returns (seconds, hold_awake, reason). `reason` is for the log line --
-    an unattended always-on poller needs its cadence decisions to be
-    legible after the fact.
+    Returns (seconds, hold_awake, reason, needs_poll). `reason` is for the
+    log line -- an unattended always-on poller needs its cadence decisions
+    to be legible after the fact. `needs_poll` is False for exactly one
+    case: a wake whose only purpose is arming the idle-sleep assertion
+    ahead of a long sleep (the "caffeinate lead" boundary below) -- nothing
+    about a game hours from kickoff can change between polls, so that wake
+    has nothing to check ESPN for. Every other reason to wake (a live game,
+    approaching/at kickoff, the periodic week-anchor/day-of refresh checks,
+    the blind/no-schedule backstops) exists specifically to notice a state
+    change or a newly-relevant game, and does need a real poll. Confirmed
+    via fetch_log: before this field existed, a caffeinate-lead wake cost
+    one real (valueless) scoreboard call, floored to a second one 15
+    minutes later before the schedule caught up (2026-09-04).
 
     States:
       - anything status_state='in' -> LIVE_INTERVAL_SECONDS
@@ -642,7 +653,7 @@ def _schedule_interval(conn, now=None):
     n_live, next_kickoff = row["n_live"], row["next_kickoff"]
 
     if n_live:
-        return float(LIVE_INTERVAL_SECONDS), True, f"{n_live} game(s) in progress"
+        return float(LIVE_INTERVAL_SECONDS), True, f"{n_live} game(s) in progress", True
 
     kick = until = None
     if next_kickoff is not None:
@@ -652,7 +663,7 @@ def _schedule_interval(conn, now=None):
             # Includes until < 0: a game the scoreboard still calls 'pre'
             # whose scheduled kickoff has passed but is inside the grace
             # window.
-            return float(LIVE_INTERVAL_SECONDS), True, f"kickoff {next_kickoff} ({until / 60:+.0f} min)"
+            return float(LIVE_INTERVAL_SECONDS), True, f"kickoff {next_kickoff} ({until / 60:+.0f} min)", True
 
     today_floor = _et_anchor(now.astimezone(_ET).date(), hour=0).strftime(GAME_DATE_FMT)
     anchor_kickoff = conn.execute(_NEXT_ANCHOR_SQL, (today_floor,)).fetchone()["anchor_kickoff"]
@@ -662,8 +673,8 @@ def _schedule_interval(conn, now=None):
         if latest and latest["game_date"] and latest["season_type"] == 2:
             latest_dt = datetime.strptime(latest["game_date"], GAME_DATE_FMT).replace(tzinfo=timezone.utc)
             if (now - latest_dt).total_seconds() <= LIVE_BLIND_RECENT_GAME_DAYS * 86400:
-                return float(LIVE_BLIND_BACKSTOP_SECONDS), False, "postseason not yet discovered"
-        return float(LIVE_NO_SCHEDULE_BACKSTOP_SECONDS), False, "no scheduled kickoff on record"
+                return float(LIVE_BLIND_BACKSTOP_SECONDS), False, "postseason not yet discovered", True
+        return float(LIVE_NO_SCHEDULE_BACKSTOP_SECONDS), False, "no scheduled kickoff on record", True
 
     anchor_et_date = datetime.strptime(anchor_kickoff, GAME_DATE_FMT).replace(tzinfo=timezone.utc) \
         .astimezone(_ET).date()
@@ -681,12 +692,21 @@ def _schedule_interval(conn, now=None):
         # Today's own refresh window has already passed but this game
         # still hasn't gone 'in' -- keep checking through the rest of
         # today rather than falling through to next week's anchor.
-        return float(LIVE_INTERVAL_SECONDS), True, f"{anchor_et_date} refresh window passed, still unresolved"
+        return float(LIVE_INTERVAL_SECONDS), True, f"{anchor_et_date} refresh window passed, still unresolved", True
 
     label, wake_at = min(future.items(), key=lambda item: item[1])
-    # Floored at LIVE_INTERVAL_SECONDS so a boundary 61s out can't produce
-    # a 1-second sleep and a wasted request.
-    sleep_for = max(float(LIVE_INTERVAL_SECONDS), (wake_at - now).total_seconds())
+    needs_poll = label != "caffeinate lead"
+    if needs_poll:
+        # Floored at LIVE_INTERVAL_SECONDS so a boundary 61s out can't
+        # produce a 1-second sleep and a wasted request. A caffeinate-lead
+        # wake skips this -- it never polls (see needs_poll below), so
+        # there's no request to protect against; sleeping the exact
+        # remaining time just lets the very next wake fall straight
+        # through to whatever real boundary (usually kickoff lead) comes
+        # after it, instead of parking here for a full floored interval.
+        sleep_for = max(float(LIVE_INTERVAL_SECONDS), (wake_at - now).total_seconds())
+    else:
+        sleep_for = (wake_at - now).total_seconds()
     hold_awake = until is not None and until <= LIVE_CAFFEINATE_LEAD_SECONDS
     # Describe whichever boundary actually won, not just whether a credible
     # next_kickoff exists -- anchor_et_date can differ from next_kickoff's
@@ -700,7 +720,7 @@ def _schedule_interval(conn, now=None):
         if label in ("kickoff lead", "caffeinate lead")
         else f"{label} {wake_at.strftime(GAME_DATE_FMT)} for {anchor_et_date}'s schedule"
     )
-    return sleep_for, hold_awake, reason
+    return sleep_for, hold_awake, reason, needs_poll
 
 
 def _acquire_lock():
@@ -1103,11 +1123,18 @@ def run_forever(conn, interval=None, summary_budget=LIVE_SUMMARY_BUDGET,
 
     `interval=None` (the default) means schedule-aware: the sleep between
     cycles is derived each iteration from _schedule_interval, which also
-    decides whether to hold a caffeinate idle-sleep assertion. Passing a
-    fixed `interval` (via --live-interval) disables that entirely -- fixed
-    cadence, wake-lock held for the whole run -- which is also the
-    documented fallback to the old always-poll behaviour if the
-    schedule-aware path ever needs to be bypassed.
+    decides whether to hold a caffeinate idle-sleep assertion and whether
+    the wake needs a real poll at all (a caffeinate-lead-only wake doesn't
+    -- see that function's docstring). A skipped wake still recomputes and
+    re-sleeps immediately; it doesn't touch fetch_log/cycle_seq/poller_state's
+    last_cycle_* fields, since nothing was actually fetched. Passing a fixed
+    `interval` (via --live-interval) disables all of that -- fixed cadence,
+    wake-lock held, every wake polls -- which is also the documented
+    fallback to the old always-poll behaviour if the schedule-aware path
+    ever needs to be bypassed. The very first wake of a process (fresh
+    start or `just live-now` restart) and any `once=True` call always poll
+    regardless -- a restart's "instant catch-up" promise shouldn't depend
+    on what moment in the schedule it happened to land on.
 
     `until`, if given, is an "HH:MM" ET wall-clock time (see
     _next_et_deadline); reaching it exits through the same clean path as a
@@ -1146,44 +1173,64 @@ def run_forever(conn, interval=None, summary_budget=LIVE_SUMMARY_BUDGET,
             started_at=fetchlog.now_iso(), stopped_at=None,
         )
 
+    def _next_schedule():
+        if interval is not None:
+            return float(interval), True, f"--live-interval {interval}", True
+        try:
+            return _schedule_interval(conn)
+        except Exception:
+            logger.exception("live: schedule lookup failed -- falling back to %ds", LIVE_INTERVAL_SECONDS)
+            return float(LIVE_INTERVAL_SECONDS), True, "schedule lookup failed", True
+
     cycle_seq = 0
     try:
         while True:
-            cycle_seq += 1
-            cycle_result = None
-            cycle_error = None
-            try:
-                cycle_result = run_cycle(conn, cycle_seq, summary_budget=summary_budget, mode=mode, dates=dates)
-                elapsed = cycle_result["elapsed"]
-            except Exception as exc:
-                logger.exception("live: cycle %d failed -- continuing", cycle_seq)
-                elapsed = 0.0
-                cycle_error = f"{type(exc).__name__}: {exc}"
+            period, hold_awake, reason, needs_poll = _next_schedule()
+            # A caffeinate-lead-only wake has nothing to poll for (see
+            # _schedule_interval's docstring) -- except the very first wake
+            # of a process (cycle_seq is still 0, incremented only below),
+            # which always polls regardless: `just live-now`'s documented
+            # "instant catch-up mid-game" restart promise, and --live-once's
+            # "run exactly one poll cycle" (once=True always breaks the loop
+            # after this same first iteration, so cycle_seq == 0 already
+            # covers it -- there's no second iteration to also guard).
+            if cycle_seq == 0:
+                needs_poll = True
 
-            if mode != "dry_run":
-                counts = cycle_result["counts"] if cycle_result else {}
-                fetchlog.record_poller_state(
-                    "live", cycle_seq=cycle_seq,
-                    last_cycle_at=fetchlog.now_iso(), last_cycle_ms=int(elapsed * 1000),
-                    last_cycle_reqs=cycle_result["n_requests"] if cycle_result else None,
-                    last_cycle_error=cycle_error,
-                    slate_in=counts.get("in"), slate_post=counts.get("post"), slate_pre=counts.get("pre"),
-                )
+            if needs_poll:
+                cycle_seq += 1
+                cycle_result = None
+                cycle_error = None
+                try:
+                    cycle_result = run_cycle(conn, cycle_seq, summary_budget=summary_budget, mode=mode, dates=dates)
+                    elapsed = cycle_result["elapsed"]
+                except Exception as exc:
+                    logger.exception("live: cycle %d failed -- continuing", cycle_seq)
+                    elapsed = 0.0
+                    cycle_error = f"{type(exc).__name__}: {exc}"
+
+                if mode != "dry_run":
+                    counts = cycle_result["counts"] if cycle_result else {}
+                    fetchlog.record_poller_state(
+                        "live", cycle_seq=cycle_seq,
+                        last_cycle_at=fetchlog.now_iso(), last_cycle_ms=int(elapsed * 1000),
+                        last_cycle_reqs=cycle_result["n_requests"] if cycle_result else None,
+                        last_cycle_error=cycle_error,
+                        slate_in=counts.get("in"), slate_post=counts.get("post"), slate_pre=counts.get("pre"),
+                    )
+
+                # A poll can flip n_live/status_state -- re-derive the sleep
+                # decision from what run_cycle just wrote rather than the
+                # pre-poll one above, which may now be stale.
+                period, hold_awake, reason, needs_poll = _next_schedule()
+            else:
+                elapsed = 0.0
+                logger.info("live: skipping poll -- nothing to check (%s)", reason)
 
             if once or stop["flag"] or _deadline_passed():
                 if deadline is not None and not stop["flag"] and not once:
                     logger.info("live: reached --live-until deadline, exiting cleanly")
                 break
-
-            if interval is not None:
-                period, hold_awake, reason = float(interval), True, f"--live-interval {interval}"
-            else:
-                try:
-                    period, hold_awake, reason = _schedule_interval(conn)
-                except Exception:
-                    logger.exception("live: schedule lookup failed -- falling back to %ds",
-                                      LIVE_INTERVAL_SECONDS)
-                    period, hold_awake, reason = float(LIVE_INTERVAL_SECONDS), True, "schedule lookup failed"
 
             caffeinate = _sync_caffeinate(caffeinate, hold_awake and mode != "dry_run")
 
