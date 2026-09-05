@@ -32,7 +32,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from . import db, espn, fetchlog, scoring
+from . import config, db, espn, fetchlog, scoring
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +56,15 @@ LIVE_MIN_PROGRESS = 0.15
 # isn't worth the budget slot. A game earlier than this simply has no
 # live_scores row until it crosses the threshold on a later cycle.
 LIVE_MIN_ELAPSED_SECONDS_FOR_DETAIL_FETCH = 1200
+
+# On an oversubscribed slate (more live games than LIVE_SUMMARY_BUDGET),
+# _tier2_priority refreshes Power 4 / ranked / rivalry games ahead of
+# everything else. But no live game -- important or not -- is allowed to
+# go stale forever: once this many seconds pass since its last refresh (or
+# since it first cleared LIVE_MIN_ELAPSED_SECONDS_FOR_DETAIL_FETCH, for a
+# game that's never been fetched at all), it's promoted back to the front
+# of the queue regardless of conference/rank/rivalry status.
+LIVE_UNIMPORTANT_STALENESS_CEILING_SECONDS = 3600
 
 # --- New live-only metric caps ---
 MAX_UPSET_IN_PROGRESS = 0.60
@@ -864,23 +873,55 @@ def _sleep_until(wake_at, stop, deadline_passed):
         time.sleep(min(LIVE_SLEEP_SLICE_SECONDS, remaining))
 
 
+def _is_important(row):
+    """Power 4 (season-aware) / Notre Dame / ranked / rivalry -- the games
+    worth refreshing ahead of the rest of an oversubscribed slate. Any one
+    of the four qualifies; there's no partial credit."""
+    if row["rivalry_name"] is not None:
+        return True
+    if row["home_rank"] is not None or row["away_rank"] is not None:
+        return True
+    power_ids = config.power_conference_ids(row["season_year"])
+    if row["home_conference_id"] in power_ids or row["away_conference_id"] in power_ids:
+        return True
+    return row["home_team_id"] == config.NOTRE_DAME_TEAM_ID or row["away_team_id"] == config.NOTRE_DAME_TEAM_ID
+
+
 def _tier2_priority(conn):
-    """Order this cycle's live games by how overdue a WP refresh is, most
-    overdue first. `urgency = staleness_seconds - LIVE_MAX_STALENESS_SECONDS`,
-    forced to +inf for a game deep enough into the 4th quarter that missing
-    a refresh would be the worst possible moment to be stale. A game with no
-    live_scores row yet (never fetched) always sorts first.
+    """Order this cycle's live games for the budgeted /summary refresh,
+    most-deserving-of-a-slot first.
+
+    Two-tier sort: important games (_is_important -- Power 4, ranked, or a
+    rivalry) come ahead of everything else, since a budget-constrained
+    Saturday means someone's getting a stale refresh and it shouldn't be
+    the game with the most eyes on it. Within a tier, `urgency =
+    staleness_seconds - LIVE_MAX_STALENESS_SECONDS` breaks ties, most
+    overdue first, forced to +inf for a game deep enough into the 4th
+    quarter that missing a refresh would be the worst possible moment to
+    be stale.
+
+    That importance ordering is capped, not absolute: a game -- important
+    or not -- that's gone LIVE_UNIMPORTANT_STALENESS_CEILING_SECONDS since
+    its last refresh (or since it first cleared the elapsed-time gate, if
+    it's never been fetched at all -- there's no computed_at to measure
+    staleness from yet) is promoted into the top tier regardless of
+    conference/rank/rivalry status, so no game goes an unbounded time
+    without a single update. Finishing a completed game's real detail
+    fetch is a separate, unconditional path (handle_completions) that
+    doesn't compete for this budget at all -- a game leaves status_state
+    'in' (and this query) before that runs.
 
     Games below LIVE_MIN_ELAPSED_SECONDS_FOR_DETAIL_FETCH of elapsed game
-    time are excluded outright, regardless of urgency -- there's no real
-    signal to fetch yet this early, so a freshly-kicked-off game doesn't
-    jump the queue just because it's "never fetched".
+    time are excluded outright, regardless of tier -- there's no real
+    signal to fetch yet this early.
     """
     rows = conn.execute("""
-        SELECT g.game_id,
+        SELECT g.game_id, g.season_year, g.home_team_id, g.away_team_id,
+               g.home_conference_id, g.away_conference_id,
+               g.home_rank, g.away_rank, g.rivalry_name,
+               g.status_period, g.status_clock_seconds,
                (julianday('now') - julianday(ls.computed_at)) * 86400.0 AS staleness_seconds,
-               ls.progress,
-               g.status_period, g.status_clock_seconds
+               ls.progress
         FROM games g LEFT JOIN live_scores ls ON ls.game_id = g.game_id
         WHERE g.status_state = 'in'
     """).fetchall()
@@ -889,15 +930,21 @@ def _tier2_priority(conn):
         elapsed = _elapsed_from_status(r["status_period"], r["status_clock_seconds"])
         if elapsed is None or elapsed < LIVE_MIN_ELAPSED_SECONDS_FOR_DETAIL_FETCH:
             continue
+
         if r["staleness_seconds"] is None:
-            urgency = float("inf")
+            staleness = elapsed - LIVE_MIN_ELAPSED_SECONDS_FOR_DETAIL_FETCH
         else:
-            urgency = r["staleness_seconds"] - LIVE_MAX_STALENESS_SECONDS
-            if (r["progress"] or 0.0) >= LIVE_ALWAYS_REFRESH_PROGRESS:
-                urgency = float("inf")
-        scored.append((urgency, r["game_id"]))
-    scored.sort(key=lambda t: t[0], reverse=True)
-    return [gid for _, gid in scored]
+            staleness = r["staleness_seconds"]
+
+        floor_breached = (
+            staleness >= LIVE_UNIMPORTANT_STALENESS_CEILING_SECONDS
+            or (r["progress"] or 0.0) >= LIVE_ALWAYS_REFRESH_PROGRESS
+        )
+        urgency = float("inf") if floor_breached else staleness - LIVE_MAX_STALENESS_SECONDS
+        tier = 1 if (floor_breached or _is_important(r)) else 0
+        scored.append((tier, urgency, r["game_id"]))
+    scored.sort(key=lambda t: (t[0], t[1]), reverse=True)
+    return [gid for _, _, gid in scored]
 
 
 def _process_live_game(conn, game_id, cycle_seq, mode="normal"):
@@ -1110,12 +1157,18 @@ def run_cycle(conn, cycle_seq, summary_budget=LIVE_SUMMARY_BUDGET, mode="normal"
                 handle_completions(conn, newly_completed, mode=mode)
 
         if mode == "dry_run":
-            targets = [
-                g["game_id"] for g in games
+            # No live_scores/staleness to rank by in dry-run (nothing gets
+            # persisted), but the importance tiering is still meaningful
+            # for a budget-limited slate, so mirror it: important games
+            # first, game_id as a stable tiebreaker.
+            eligible = [
+                g for g in games
                 if g["status_state"] == "in"
                 and (_elapsed_from_status(g["status_period"], g["status_clock_seconds"]) or 0)
                 >= LIVE_MIN_ELAPSED_SECONDS_FOR_DETAIL_FETCH
-            ][:summary_budget]
+            ]
+            eligible.sort(key=lambda g: (_is_important(g), g["game_id"]), reverse=True)
+            targets = [g["game_id"] for g in eligible][:summary_budget]
         else:
             targets = _tier2_priority(conn)[:summary_budget]
 
