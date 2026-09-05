@@ -345,7 +345,7 @@ function contributionBars(mount, metricsMap, registry, applicableWeight, uwLossB
   if (rich) {
     const head = el("div", { class: "contrib-row rich contrib-head" });
     head.appendChild(el("div"));
-    head.appendChild(el("div", { class: "group-head", text: "score (saturation vs. cap)" }));
+    head.appendChild(el("div", { class: "group-head", text: "rating (saturation vs. cap)" }));
     head.appendChild(el("div"));
     head.appendChild(el("div"));
     head.appendChild(el("div", { class: "group-head", text: `contribution (share of ${total.toFixed(3)})` }));
@@ -478,7 +478,7 @@ function contributionBars(mount, metricsMap, registry, applicableWeight, uwLossB
 }
 
 /* ---------------------------------------------------------------------
- * driversWeighted -- scored-game-detail "what drove this score", locked to
+ * driversWeighted -- scored-game-detail "what drove this rating", locked to
  * the Weighted variant (design_handoff_game_detail). One row per metric,
  * sorted by actual contribution (norm x weight) descending -- sorting by
  * norm instead would float the two 0.5-weight metrics above metrics that
@@ -534,8 +534,8 @@ function driversWeighted(mount, metricsMap, registry, si) {
   let formula = `Σ contributions ${si.weighted_sum.toFixed(3)} ÷ applicable weight ${si.applicable_weight.toFixed(1)} = ${base.toFixed(4)}`;
   if (bonus) formula += ` + UW loss bonus ${bonus.toFixed(3)} = ${si.composite_recomputed.toFixed(4)}`;
   const verdict = si.matches
-    ? el("span", { class: "ok", text: "✓ matches stored score" })
-    : el("span", { class: "bad", text: `⚠ differs from stored score by ${si.delta.toFixed(4)} — caps may have changed since this game was scored` });
+    ? el("span", { class: "ok", text: "✓ matches stored rating" })
+    : el("span", { class: "bad", text: `⚠ differs from stored rating by ${si.delta.toFixed(4)} — caps may have changed since this game was rated` });
   mount.appendChild(el("div", { class: "g-integrity-strip" }, [el("span", { text: formula }), verdict]));
 
   const twinRows = registry.map((r) => {
@@ -651,7 +651,7 @@ function distributionRail(mount, hist, composite) {
   const spacing = 300 / nBins;
   const barW = Math.max(spacing - 2, 1);
 
-  const root = svg("svg", { viewBox: "0 0 300 104", role: "img", "aria-label": "Score distribution histogram" });
+  const root = svg("svg", { viewBox: "0 0 300 104", role: "img", "aria-label": "Rating distribution histogram" });
   hist.bins.forEach((c, k) => {
     const h = (c / maxCount) * 96;
     root.appendChild(svg("rect", {
@@ -685,7 +685,7 @@ function histogram(mount, hist, opts = {}) {
   const y = linScale([0, maxCount], [margin.top + plotH, margin.top]);
   const domainMax = hist.bin_width * nBins;
 
-  const root = svg("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Score distribution histogram" });
+  const root = svg("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Rating distribution histogram" });
   hist.bins.forEach((c, i) => {
     const bx = margin.left + i * barW;
     const bh = margin.top + plotH - y(c);
@@ -780,7 +780,7 @@ function liveScoreChart(mount, rows) {
 
   const root = svg("svg", {
     viewBox: `0 0 ${W} ${H}`, role: "img", tabindex: "0",
-    "aria-label": "Live score over the course of the game",
+    "aria-label": "Live rating over the course of the game",
   });
   [0, 0.25, 0.5, 0.75, 1].forEach((f) => {
     const v = maxScore * f;
@@ -855,7 +855,7 @@ function liveScoreChart(mount, rows) {
 
   mount.appendChild(el("div", { class: "viz" }, root));
   const twinRows = rows.map((r, i) => [String(i + 1), progressLabel(r.progress) || "—", r.live_score.toFixed(4)]);
-  mount.appendChild(tableTwin("Show as table", ["Update #", "Game clock", "Live score"], twinRows));
+  mount.appendChild(tableTwin("Show as table", ["Update #", "Game clock", "Live rating"], twinRows));
 }
 
 /* ---------------------------------------------------------------------
@@ -948,7 +948,7 @@ function weeklyPeaksChart(mount, byWeek) {
   const NEWEST_COLORS = ["#e6e3d8", "var(--g-line-2)", "var(--g-ink-dim)"];
   const seasonColor = (rankFromNewest) => (rankFromNewest < NEWEST_COLORS.length ? NEWEST_COLORS[rankFromNewest] : "var(--g-border-strong2)");
 
-  const root = svg("svg", { viewBox: "0 0 1000 250", preserveAspectRatio: "none", role: "img", "aria-label": "Weekly peak watchability score by season" });
+  const root = svg("svg", { viewBox: "0 0 1000 250", preserveAspectRatio: "none", role: "img", "aria-label": "Weekly peak watchability rating by season" });
 
   weeks.forEach((w, i) => {
     if (i % 2 !== 1) return;

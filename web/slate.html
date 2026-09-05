@@ -52,7 +52,7 @@
   <div id="live-section"></div>
 
   <div class="section-title live" id="live-pending-title">
-    <span>Live · not yet scored</span><span class="rule"></span><span class="meta" id="live-pending-meta"></span>
+    <span>Live · not yet rated</span><span class="rule"></span><span class="meta" id="live-pending-meta"></span>
   </div>
   <div id="live-pending-section"></div>
 
@@ -63,7 +63,7 @@
   <div id="completed-section"></div>
 
   <div class="section-title">
-    <span id="upcoming-title">Upcoming</span><span class="rule"></span><span class="meta">NOT SCORED</span>
+    <span id="upcoming-title">Upcoming</span><span class="rule"></span><span class="meta">NOT RATED</span>
   </div>
   <div id="upcoming-section"></div>
 
@@ -270,7 +270,7 @@ function renderLiveExpand(container, g) {
 
 function renderRetroExpand(container, g) {
   const applicable = Object.entries(g.metrics || {}).filter(([, v]) => v.applicable);
-  container.appendChild(el("div", { class: "metric-group-label", text: "Score breakdown" }));
+  container.appendChild(el("div", { class: "metric-group-label", text: "Rating breakdown" }));
   applicable
     .sort((a, b) => b[1].norm - a[1].norm)
     .forEach(([name, v]) => {
@@ -327,7 +327,7 @@ function spoilerStepButton(g, toLevel, label, title) {
 // which way "the" button should go. Same /api/spoilers/game route as
 // spoilerStepButton() -- a real, persistent per-user override.
 function spoilerLevelSelect(g) {
-  const LABELS = { 0: "Hidden", 1: "Score only", 2: "Revealed" };
+  const LABELS = { 0: "Hidden", 1: "Rating only", 2: "Revealed" };
   const select = el(
     "select",
     { title: "Change spoiler level" },
@@ -355,7 +355,7 @@ function spoilerLevelSelect(g) {
 }
 
 // The spoiler control(s) for one game, shared by completed and live rows,
-// replacing the plain HIDDEN/SCORE ONLY tag renderChips() would otherwise
+// replacing the plain HIDDEN/RATING ONLY tag renderChips() would otherwise
 // render there (and, at LEVEL_FULL, adding a control where none existed
 // before). LEVEL_HIDDEN and LEVEL_FULL each have only one direction to
 // move in, so they get a single labeled step button; LEVEL_SCORE gets the
@@ -363,10 +363,10 @@ function spoilerLevelSelect(g) {
 function spoilerControls(g) {
   const level = g.spoiler_level;
   if (level === 0) {
-    return [spoilerStepButton(g, 1, "Hidden", "Reveal the watchability score")];
+    return [spoilerStepButton(g, 1, "Hidden", "Reveal the watchability rating")];
   }
   if (level === 2) {
-    return [spoilerStepButton(g, 1, "Revealed", "Hide the score and details")];
+    return [spoilerStepButton(g, 1, "Revealed", "Hide the final score and details")];
   }
   if (level === 1) {
     return [spoilerLevelSelect(g)];
@@ -391,7 +391,7 @@ function renderLiveSection(unfilteredGames) {
   const hero = el("div", { class: "card hero-card" });
   const heroSpoilerControls = spoilerControls(top);
   const heroChips = renderChips(top).filter(
-    (c) => !(heroSpoilerControls.length && (c.textContent === "HIDDEN" || c.textContent === "SCORE ONLY"))
+    (c) => !(heroSpoilerControls.length && (c.textContent === "HIDDEN" || c.textContent === "RATING ONLY"))
   );
   hero.appendChild(el("div", { class: "hero-toprow" }, [
     el("div", {}, [
@@ -408,7 +408,7 @@ function renderLiveSection(unfilteredGames) {
       ? el("div", { class: "spoiler-hidden-tag", text: "SPOILER HIDDEN" })
       : el("div", { class: "hero-score-block" }, [
           el("div", { class: "hero-score tabular-nums", text: fmtScore(top.live.live_score) }),
-          el("div", { class: "hero-score-label", text: "LIVE SCORE" }),
+          el("div", { class: "hero-score-label", text: "LIVE RATING" }),
         ]),
   ]));
   if (!top.spoiler_hidden) {
@@ -440,7 +440,7 @@ function renderLiveSection(unfilteredGames) {
       : `${g.live.status.detail || ""}${g.live.headline ? " · " + g.live.headline : ""}`;
     const spoilerControlsG = spoilerControls(g);
     const rowChips = renderChips(g).filter(
-      (c) => !(spoilerControlsG.length && (c.textContent === "HIDDEN" || c.textContent === "SCORE ONLY"))
+      (c) => !(spoilerControlsG.length && (c.textContent === "HIDDEN" || c.textContent === "RATING ONLY"))
     );
     const row = el("div", { class: "slate-row row-live" + (flash ? " updated-flash" : "") }, [
       el("div", { class: "score-big", text: g.live.live_score === null ? "—" : fmtScore(g.live.live_score) }),
@@ -503,7 +503,7 @@ function renderLivePendingSection(unfilteredGames) {
   wrap.innerHTML = "";
   const games = unfilteredGames.filter(matchesFilters);
   if (!games.length) {
-    wrap.appendChild(el("div", { class: "empty-state", text: "No not-yet-scored live games match this filter." }));
+    wrap.appendChild(el("div", { class: "empty-state", text: "No not-yet-rated live games match this filter." }));
     return;
   }
 
@@ -511,11 +511,11 @@ function renderLivePendingSection(unfilteredGames) {
   games.forEach((g) => {
     const spoilerControlsG = spoilerControls(g);
     const rowChips = renderChips(g).filter(
-      (c) => !(spoilerControlsG.length && (c.textContent === "HIDDEN" || c.textContent === "SCORE ONLY"))
+      (c) => !(spoilerControlsG.length && (c.textContent === "HIDDEN" || c.textContent === "RATING ONLY"))
     );
     const whyText = g.spoiler_hidden
       ? (g.live.status.detail || "In progress")
-      : `${g.live.status.detail || "In progress"} · Not yet scored`;
+      : `${g.live.status.detail || "In progress"} · Not yet rated`;
     const row = el("div", { class: "slate-row row-live" }, [
       el("div", { class: "score-big", text: "—" }),
       el("div", { class: "row-info" }, [
@@ -593,16 +593,16 @@ function completedRow(g, rankText) {
 
   // Spoiler stepper control(s) (spoilerControls, defined above
   // renderLiveSection): HIDDEN and FULL each get one step button;
-  // SCORE (in between) gets a back/forward pair. Placed before the name in
-  // the matchup line, replacing the plain static HIDDEN/SCORE ONLY chip
+  // RATING (in between) gets a back/forward pair. Placed before the name in
+  // the matchup line, replacing the plain static HIDDEN/RATING ONLY chip
   // renderChips() would otherwise also render there. Gated on g.is_scored
-  // too -- an unscored game can still fall in a LEVEL_HIDDEN week (the
-  // spoiler policy is time-based, not "has this actually been scored"),
+  // too -- an unrated game can still fall in a LEVEL_HIDDEN week (the
+  // spoiler policy is time-based, not "has this actually been rated"),
   // and there's nothing to reveal in that case; gameChips() already
-  // renders "NOT SCORED" for it instead of "HIDDEN".
+  // renders "NOT RATED" for it instead of "HIDDEN".
   const spoilerControlsG = g.is_scored ? spoilerControls(g) : [];
   const chips = renderChips(g).filter(
-    (c) => !(spoilerControlsG.length && (c.textContent === "HIDDEN" || c.textContent === "SCORE ONLY"))
+    (c) => !(spoilerControlsG.length && (c.textContent === "HIDDEN" || c.textContent === "RATING ONLY"))
   );
 
   const row = el("div", { class: "slate-row row-completed" }, [
@@ -736,10 +736,10 @@ function renderUpcomingSection(unsortedGames) {
       el("div", { class: "matchup-line" }, [
         el("span", { class: "name", text: fmtMatchup(g) }),
         // Pre-kickoff games never have a score to spoil yet, so the HIDDEN/
-        // SCORE ONLY chips (meaningful once something's actually being
+        // RATING ONLY chips (meaningful once something's actually being
         // withheld or revealed) are suppressed here even though
         // spoiler_level may already be < LEVEL_FULL.
-        ...renderChips(g).filter((c) => !c.textContent.includes("HIDDEN") && c.textContent !== "SCORE ONLY"),
+        ...renderChips(g).filter((c) => !c.textContent.includes("HIDDEN") && c.textContent !== "RATING ONLY"),
       ]),
     ]);
     row.addEventListener("click", () => (location.href = `/game.html?id=${g.game_id}`));

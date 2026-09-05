@@ -415,20 +415,20 @@ function gameChips(g) {
   // alone is "Washington played and lost," no team-id check needed here.
   // Always null below LEVEL_FULL, so this chip can never fire early.
   if (g.uw_loss_bonus) chips.push(["UW LOSS", "uw"]);
-  // "NOT SCORED" means "this game is done and the pipeline has nothing" --
+  // "NOT RATED" means "this game is done and the pipeline has nothing" --
   // checked before the spoiler chips below, and independent of them, via
   // g.is_scored (set pre-redaction in shape_game(), so it's never nulled by
   // spoiler redaction the way watchability_score is). That ordering matters:
-  // an unscored completed game can still land in a spoiler-hidden week (the
-  // policy is purely time-based, not "has this actually been scored"), and
+  // an unrated completed game can still land in a spoiler-hidden week (the
+  // policy is purely time-based, not "has this actually been rated"), and
   // in that case there is nothing to hide, so it must get this chip instead
-  // of a misleading HIDDEN/SCORE ONLY chip implying a real score exists
-  // behind it. A live or not-yet-started game is unscored by design, not by
+  // of a misleading HIDDEN/RATING ONLY chip implying a real rating exists
+  // behind it. A live or not-yet-started game is unrated by design, not by
   // gap, so it gets the LIVE chip (below) or no chip at all instead.
   if (g.is_scored === false && g.status_state === "post") {
-    chips.push(["NOT SCORED", "muted"]);
+    chips.push(["NOT RATED", "muted"]);
   } else if (g.spoiler_level === 0) chips.push(["HIDDEN", "muted"]);
-  else if (g.spoiler_level === 1) chips.push(["SCORE ONLY", "muted"]);
+  else if (g.spoiler_level === 1) chips.push(["RATING ONLY", "muted"]);
   else if (g.spoiler_level === undefined && g.spoiler_hidden) chips.push(["HIDDEN", "muted"]);
   if (g.status_state === "in") chips.push(["LIVE", "accent"]);
   if (g.ot) chips.push(["OT", "warn"]);

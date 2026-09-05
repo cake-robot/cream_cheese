@@ -146,7 +146,7 @@ function topChips(g) {
   // A LEVEL_SCORE row (see the two-tier-spoiler plan) can appear here now
   // -- flag it the same way gameChips() does, since this list has its own
   // chip grammar rather than reusing that function.
-  if (g.spoiler_level === 1) chips.push(["SCORE ONLY", false]);
+  if (g.spoiler_level === 1) chips.push(["RATING ONLY", false]);
   if (g.ot) chips.push(["OT", false]);
   if (g.conference_game) chips.push(["CONF", false]);
   if (g.rivalry_name) chips.push(["RIVALRY", false]);
@@ -294,7 +294,7 @@ async function renderList() {
   const data = await api("/top", { by: "composite", ...currentTopParams(), limit: STATE.limit });
 
   document.getElementById("t-result-line").textContent =
-    `${data.total} scored games · ${STATE.season === "all" ? "all seasons" : STATE.season} · ${typeLabel(STATE.seasonType)}`;
+    `${data.total} rated games · ${STATE.season === "all" ? "all seasons" : STATE.season} · ${typeLabel(STATE.seasonType)}`;
 
   const bannerMount = document.getElementById("t-banner-stack");
   bannerMount.innerHTML = "";
@@ -315,7 +315,7 @@ async function renderList() {
   showMoreMount.innerHTML = "";
 
   if (!data.results.length) {
-    rowsMount.appendChild(el("div", { class: "t-empty", text: "No scored games match these filters." }));
+    rowsMount.appendChild(el("div", { class: "t-empty", text: "No rated games match these filters." }));
     return;
   }
 

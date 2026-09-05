@@ -60,7 +60,7 @@ const LEVEL_FULL = 2;
 // misfire here: a hidden but actually-scored-and-completed game comes back
 // with watchability_score/live both null, which would otherwise fall
 // through to renderNotScored()'s "This game has no win-probability data,
-// so it has not been scored" -- true for an unscored game, false and
+// so it has not been rated" -- true for an unrated game, false and
 // misleading for one that's just hidden.)
 function renderHidden(mount, detail) {
   const g = detail.game;
@@ -74,8 +74,8 @@ function renderHidden(mount, detail) {
     el("h2", { text: "🙈 Watchability hidden" }),
     el("div", {
       class: "card-sub",
-      text: "This game is spoiler-protected -- its score, charts, and what drove it are hidden. "
-        + "Show just the watchability score (no final score or winner), or reveal everything "
+      text: "This game is spoiler-protected -- its rating, charts, and what drove it are hidden. "
+        + "Show just the watchability rating (no final score or winner), or reveal everything "
         + "(adds a game override on the Settings page, undoable there) -- or change the setting "
         + "for its whole week from Settings.",
     }),
@@ -84,7 +84,7 @@ function renderHidden(mount, detail) {
   // the same /api/spoilers/game route Settings' own game-override card
   // uses -- not a client-side-only bypass, so either shows up in Settings'
   // "Active overrides" and is undoable there, on any device, going forward.
-  const scoreBtn = el("button", { class: "reset", text: "Show watchability score" });
+  const scoreBtn = el("button", { class: "reset", text: "Show watchability rating" });
   const revealBtn = el("button", { class: "reset", text: "Reveal everything" });
   function wireRevealButton(btn, level) {
     btn.addEventListener("click", async () => {
@@ -120,8 +120,8 @@ function renderNotScored(mount, detail) {
     ]),
   ]));
   mount.appendChild(el("div", { class: "card" }, [
-    el("h2", { text: g.status_state === "pre" ? "Scheduled" : "Not yet scored" }),
-    el("div", { class: "card-sub", text: "This game has no win-probability data, so it has not been scored." }),
+    el("h2", { text: g.status_state === "pre" ? "Scheduled" : "Not yet rated" }),
+    el("div", { class: "card-sub", text: "This game has no win-probability data, so it has not been rated." }),
   ]));
   renderProvenance(mount, detail);
 }
@@ -274,7 +274,7 @@ function renderLive(mount, detail) {
   // keeping -- at LEVEL_SCORE too.
   if (detail.live_history && detail.live_history.length > 1) {
     const histCard = el("div", { class: "card" }, [
-      el("h2", { text: "Live score so far" }),
+      el("h2", { text: "Live rating so far" }),
       el("div", { class: "card-sub", text: "How the recommendation has moved through the game." }),
     ]);
     liveScoreChart(histCard, detail.live_history);
@@ -387,7 +387,7 @@ function buildComposite(g) {
 
 function buildRankRails(rc) {
   const rankRailDefs = rc ? [
-    { label: "ALL SEASONS", rank: rc.global.rank, n: rc.global.n, pct: rc.global.percentile, suffix: " percentile", sub: "scored" },
+    { label: "ALL SEASONS", rank: rc.global.rank, n: rc.global.n, pct: rc.global.percentile, suffix: " percentile", sub: "rated" },
     { label: `${rc.season.label} SEASON`, rank: rc.season.rank, n: rc.season.n, pct: rc.season.percentile, suffix: "", sub: "" },
     { label: rc.week.label.toUpperCase(), rank: rc.week.rank, n: rc.week.n, pct: rc.week.percentile, suffix: "", sub: "" },
   ] : [];
@@ -468,7 +468,7 @@ function renderScored(mount, detail) {
   });
   driversCard.appendChild(el("div", { class: "g-card-head" }, [
     el("div", {}, [
-      el("div", { class: "g-card-title", text: "What drove this score" }),
+      el("div", { class: "g-card-title", text: "What drove this rating" }),
       el("div", { class: "g-card-sub", text: `Points contributed to the ${fmtScore(g.watchability_score)} composite, against each metric's ceiling.` }),
     ]),
     viewToggle,
@@ -479,7 +479,7 @@ function renderScored(mount, detail) {
 
   const distCard = el("div", { class: "g-card g-card-pad-rail" });
   distCard.appendChild(el("div", { class: "g-card-title", text: "Where this sits" }));
-  distCard.appendChild(el("div", { class: "g-card-sub", text: rc ? `${rc.global.n.toLocaleString()} scored games, all seasons.` : "" }));
+  distCard.appendChild(el("div", { class: "g-card-sub", text: rc ? `${rc.global.n.toLocaleString()} rated games, all seasons.` : "" }));
   const distBody = el("div");
   distCard.appendChild(distBody);
   railCol.appendChild(distCard);
@@ -496,7 +496,7 @@ function renderScored(mount, detail) {
 // line (g.away.score/g.home.score are null), no drivers card (g.metrics is
 // {}), no WP chart (detail.wp is null), no provenance rail (corrections
 // are suppressed below LEVEL_FULL). The distribution rail survives --
-// "here's your score in context" is exactly the point of this tier.
+// "here's your rating in context" is exactly the point of this tier.
 function renderScoreOnly(mount, detail) {
   const g = detail.game;
   const rc = detail.rank_context;
@@ -525,7 +525,7 @@ function renderScoreOnly(mount, detail) {
 
   const distCard = el("div", { class: "card" }, [
     el("h2", { text: "Where this sits" }),
-    el("div", { class: "card-sub", text: rc ? `${rc.global.n.toLocaleString()} scored games, all seasons.` : "" }),
+    el("div", { class: "card-sub", text: rc ? `${rc.global.n.toLocaleString()} rated games, all seasons.` : "" }),
   ]);
   const distBody = el("div");
   distCard.appendChild(distBody);
@@ -535,10 +535,10 @@ function renderScoreOnly(mount, detail) {
   });
 
   const revealCard = el("div", { class: "card" }, [
-    el("h2", { text: "🙈 Score only" }),
+    el("h2", { text: "🙈 Rating only" }),
     el("div", {
       class: "card-sub",
-      text: "The final score, winner, and what drove this score are still hidden.",
+      text: "The final score, winner, and what drove this rating are still hidden.",
     }),
   ]);
   const revealBtn = el("button", { class: "reset", text: "Show final score" });
@@ -578,8 +578,8 @@ async function loadAndRenderGame() {
   // actually computed a score, independent of the spoiler policy (which is
   // purely time-based). Without this, an unscored completed game that falls
   // in a LEVEL_HIDDEN week would hit the `level === LEVEL_HIDDEN` branch
-  // below and render the "spoiler hidden, reveal it" UI for a score that
-  // doesn't exist, instead of renderNotScored()'s "not yet scored" message.
+  // below and render the "spoiler hidden, reveal it" UI for a rating that
+  // doesn't exist, instead of renderNotScored()'s "not yet rated" message.
   //
   // For a live (status_state 'in') game, `is_live` (also pre-redaction, see
   // serve.py) apart from `detail.live` (the actual, level-redacted payload)

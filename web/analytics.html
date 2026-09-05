@@ -46,7 +46,7 @@
 
   <div class="an-cards">
     <div class="g-card an-card-pad">
-      <div class="g-card-title">Score distribution</div>
+      <div class="g-card-title">Rating distribution</div>
       <div class="g-card-sub" id="an-dist-sub"></div>
       <div class="an-dist-body">
         <div class="an-stat-tiles" id="an-stat-tiles"></div>
@@ -83,7 +83,7 @@
 
     <div class="g-card an-card-pad">
       <div class="an-card-head">
-        <div class="g-card-title">Mean score by week</div>
+        <div class="g-card-title">Mean rating by week</div>
         <div id="an-week-season-select"></div>
       </div>
       <div class="g-card-sub">Regular season.</div>
@@ -93,7 +93,7 @@
 
     <div class="g-card an-card-pad">
       <div class="g-card-title">Metric correlation</div>
-      <div class="g-card-sub" id="an-corr-sub">Pairwise Pearson correlation of normalized metric values (and the composite score).</div>
+      <div class="g-card-sub" id="an-corr-sub">Pairwise Pearson correlation of normalized metric values (and the composite rating).</div>
       <div class="an-corr-scroll"><div class="an-corr-grid" id="an-corr-grid"></div></div>
     </div>
 
@@ -269,7 +269,7 @@ function renderFilters() {
 function renderResultLine(data) {
   const seasonLabel = STATE.season === "all" ? "all seasons" : STATE.season;
   const typeLabel = STATE.seasonType === "all" ? "regular + postseason" : (STATE.seasonType === "2" ? "regular season" : "postseason");
-  document.getElementById("an-result-line").textContent = `${data.n} scored games · ${seasonLabel} · ${typeLabel}`;
+  document.getElementById("an-result-line").textContent = `${data.n} rated games · ${seasonLabel} · ${typeLabel}`;
 }
 
 function renderDistribution(data) {
@@ -279,7 +279,7 @@ function renderDistribution(data) {
 
   const tiles = document.getElementById("an-stat-tiles");
   tiles.innerHTML = "";
-  [["Games scored", String(data.n)], ["Median", fmtScore(dist.median)], ["Mean", fmtScore(dist.mean)], ["Max", fmtScore(dist.max)]]
+  [["Games rated", String(data.n)], ["Median", fmtScore(dist.median)], ["Mean", fmtScore(dist.mean)], ["Max", fmtScore(dist.max)]]
     .forEach(([label, value]) => {
       tiles.appendChild(el("div", {}, [
         el("div", { class: "an-stat-label", text: label }),
@@ -303,7 +303,7 @@ function renderDistribution(data) {
 // ---- weight vs delivered -------------------------------------------------
 
 function renderWeightVsDelivered(data) {
-  document.getElementById("an-wvd-sub").textContent = `Share of the mean composite score, n=${data.n}.`;
+  document.getElementById("an-wvd-sub").textContent = `Share of the mean composite rating, n=${data.n}.`;
   const rows = document.getElementById("an-wvd-rows");
   rows.innerHTML = "";
   data.weight_vs_delivery.forEach((m) => {
@@ -533,7 +533,7 @@ function shortLabel(l) {
 function renderCorrelation(data) {
   const focusRow = data.weight_vs_delivery.find((r) => r.name === STATE.by);
   document.getElementById("an-corr-sub").textContent =
-    `Pairwise Pearson correlation of normalized metric values (and the composite score). ${focusRow ? focusRow.label : ""} is outlined below.`;
+    `Pairwise Pearson correlation of normalized metric values (and the composite rating). ${focusRow ? focusRow.label : ""} is outlined below.`;
 
   const mount = document.getElementById("an-corr-grid");
   mount.innerHTML = "";
