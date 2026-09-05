@@ -294,20 +294,39 @@ function divergeNote(live) {
     : "Quiet so far, but heating up";
 }
 
-// A real, clickable two-state toggle chip, shared by completed and live
+// Which way a game's chip button steps next, keyed by game_id -- module-
+// level so it survives a loadSlate() re-render (each poll cycle rebuilds
+// every row from scratch) but resets on a real page reload. LEVEL_HIDDEN
+// and LEVEL_FULL each have only one valid direction (there's nowhere else
+// to go), so landing on either end always forces this to the direction
+// that leads back toward the middle; LEVEL_SCORE is the only level where
+// the next step is ambiguous on its own, so it keeps going whichever way
+// it was last headed (defaulting to "hide further" the first time a game
+// is seen there, since that's the direction someone who just clicked
+// "Hidden" once, then wants to keep going, is in).
+const SPOILER_DIRECTION = new Map();
+
+// A real, clickable single-button stepper, shared by completed and live
 // rows, replacing the plain HIDDEN/SCORE ONLY tag renderChips() would
-// otherwise render there. LEVEL_HIDDEN -> click reveals the watchability
-// score (a real, persistent LEVEL_SCORE override through the same
+// otherwise render there (and, at LEVEL_FULL, adding a control where none
+// existed before). One click moves exactly one step -- LEVEL_HIDDEN <->
+// LEVEL_SCORE <-> LEVEL_FULL -- never skipping the middle step, and
+// continuing in the same direction (see SPOILER_DIRECTION above) until it
+// hits an end, at which point the next click naturally reverses course.
+// Every step is a real, persistent per-user override through the same
 // /api/spoilers/game route Settings' game-override card and game.html's
 // reveal buttons use, so it's visible/undoable from Settings on any device
-// going forward, not a client-side-only bypass). LEVEL_SCORE -> click
-// re-hides it (back to LEVEL_HIDDEN) -- the undo for that same action.
-// LEVEL_FULL has nothing to toggle from the slate, so returns null.
+// going forward, not a client-side-only bypass.
 function spoilerChipButton(g) {
-  if (g.spoiler_level !== 0 && g.spoiler_level !== 1) return null;
-  const toLevel = g.spoiler_level === 0 ? 1 : 0;
-  const label = g.spoiler_level === 0 ? "Hidden" : "Score only";
-  const title = g.spoiler_level === 0 ? "Reveal the watchability score" : "Hide the watchability score again";
+  const level = g.spoiler_level;
+  if (level !== 0 && level !== 1 && level !== 2) return null;
+  let dir = level === 0 ? 1 : level === 2 ? -1 : (SPOILER_DIRECTION.get(g.game_id) ?? -1);
+  SPOILER_DIRECTION.set(g.game_id, dir);
+  const toLevel = level + dir;
+  const label = ["Hidden", "Score only", "Revealed"][level];
+  const title = dir === 1
+    ? (level === 0 ? "Reveal the watchability score" : "Reveal everything")
+    : (level === 2 ? "Hide the score and details" : "Hide the watchability score");
   const btn = el("button", { class: "chip chip-btn", type: "button", text: label, title });
   btn.addEventListener("click", async (ev) => {
     ev.stopPropagation();
@@ -483,15 +502,15 @@ function completedRow(g, rankText) {
         el("span", { class: "pctile", text: g.percentile !== null ? fmtPct(g.percentile) : "" }),
       ]);
 
-  // Two-state toggle chip (spoilerChipButton, defined above renderLiveSection):
-  // LEVEL_HIDDEN -> click reveals the watchability score, LEVEL_SCORE ->
-  // click re-hides it. Placed before the name in the matchup line,
-  // replacing the plain static HIDDEN/SCORE ONLY chip renderChips() would
-  // otherwise also render there. Gated on g.is_scored too -- an unscored
-  // game can still fall in a LEVEL_HIDDEN week (the spoiler policy is
-  // time-based, not "has this actually been scored"), and there's nothing
-  // to reveal in that case; gameChips() already renders "NOT SCORED" for it
-  // instead of "HIDDEN".
+  // Single-button spoiler stepper (spoilerChipButton, defined above
+  // renderLiveSection): steps HIDDEN <-> SCORE <-> FULL one level at a
+  // time. Placed before the name in the matchup line, replacing the plain
+  // static HIDDEN/SCORE ONLY chip renderChips() would otherwise also
+  // render there. Gated on g.is_scored too -- an unscored game can still
+  // fall in a LEVEL_HIDDEN week (the spoiler policy is time-based, not
+  // "has this actually been scored"), and there's nothing to reveal in
+  // that case; gameChips() already renders "NOT SCORED" for it instead of
+  // "HIDDEN".
   const spoilerBtn = g.is_scored ? spoilerChipButton(g) : null;
   const chips = renderChips(g).filter(
     (c) => !(spoilerBtn && (c.textContent === "HIDDEN" || c.textContent === "SCORE ONLY"))
