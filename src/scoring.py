@@ -966,11 +966,18 @@ def recompute_composite(conn, game_id):
 def _apply_one_correction(conn, game_id, metric_name, raw):
     """Shared by apply_corrections()'s two sources (hand-written
     corrections.py entries and auto-trusted Fox reconciliation diffs).
-    Returns False (skip) if the game hasn't been scored yet."""
+    Returns False (skip) if the game hasn't been scored yet, or if
+    metric_name isn't currently in METRICS -- e.g. comeback_erosion's
+    hand-verified GT@Georgia correction (see corrections.py) lies dormant
+    while that metric is retired from the active composite, rather than
+    being deleted; it resumes applying automatically if the metric is ever
+    re-added."""
     exists = conn.execute(
         "SELECT 1 FROM games WHERE game_id = ? AND watchability_score IS NOT NULL", (game_id,)
     ).fetchone()
     if not exists:
+        return False
+    if metric_name not in METRICS_BY_NAME:
         return False
     norm = _normalize(metric_name, raw)
     conn.execute(
