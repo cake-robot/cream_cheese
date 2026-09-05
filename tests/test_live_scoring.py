@@ -261,6 +261,40 @@ class FixtureTests(unittest.TestCase):
         with mock.patch.object(scoring, "coinflip_home_wp", side_effect=[0.5, 0.5, 0.92, 0.5]):
             self.assertEqual(scoring.comeback_erosion_live(plays), 0.0)
 
+    def test_comeback_margin_q4_close_requires_more_than_one_possession_hole(self):
+        # UTSA 52-24 TXSO: a 14-0->21-7 lead 25 minutes in gets blown back
+        # open long before the 4th quarter -- never one-possession-or-closer
+        # again once Q4 starts, so no credit despite an early hole that did
+        # exceed CLOSE_GAME_MARGIN.
+        plays = self._situational_plays("401426572")
+        self.assertEqual(scoring.comeback_margin_q4_close(plays), 0)
+
+    def test_comeback_margin_q4_close_credits_real_q4_comeback(self):
+        # Marshall/Missouri St -- the real Q4 comeback that started
+        # comeback_erosion in the first place.
+        plays = self._situational_plays("401757228")
+        self.assertGreater(scoring.comeback_margin_q4_close(plays), scoring.CLOSE_GAME_MARGIN)
+
+    def test_comeback_margin_q4_close_credits_unconsummated_comeback(self):
+        # FSU@LSU 2022w1 -- LSU trails by just 1 at the final whistle,
+        # never ties or takes the lead. comeback_margin_q4_close doesn't
+        # require consummation any more than comeback_erosion's close-game
+        # trigger does.
+        plays = self._situational_plays("401403867")
+        self.assertGreater(scoring.comeback_margin_q4_close(plays), scoring.CLOSE_GAME_MARGIN)
+
+    def test_comeback_margin_q4_close_credits_quick_q4_collapse(self):
+        # UNM@UCLA, final UCLA 35-10: close through Q3, one-possession for a
+        # few plays into Q4 on a carried-over score, then blown open by a
+        # real 4th-quarter collapse. Deliberately credited, not a false
+        # positive -- see comeback_margin_q4_close's docstring: a quick Q4
+        # collapse is its own kind of watchable drama, and the user
+        # explicitly confirmed (2026-09-05) they're comfortable with this
+        # game scoring here even though comeback_erosion itself stays near
+        # zero for it (test_close_then_collapse_halves_dont_cancel).
+        plays = self._situational_plays("401752837")
+        self.assertGreater(scoring.comeback_margin_q4_close(plays), scoring.CLOSE_GAME_MARGIN)
+
     def test_severe_score_corruption_no_crash(self):
         # home_score goes negative (-38 / -3) for dozens of consecutive rows
         # in these two games -- verified in data_quality_findings.md as the

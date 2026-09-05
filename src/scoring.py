@@ -72,6 +72,21 @@ COMEBACK_EROSION_THRESHOLD = 0.84
 CLOSE_GAME_MARGIN = 8
 CLOSE_GAME_MIN_SECONDS_LEFT = 180
 
+# --- comeback_margin_q4_close: elapsed_seconds boundary for "the 4th
+# quarter has started," on the same elapsed-seconds clock
+# REGULATION_SECONDS/CLUTCH_FINISH_WINDOW_SECONDS already use.
+# situational_plays carries no period_number field (see
+# espn.extract_situational_plays), so this is a time-based stand-in for the
+# period>=4 check late_volatility/LATE_PERIOD_THRESHOLD do off wp_rows.
+Q4_START_SECONDS = 2700
+
+# --- comeback_margin_q4_close: cap chosen off the corpus-wide distribution
+# of nonzero raw values (min=9, p50=14, p75=17, p90=21, p99=28, max=35) --
+# set near p90 so a typical one-possession-recovery-in-Q4 game lands well
+# under 1.0 normalized, while the rarer, more extreme blown-open-and-clawed-
+# back-again games clip at the cap rather than dominating the composite.
+MAX_COMEBACK_MARGIN_Q4 = 20
+
 # --- comeback_erosion: every credit calculation clamps its endpoint here,
 # not the model's raw reading at that play -- see _comeback_erosion_walk's
 # docstring for why (isolates the score-driven erosion this metric measures
@@ -605,6 +620,62 @@ def comeback_erosion_live(situational_plays):
     return _comeback_erosion_walk(situational_plays, credit_open_arc=True)
 
 
+def comeback_margin_q4_close(situational_plays):
+    """
+    Points-recovered comeback credit, on top of comeback_erosion's
+    coin-flip-WP scale: rewards a game for actually being a one-possession
+    game at some point in the 4th quarter, scaled by how big a hole existed
+    at some point before that. Per explicit request, this is deliberately
+    NOT scoped to comeback_erosion's arc-and-threshold machinery -- it asks
+    a simpler question ("was there a real hole, and did the 4th quarter
+    actually matter") that a raw scoreboard read answers directly, rather
+    than routing through Model C's situational WP reading.
+
+    Two whole-game checks, not a per-arc walk:
+      1. peak = max |home_score - away_score| over every play must exceed
+         CLOSE_GAME_MARGIN -- same "was this ever really more than a
+         one-possession game" floor comeback_erosion enforces (see
+         CLOSE_GAME_MARGIN's comment).
+      2. Some play with elapsed_seconds >= Q4_START_SECONDS has
+         |home_score - away_score| <= CLOSE_GAME_MARGIN -- genuinely
+         one-possession-or-closer in the 4th quarter, not just briefly close
+         somewhere in the first three quarters before getting blown open
+         (confirmed to correctly reject 401426572, UTSA 52-24 TXSO -- a
+         14-0->21-7 lead 25 minutes in that got blown back open long before
+         Q4, never close again once the 4th quarter started).
+
+    Credit is `peak` itself (raw points) if both hold, else 0.
+
+    Deliberately not gated on WHEN in Q4 the closeness happened, or on
+    whether the game ultimately stayed close: confirmed via corpus
+    validation (scripts/validate_comeback_erosion_v2.py's era) that this
+    also fires on 401752837 (UNM@UCLA, final UCLA 35-10) -- close through
+    Q3, one-possession for a few plays into Q4 on a stale carried-over
+    score, then blown open by a real 4th-quarter collapse. That's an
+    intentional call, not an overlooked false positive: a game rapidly
+    swinging from "genuinely one possession" to "blown open," entirely
+    within the 4th quarter, is its own kind of watchable drama (a "quick Q4
+    collapse"), not something this metric needs to filter out. A tighter
+    version restricted to the final CLUTCH_FINISH_WINDOW_SECONDS of
+    regulation was built and validated (it correctly zeroes UNM@UCLA while
+    still crediting every other benchmark) but was deliberately not chosen
+    here -- narrowing to that window is a reasonable future refinement if
+    the looser version turns out to over-credit in practice, not a
+    correctness fix it's currently missing.
+    """
+    plays = _sanitized_situational_plays(situational_plays)
+    if not plays:
+        return 0
+    peak = 0
+    q4_close = False
+    for play in plays:
+        sd = abs(play["home_score"] - play["away_score"])
+        peak = max(peak, sd)
+        if play["elapsed_seconds"] >= Q4_START_SECONDS and sd <= CLOSE_GAME_MARGIN:
+            q4_close = True
+    return peak if (peak > CLOSE_GAME_MARGIN and q4_close) else 0
+
+
 def uw_loss_bonus(home_team_id, away_team_id, home_score, away_score):
     """UW_LOSS_BONUS if Washington played and lost, else 0.0. Deliberately
     outside the METRICS/composite_from() weighted-average machinery -- see
@@ -632,6 +703,7 @@ METRICS = [
     {"name": "late_volatility",  "fn": lambda ctx: late_volatility(ctx["wp_rows"]),                   "weight": 0.5, "cap": MAX_LATE_VOLATILITY},
     {"name": "clutch_finish",    "fn": lambda ctx: clutch_finish(ctx["wp_rows"]),                      "weight": 1.0, "cap": MAX_CLUTCH_FINISH},
     {"name": "comeback_erosion", "fn": lambda ctx: comeback_erosion(ctx["situational_plays"]),           "weight": 1.0, "cap": None},
+    {"name": "comeback_margin_q4_close", "fn": lambda ctx: comeback_margin_q4_close(ctx["situational_plays"]), "weight": 0.5, "cap": MAX_COMEBACK_MARGIN_Q4},
 ]
 
 METRICS_BY_NAME = {m["name"]: m for m in METRICS}

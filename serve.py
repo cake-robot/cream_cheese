@@ -109,6 +109,15 @@ METRIC_COPY = {
             "its own."
         ),
     },
+    "comeback_margin_q4_close": {
+        "label": "Q4 comeback margin",
+        "description": (
+            "Extra credit, in raw points, for a game that was down to one "
+            "possession or closer at some point in the 4th quarter after "
+            "trailing by more than a possession earlier on -- doesn't require "
+            "the trailing team to ever tie or take the lead."
+        ),
+    },
 }
 
 assert set(METRIC_COPY) == set(scoring.METRICS_BY_NAME), (
