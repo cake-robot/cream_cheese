@@ -35,7 +35,7 @@
 
   <div class="gm-table-card" id="gm-table-card">
     <div class="gm-header-row">
-      <span>#</span><span>Wk</span><span>Matchup</span><span></span><span>Score</span><span></span>
+      <span>#</span><span>Wk</span><span>Matchup</span><span></span><span>Rating</span><span></span>
     </div>
     <div id="gm-rows"></div>
     <div class="gm-pagination" id="gm-pagination"></div>
@@ -333,7 +333,7 @@ function renderFilterBar() {
   before.appendChild(el("div", {}, [
     el("div", { class: "gm-filter-label", text: "Flags" }),
     el("div", { class: "gm-chip-row" }, [
-      ["conference", "Conf"], ["neutral", "Neutral"], ["ot", "OT"], ["scored", "Scored only"],
+      ["conference", "Conf"], ["neutral", "Neutral"], ["ot", "OT"], ["scored", "Rated only"],
     ].map(([key, label]) => {
       const btn = el("span", { class: `gm-chip${STATE[key] === "1" ? " active" : ""}`, text: label });
       btn.addEventListener("click", () => toggleFlag(key));
@@ -362,7 +362,7 @@ function renderFilterBar() {
 
   const after = el("div", { class: `gm-filter-groups${openCls}` });
   const sortChips = [
-    { label: "Score", value: "score" }, { label: "Date", value: "date" },
+    { label: "Rating", value: "score" }, { label: "Date", value: "date" },
     { label: "Week", value: "week" }, { label: "Margin", value: "margin" },
   ].map((o) => {
     const btn = el("span", { class: `gm-chip${STATE.sort === o.value ? " active" : ""}`, text: o.label });
