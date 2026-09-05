@@ -378,7 +378,7 @@ function renderLiveSection(unfilteredGames) {
   const wrap = document.getElementById("live-section");
   wrap.innerHTML = "";
   if (!unfilteredGames.length) {
-    wrap.appendChild(el("div", { class: "empty-state", text: "No games in progress right now." }));
+    wrap.appendChild(el("div", { class: "empty-state", text: "No live games rated currently." }));
     return;
   }
   const games = unfilteredGames.filter(matchesFilters);
