@@ -921,10 +921,11 @@ def build_live_payload(row, metrics_for_game, level=spoilers.LEVEL_FULL):
     `stale_seconds` column computed by the caller's SQL (julianday-based, so
     it doesn't need Python-side datetime parsing of computed_at).
 
-    "scored" (computed_at IS NOT NULL) is the flag the frontend uses to tell
-    "not scored yet" apart from "scored but redacted below" -- both look
-    like live_score: null by the time redaction below runs, but only one of
-    them means "nothing to reveal here regardless of spoiler level".
+    "scored" (computed_at IS NOT NULL) is what /api/slate partitions the
+    live section on -- a not-yet-scored game and a scored-but-redacted one
+    both end up with live_score: null after redaction below, but only one
+    of them means "nothing to reveal here regardless of spoiler level", so
+    the split has to happen on this flag before that ambiguity sets in.
 
     This is the second spoiler-redaction choke point (shape_game() is the
     first) -- `level` picks spoilers.redact_live_full()/
@@ -1693,8 +1694,8 @@ def api_slate():
 
     where_scope, scope_params, resolved = _slate_window(conn, scope, request.args.get("date"), tz_name)
 
-    # -- live section: additive "live" key, sorted by live_score desc -------
-    # No game is excluded from either this section or the completed one
+    # -- live section: additive "live" key, split into two sub-sections -----
+    # No game is excluded from either live section or the completed one
     # below, at any spoiler level -- the Slate is the one surface that still
     # shows a spoiler-hidden game, ranked by watchability but with every
     # number redacted (shape_game()/build_live_payload() do the actual
@@ -1706,14 +1707,21 @@ def api_slate():
     # minutes) of game clock has elapsed, but Tier 1 (this query's g.*
     # columns, including status_period/status_detail/scores) is written for
     # every in-progress game every cycle regardless. An INNER JOIN here used
-    # to drop those games from the Slate entirely instead of just leaving
-    # their live_score null -- nothing showed as live for a slate's first 20
-    # minutes. build_live_payload()'s "scored" flag (computed_at IS NOT
-    # NULL) is what lets the frontend tell "not scored yet" apart from
-    # "scored but spoiler-redacted".
+    # to drop those games from the Slate entirely -- nothing showed as live
+    # for a slate's first 20 minutes.
+    #
+    # Split into "live" (has a live_scores row -- computed_at IS NOT NULL)
+    # and "live_pending" (still under the 20-minute floor) rather than one
+    # mixed list: a not-yet-scored game has no live_score/headline/metrics
+    # for *anyone* to see regardless of spoiler level, which is a different
+    # shape of "nothing to show" than a scored game's spoiler redaction, and
+    # the frontend renders the two as visually distinct sections rather than
+    # branching per-row. live_score DESC only orders the scored half
+    # meaningfully -- the pending half is re-sorted by kickoff time (its
+    # live_score is null for every row) so it isn't left in arbitrary order.
     live_where = f"g.status_state = 'in' AND ({where_scope})"
     live_params = list(scope_params)
-    live_rows = conn.execute(f"""
+    live_rows_all = conn.execute(f"""
         SELECT g.*, {OT_EXISTS_SQL} AS is_ot,
                ls.live_score, ls.quality_so_far, ls.drama_from_here, ls.progress,
                ls.wp_now, ls.n_wp_rows, ls.so_far_weight, ls.from_here_weight, ls.headline,
@@ -1723,16 +1731,25 @@ def api_slate():
         WHERE {live_where}
         ORDER BY ls.live_score DESC
     """, live_params).fetchall()
-    live_game_ids = [r["game_id"] for r in live_rows]
-    live_metrics_by_game = fetch_live_metrics_maps(conn, live_game_ids)
-    live_out = []
-    for row in live_rows:
-        g_out = shape_game(row, {}, has_manual_correction=(row["game_id"] in MANUAL_CORRECTION_GAME_IDS))
-        g_out["live"] = build_live_payload(
-            row, live_metrics_by_game.get(row["game_id"], {"so_far": {}, "from_here": {}}),
-            level=g_out["spoiler_level"],
-        )
-        live_out.append(g_out)
+    live_rows = [r for r in live_rows_all if r["computed_at"] is not None]
+    live_pending_rows = sorted(
+        (r for r in live_rows_all if r["computed_at"] is None), key=lambda r: r["game_date"],
+    )
+    live_metrics_by_game = fetch_live_metrics_maps(conn, [r["game_id"] for r in live_rows_all])
+
+    def _shape_live_rows(rows):
+        out = []
+        for row in rows:
+            g_out = shape_game(row, {}, has_manual_correction=(row["game_id"] in MANUAL_CORRECTION_GAME_IDS))
+            g_out["live"] = build_live_payload(
+                row, live_metrics_by_game.get(row["game_id"], {"so_far": {}, "from_here": {}}),
+                level=g_out["spoiler_level"],
+            )
+            out.append(g_out)
+        return out
+
+    live_out = _shape_live_rows(live_rows)
+    live_pending_out = _shape_live_rows(live_pending_rows)
 
     # -- completed section: existing retrospective shape, sorted by score ---
     ranked_sql, ranked_params = ranked_cte()
@@ -1789,8 +1806,14 @@ def api_slate():
             "staleness_seconds": live_feed["staleness_seconds"],
         },
         "weights": {"so_far": live.LIVE_W_SO_FAR, "from_here": live.LIVE_W_FROM_HERE},
-        "counts": {"live": len(live_out), "completed": len(completed_out), "upcoming": len(upcoming_out)},
-        "sections": {"live": live_out, "completed": completed_out, "upcoming": upcoming_out},
+        "counts": {
+            "live": len(live_out), "live_pending": len(live_pending_out),
+            "completed": len(completed_out), "upcoming": len(upcoming_out),
+        },
+        "sections": {
+            "live": live_out, "live_pending": live_pending_out,
+            "completed": completed_out, "upcoming": upcoming_out,
+        },
     })
 
 
