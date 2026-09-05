@@ -1,3 +1,4 @@
+import math
 import time
 import requests
 from . import fetchlog, rivalries
@@ -693,3 +694,57 @@ def parse_summary_detail(summary):
 
     initial_home_wp = wp_entries[0].get("homeWinPercentage") if wp_entries else None
     return wp_rows, home_score, away_score, attendance, initial_home_wp
+
+
+# logit(p_home) = SPREAD_TO_LOGIT * (-spread), fit by least squares against
+# ESPN's own predictor on the 12 games of the 2026 week-2 slate that carried
+# both a predictor value and a DraftKings line. Mean |residual| 0.029, max
+# 0.098 -- close enough to stand in for the predictor on a game whose pregame
+# window we missed, but not a replacement for it: `spread` ranks below
+# `predictor` in INITIAL_WP_SOURCE_RANK for that reason.
+#
+# Sign convention follows ESPN's: `spread` is home-relative, negative when the
+# home team is favored ("ORE -24.5" on a home Oregon game is -24.5), so the
+# negation makes a home favorite produce a WP above 0.5.
+SPREAD_TO_LOGIT = 0.11668
+
+
+def parse_predictor(summary):
+    """ESPN's Matchup Predictor home win probability as a 0-1 float, or None.
+
+    Pregame-only. ESPN drops `predictor` from /summary once a game is under
+    way (absent from all 3,689 archived completed-game payloads, 2022-2026),
+    so this returns None for anything already played -- capture it while the
+    game is still SCHEDULED or not at all. Populated early and reliably:
+    24/24 of one slate ~14h out, 6/6 at ~13 days out.
+    """
+    predictor = summary.get("predictor") or {}
+    projection = (predictor.get("homeTeam") or {}).get("gameProjection")
+    if projection is None:
+        return None
+    try:
+        value = float(projection) / 100.0
+    except (TypeError, ValueError):
+        return None
+    if not 0.0 <= value <= 1.0:
+        return None
+    return value
+
+
+def parse_spread_home_wp(summary):
+    """Home win probability implied by the pregame betting spread, or None.
+
+    Fallback for a game whose predictor we never captured. Coverage is
+    materially worse than the predictor's -- books post no line at all on
+    lopsided FCS matchups (12/24 of one slate had a spread, vs 24/24 with a
+    predictor) -- but `pickcenter` survives after a game goes final, which
+    makes it the only source available for backfilling games already played.
+    """
+    pickcenter = summary.get("pickcenter") or []
+    spread = next(
+        (c.get("spread") for c in pickcenter if isinstance(c.get("spread"), (int, float))),
+        None,
+    )
+    if spread is None:
+        return None
+    return 1.0 / (1.0 + math.exp(-SPREAD_TO_LOGIT * (-spread)))

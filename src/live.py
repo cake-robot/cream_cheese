@@ -105,6 +105,42 @@ LIVE_SUMMARY_BUDGET = 50
 LIVE_MAX_STALENESS_SECONDS = 300
 LIVE_ALWAYS_REFRESH_PROGRESS = 0.85
 
+# --- Pregame predictor sweep ---
+# ESPN exposes `predictor` (the Matchup Predictor win probability) only while a
+# game is still SCHEDULED; it is gone from /summary once the game is under way
+# and never comes back. Nothing else in the pipeline calls /summary before
+# kickoff -- Tier 2 is gated to status_state='in' plus a 20-minute elapsed
+# floor, and Phase 2 runs on completed games -- so without this sweep the
+# field would never be captured at all. Verified against fetch_log: every
+# summary call on 2026-09-04 landed 19-29 minutes AFTER its game's kickoff.
+#
+# Deliberately driven by "which upcoming games are missing a capture" rather
+# than by which schedule boundary woke the poller. run_cycle is not told why it
+# woke -- _schedule_interval's `reason` is a log string that never reaches it --
+# and the "day-of refresh" label vanishes for the rest of the day once 08:00 ET
+# passes, so a poller restart after that hour would silently skip a whole
+# slate. A state query has neither problem and retries failures for free.
+LIVE_PREGAME_BUDGET = 25
+
+# Only sweep games kicking off within this window. Predictor is populated as
+# early as ~14 days out, but a value captured weeks ahead is superseded by the
+# day-of refresh anyway, so a shorter horizon bounds the work without costing
+# anything. Comfortably covers a full CFB week.
+LIVE_PREGAME_HORIZON_DAYS = 8
+
+# Each game gets exactly two captures: one when it first enters the horizon,
+# and one refresh once kickoff is within this many days (line movement, late
+# injury news). Both halves of that second condition matter -- the refresh
+# fires only when kickoff is near AND the stored capture predates the window.
+# Dropping the "kickoff is near" half re-fetches every early capture on every
+# cycle for days (any capture taken more than a day before kickoff looks
+# stale), which is a busy-loop, not a refresh.
+#
+# Expressed against kickoff rather than against the calendar date on purpose:
+# a late Saturday-night ET kickoff falls on the following UTC day, so a
+# same-UTC-date rule would never be satisfied.
+LIVE_PREGAME_REFRESH_LEAD_DAYS = 1.0
+
 LOCK_PATH = "data/live.lock"
 
 # --- Schedule-aware sleeping ---
@@ -996,7 +1032,10 @@ def _process_live_game(conn, game_id, cycle_seq, mode="normal"):
             if wp_rows:
                 db.upsert_win_probability(conn, wp_rows)
             db.compute_play_sequences(conn, game_id=game_id)
-            db.set_initial_home_wp(conn, game_id, initial_home_wp)
+            # Lowest trust rank: on a 2026-era payload this is the
+            # line-agnostic first-play value, so it fills a game nothing else
+            # covered but never displaces a pregame predictor capture.
+            db.set_initial_home_wp(conn, game_id, initial_home_wp, "espn_wp")
 
         fresh_wp = conn.execute(
             "SELECT home_win_pct, home_score, away_score, period_number, clock_seconds_elapsed "
@@ -1123,6 +1162,90 @@ def reconcile_on_start(conn):
         scoring.score_games(conn, game_ids=unfetched)
 
 
+_PREGAME_TARGETS_SQL = """
+    SELECT g.game_id
+      FROM games g
+      LEFT JOIN game_pregame_json p ON p.game_id = g.game_id
+     WHERE g.status_state = 'pre'
+       AND julianday(g.game_date) > julianday('now')
+       AND julianday(g.game_date) <= julianday('now') + :horizon
+       AND (p.game_id IS NULL
+            OR (julianday(g.game_date) - julianday('now') <= :lead
+                AND julianday(p.fetched_at) < julianday(g.game_date) - :lead))
+     ORDER BY g.game_date
+     LIMIT :budget
+"""
+
+
+def _pregame_targets(conn, budget=LIVE_PREGAME_BUDGET):
+    """Upcoming games still missing a pregame capture, soonest kickoff first."""
+    rows = conn.execute(_PREGAME_TARGETS_SQL, {
+        "horizon": LIVE_PREGAME_HORIZON_DAYS,
+        "lead": LIVE_PREGAME_REFRESH_LEAD_DAYS,
+        "budget": budget,
+    }).fetchall()
+    return [r["game_id"] for r in rows]
+
+
+def _capture_pregame(conn, game_id, mode="normal"):
+    """Fetch, archive, and extract the pregame win probability for one game.
+
+    Returns (value, source) with source 'predictor' or 'spread', or
+    (None, None) when ESPN offers neither. The payload is archived either way:
+    a game with no line and no predictor still drops out of _pregame_targets
+    once a row exists, which is what stops it being re-fetched every cycle.
+    """
+    summary = espn.fetch_game_summary(game_id)
+    value, source = espn.parse_predictor(summary), "predictor"
+    if value is None:
+        value, source = espn.parse_spread_home_wp(summary), "spread"
+    if value is None:
+        source = None
+
+    if mode != "dry_run":
+        with conn:
+            db.upsert_game_pregame_json(conn, game_id, summary)
+            if value is not None:
+                db.set_initial_home_wp(conn, game_id, value, source)
+    return value, source
+
+
+def sweep_pregame(conn, budget=LIVE_PREGAME_BUDGET, mode="normal"):
+    """Capture pregame predictor/line data for upcoming games. Returns the
+    number of requests made -- one per game, budget-capped.
+
+    Note for tests: this is a second network boundary inside run_cycle. A test
+    that patches espn.fetch_scoreboard_dates to keep a cycle offline must also
+    patch espn.fetch_game_summary if its fixture contains any upcoming `pre`
+    game, or the sweep will make a real /summary call.
+    """
+    targets = _pregame_targets(conn, budget=budget)
+    n_requests = 0
+    n_predictor = n_spread = n_neither = 0
+    for game_id in targets:
+        try:
+            value, source = _capture_pregame(conn, game_id, mode=mode)
+        except Exception:
+            # One bad game must not abort the sweep or the cycle around it;
+            # an uncaptured game is simply picked up again next cycle.
+            logger.exception("live: pregame capture failed for %s", game_id)
+            n_requests += 1
+            continue
+        n_requests += 1
+        if source == "predictor":
+            n_predictor += 1
+        elif source == "spread":
+            n_spread += 1
+        else:
+            n_neither += 1
+    if targets:
+        logger.info(
+            "live: pregame sweep | %d game(s) | %d predictor, %d spread, %d neither",
+            len(targets), n_predictor, n_spread, n_neither,
+        )
+    return n_requests
+
+
 def run_cycle(conn, cycle_seq, summary_budget=LIVE_SUMMARY_BUDGET, mode="normal", dates=None):
     """
     One poll cycle: Tier 1 (one scoreboard call covering the whole slate),
@@ -1175,6 +1298,12 @@ def run_cycle(conn, cycle_seq, summary_budget=LIVE_SUMMARY_BUDGET, mode="normal"
         for gid in targets:
             _process_live_game(conn, gid, cycle_seq, mode=mode)
             n_requests += 1
+
+        # After the live work, never before it: a pregame capture is never
+        # urgent (predictor is available for days) whereas a live game's WP
+        # refresh is time-sensitive, so the sweep takes what's left of the
+        # cycle rather than delaying Tier 2 behind ~25 requests.
+        n_requests += sweep_pregame(conn, mode=mode)
 
     elapsed = time.monotonic() - t0
     counts = {}

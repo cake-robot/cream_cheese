@@ -213,6 +213,60 @@ def refetch_detail(conn, game_id):
     print(f"  {len(wp_rows)} WP rows stored, chronological order recomputed.")
 
 
+def backfill_initial_wp(conn):
+    """Repair games whose initial_home_wp came from ESPN's post-2026 first-play
+    winprobability entry, using the betting line in their archived /summary.
+
+    Entirely offline -- reads game_raw_json, makes no network calls. Only
+    touches rows the rank guard accepts (source 'espn_wp' or NULL), so a
+    genuine 2022-2025 pregame value ('espn_wp_pregame') and anything already
+    upgraded to 'predictor' are both left alone no matter how often this runs.
+
+    The predictor itself cannot be recovered here: ESPN drops it the moment a
+    game starts, so for games already played the closing spread is the only
+    pregame signal that still exists.
+    """
+    rows = conn.execute("""
+        SELECT g.game_id, g.away_team_abbr, g.home_team_abbr,
+               g.initial_home_wp, g.initial_home_wp_source
+          FROM games g
+          JOIN game_raw_json r ON r.game_id = g.game_id
+         WHERE g.initial_home_wp_source IS NULL
+            OR g.initial_home_wp_source = 'espn_wp'
+         ORDER BY g.game_date
+    """).fetchall()
+
+    if not rows:
+        print("0 games need initial_home_wp repair.")
+        return
+
+    n_fixed = n_noline = n_rejected = 0
+    for row in rows:
+        summary = db.get_game_raw_json(conn, row["game_id"])
+        if summary is None:
+            continue
+        value = espn.parse_spread_home_wp(summary)
+        if value is None:
+            n_noline += 1
+            continue
+        with conn:
+            if db.set_initial_home_wp(conn, row["game_id"], value, "spread"):
+                n_fixed += 1
+                # A NULL previous value is a game that never had a pregame WP
+                # at all (no ESPN entry to parse); the line gives it one.
+                before = ("%.4f" % row["initial_home_wp"]
+                          if row["initial_home_wp"] is not None else "  none")
+                print(f"  {row['game_id']} {row['away_team_abbr']:>5} @ "
+                      f"{row['home_team_abbr']:<5} {before} -> {value:.4f}")
+            else:
+                n_rejected += 1
+
+    print(f"\ninitial_home_wp repaired for {n_fixed} game(s); "
+          f"{n_noline} had no line archived, {n_rejected} already better.")
+    if n_fixed:
+        print("Re-run with --score-only --rescore to refresh affected metrics.")
+
+
 def backfill_raw_json(conn, limit):
     """Archive game_raw_json for games that were detail-fetched before that
     table existed. Incremental and resumable by design (default cap of
@@ -718,6 +772,11 @@ def main():
     parser.add_argument("--skip-scoring", action="store_true", help="Skip Phase 3 scoring")
     parser.add_argument("--rescore", action="store_true", help="Re-score already-scored games")
     parser.add_argument("--compute-sequences", action="store_true", help="Compute play_sequence for all WP rows")
+    parser.add_argument("--backfill-initial-wp", action="store_true",
+                         help=("Repair initial_home_wp from the archived betting line for "
+                               "games whose value came from ESPN's post-2026 first-play "
+                               "winprobability entry. Offline -- reads game_raw_json, no "
+                               "network. Safe/idempotent: never downgrades a better source."))
     parser.add_argument("--backfill-raw-json", action="store_true",
                          help="Archive ESPN's full /summary JSON (gzip) into game_raw_json for "
                               "already detail-fetched games missing it -- incremental, capped by "
@@ -921,6 +980,10 @@ def main():
         game_id = args.game if args.game else None
         n = db.compute_play_sequences(conn, game_id=game_id)
         print(f"play_sequence computed for {n} game(s).")
+        sys.exit(0)
+
+    if args.backfill_initial_wp:
+        backfill_initial_wp(conn)
         sys.exit(0)
 
     if args.backfill_raw_json:
