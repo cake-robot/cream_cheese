@@ -2320,31 +2320,41 @@ def api_game_detail(game_id):
     # at all, rather than nulls -- upcoming games are deliberately unscored
     # (see /api/slate), so there's nothing live to report for them either.
     #
-    # Gated on `show_score`, not on live_row presence: db.clear_live_rows()
-    # deletes live_scores/live_metrics on completion, but there are two
-    # windows where a *completed*, still-below-LEVEL_FULL game could still
-    # have a live row -- between the game ending and the poller's next
-    # cycle, and any time the poller isn't running -- and status_detail in
-    # particular can read literally "Final/OT" for an overtime game.
-    # build_live_payload/redact_live_history apply the level-appropriate
-    # redaction from here.
+    # live_row itself is fetched unconditionally (below show_score too) so
+    # game_shaped["is_live"] can survive every spoiler tier, mirroring
+    # is_scored -- otherwise the frontend can't distinguish "this live
+    # game's data is hidden by spoiler policy" (route to renderHidden) from
+    # "this game isn't tracked live yet" (route to renderNotScored); both
+    # looked identical as a bare `live: null` check once redaction had run,
+    # which previously sent a spoiler-hidden live game to the misleading
+    # "not yet scored, no win-probability data" message instead of the
+    # hidden-game UI.
+    #
+    # The payload itself IS gated on `show_score`, not on live_row presence:
+    # db.clear_live_rows() deletes live_scores/live_metrics on completion,
+    # but there are two windows where a *completed*, still-below-LEVEL_FULL
+    # game could still have a live row -- between the game ending and the
+    # poller's next cycle, and any time the poller isn't running -- and
+    # status_detail in particular can read literally "Final/OT" for an
+    # overtime game. build_live_payload/redact_live_history apply the
+    # level-appropriate redaction from here.
+    live_row = conn.execute("""
+        SELECT ls.*, g.status_period, g.status_clock_display, g.status_detail,
+               (julianday('now') - julianday(ls.computed_at)) * 86400.0 AS stale_seconds
+        FROM live_scores ls JOIN games g ON g.game_id = ls.game_id
+        WHERE ls.game_id = ?
+    """, (game_id,)).fetchone()
+    game_shaped["is_live"] = live_row is not None
     live_payload, live_history = None, None
-    if show_score:
-        live_row = conn.execute("""
-            SELECT ls.*, g.status_period, g.status_clock_display, g.status_detail,
-                   (julianday('now') - julianday(ls.computed_at)) * 86400.0 AS stale_seconds
-            FROM live_scores ls JOIN games g ON g.game_id = ls.game_id
-            WHERE ls.game_id = ?
-        """, (game_id,)).fetchone()
-        if live_row is not None:
-            live_metrics = fetch_live_metrics_maps(conn, [game_id]).get(game_id, {"so_far": {}, "from_here": {}})
-            live_payload = build_live_payload(live_row, live_metrics, level=level)
-            history_rows = conn.execute(
-                "SELECT computed_at, progress, live_score, quality_so_far, drama_from_here "
-                "FROM live_score_history WHERE game_id = ? ORDER BY computed_at",
-                (game_id,),
-            ).fetchall()
-            live_history = spoilers.redact_live_history([dict(r) for r in history_rows], level)
+    if show_score and live_row is not None:
+        live_metrics = fetch_live_metrics_maps(conn, [game_id]).get(game_id, {"so_far": {}, "from_here": {}})
+        live_payload = build_live_payload(live_row, live_metrics, level=level)
+        history_rows = conn.execute(
+            "SELECT computed_at, progress, live_score, quality_so_far, drama_from_here "
+            "FROM live_score_history WHERE game_id = ? ORDER BY computed_at",
+            (game_id,),
+        ).fetchall()
+        live_history = spoilers.redact_live_history([dict(r) for r in history_rows], level)
 
     return jsonify({
         "game": game_shaped,
