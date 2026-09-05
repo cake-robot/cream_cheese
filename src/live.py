@@ -50,6 +50,13 @@ LIVE_MIN_ELAPSED_SECONDS = 300
 # saturate a rate metric's cap.
 LIVE_MIN_PROGRESS = 0.15
 
+# Tier 2 (per-game /summary) fetches are withheld entirely below this much
+# elapsed game time -- not enough of the game exists yet for any metric to
+# carry real signal, so the request (and the resulting live_scores row)
+# isn't worth the budget slot. A game earlier than this simply has no
+# live_scores row until it crosses the threshold on a later cycle.
+LIVE_MIN_ELAPSED_SECONDS_FOR_DETAIL_FETCH = 1200
+
 # --- New live-only metric caps ---
 MAX_UPSET_IN_PROGRESS = 0.60
 MAX_RECENT_VOLATILITY = 1.5
@@ -862,16 +869,26 @@ def _tier2_priority(conn):
     overdue first. `urgency = staleness_seconds - LIVE_MAX_STALENESS_SECONDS`,
     forced to +inf for a game deep enough into the 4th quarter that missing
     a refresh would be the worst possible moment to be stale. A game with no
-    live_scores row yet (never fetched) always sorts first."""
+    live_scores row yet (never fetched) always sorts first.
+
+    Games below LIVE_MIN_ELAPSED_SECONDS_FOR_DETAIL_FETCH of elapsed game
+    time are excluded outright, regardless of urgency -- there's no real
+    signal to fetch yet this early, so a freshly-kicked-off game doesn't
+    jump the queue just because it's "never fetched".
+    """
     rows = conn.execute("""
         SELECT g.game_id,
                (julianday('now') - julianday(ls.computed_at)) * 86400.0 AS staleness_seconds,
-               ls.progress
+               ls.progress,
+               g.status_period, g.status_clock_seconds
         FROM games g LEFT JOIN live_scores ls ON ls.game_id = g.game_id
         WHERE g.status_state = 'in'
     """).fetchall()
     scored = []
     for r in rows:
+        elapsed = _elapsed_from_status(r["status_period"], r["status_clock_seconds"])
+        if elapsed is None or elapsed < LIVE_MIN_ELAPSED_SECONDS_FOR_DETAIL_FETCH:
+            continue
         if r["staleness_seconds"] is None:
             urgency = float("inf")
         else:
@@ -1093,7 +1110,12 @@ def run_cycle(conn, cycle_seq, summary_budget=LIVE_SUMMARY_BUDGET, mode="normal"
                 handle_completions(conn, newly_completed, mode=mode)
 
         if mode == "dry_run":
-            targets = [g["game_id"] for g in games if g["status_state"] == "in"][:summary_budget]
+            targets = [
+                g["game_id"] for g in games
+                if g["status_state"] == "in"
+                and (_elapsed_from_status(g["status_period"], g["status_clock_seconds"]) or 0)
+                >= LIVE_MIN_ELAPSED_SECONDS_FOR_DETAIL_FETCH
+            ][:summary_budget]
         else:
             targets = _tier2_priority(conn)[:summary_budget]
 
