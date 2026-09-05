@@ -248,6 +248,150 @@ class FixtureTests(unittest.TestCase):
             for r in rows:
                 self.assertTrue(0.0 <= r["live_score"] <= 1.0, f"{game_id} out-of-range live_score")
 
+    def _wp_rows(self, game_id):
+        return self.conn.execute(
+            "SELECT home_win_pct, home_score, away_score, period_number, clock_seconds_elapsed "
+            "FROM win_probability WHERE game_id = ? AND period_number IS NOT NULL ORDER BY play_sequence, id",
+            (game_id,),
+        ).fetchall()
+
+    def _old_upset_risk(self, initial_home_wp, home_rank, away_rank):
+        skew = abs(initial_home_wp - 0.5) * 2
+        quality = max(scoring._rank_tier(home_rank), scoring._rank_tier(away_rank))
+        return (skew ** scoring.UPSET_RISK_POWER) * quality
+
+    def test_upset_risk_wire_to_wire_blowout_discounted(self):
+        # MIA @ STAN, 2026 -- Miami favored 94.6% pregame, won wire-to-wire
+        # 45-6. Real trigger for this whole metric: upset_risk read 0.525
+        # (65th percentile of all 3,688 completed games) despite the game
+        # never being in doubt, because the pre-fix formula only looked at
+        # the pregame line and never checked what actually happened.
+        row = self.conn.execute(
+            "SELECT initial_home_wp, home_rank, away_rank FROM games WHERE game_id = ?",
+            ("401858206",),
+        ).fetchone()
+        wp_rows = self._wp_rows("401858206")
+        old_value = self._old_upset_risk(row["initial_home_wp"], row["home_rank"], row["away_rank"])
+        new_value = scoring.upset_risk(row["initial_home_wp"], row["home_rank"], row["away_rank"], wp_rows)
+        self.assertGreater(old_value, 0.4, "sanity: pregame skew was in fact large")
+        self.assertLess(new_value, 0.05, "wire-to-wire favorite should be discounted near zero")
+
+    def test_upset_risk_real_scare_keeps_full_credit(self):
+        # Clemson favored ~92% but trailed 0-16 in Q2/Q3 before rallying to
+        # win 27-16 -- a real coin-flip-or-worse scare despite the final
+        # score reading like a comfortable win. Must NOT be discounted just
+        # because Clemson ultimately won by 11.
+        row = self.conn.execute(
+            "SELECT initial_home_wp, home_rank, away_rank FROM games WHERE game_id = ?",
+            ("401754637",),
+        ).fetchone()
+        wp_rows = self._wp_rows("401754637")
+        old_value = self._old_upset_risk(row["initial_home_wp"], row["home_rank"], row["away_rank"])
+        new_value = scoring.upset_risk(row["initial_home_wp"], row["home_rank"], row["away_rank"], wp_rows)
+        self.assertGreater(old_value, 0.3, "sanity: pregame skew was in fact large")
+        self.assertAlmostEqual(new_value, old_value, delta=0.01)
+
+    def test_upset_risk_true_upset_unchanged(self):
+        # #5 Notre Dame (home) favored 96.6%, actually lost to unranked NIU
+        # -- a true upset must keep essentially full credit.
+        row = self.conn.execute(
+            "SELECT initial_home_wp, home_rank, away_rank FROM games WHERE game_id = ?",
+            ("401628977",),
+        ).fetchone()
+        wp_rows = self._wp_rows("401628977")
+        old_value = self._old_upset_risk(row["initial_home_wp"], row["home_rank"], row["away_rank"])
+        new_value = scoring.upset_risk(row["initial_home_wp"], row["home_rank"], row["away_rank"], wp_rows)
+        self.assertGreater(old_value, 0.5, "sanity: pregame skew was in fact large")
+        self.assertAlmostEqual(new_value, old_value, delta=0.01)
+
+
+class UpsetRiskCompetitivenessTests(unittest.TestCase):
+    """Synthetic, DB-free tests for scoring._erosion_fraction and the new
+    wp_rows-scaled upset_risk -- precise control over the score trajectory
+    that real games (FixtureTests above) don't offer."""
+
+    def _old_upset_risk(self, initial_home_wp, home_rank, away_rank):
+        skew = abs(initial_home_wp - 0.5) * 2
+        quality = max(scoring._rank_tier(home_rank), scoring._rank_tier(away_rank))
+        return (skew ** scoring.UPSET_RISK_POWER) * quality
+
+    def test_none_initial_wp_returns_zero_regardless_of_wp_rows(self):
+        self.assertEqual(scoring.upset_risk(None, 1, None, []), 0.0)
+
+    def test_pick_em_line_has_no_erosion_edge(self):
+        # edge = pre_fav - 0.5 == 0 at an exact pick'em line -- there's no
+        # "favorite" to erode, so _erosion_fraction bails out to None.
+        wp_rows = [{"home_score": 21, "away_score": 0, "clock_seconds_elapsed": 1800}]
+        self.assertIsNone(scoring._erosion_fraction(wp_rows, 0.5))
+
+    def test_missing_wp_rows_scale_is_a_noop(self):
+        # No WP data available -- fall back to scale=1.0 so behavior exactly
+        # matches the pre-fix formula rather than penalizing the game for a
+        # data gap.
+        self.assertIsNone(scoring._erosion_fraction([], 0.95))
+        old_value = self._old_upset_risk(0.95, 3, None)
+        new_value = scoring.upset_risk(0.95, 3, None, [])
+        self.assertEqual(new_value, old_value)
+
+    def test_favorite_never_threatened_discounted_near_zero(self):
+        # Home favored 90%, margin only grows the entire game -- the classic
+        # wire-to-wire blowout shape that motivated this fix.
+        wp_rows = [
+            {"home_score": 0, "away_score": 0, "clock_seconds_elapsed": 0},
+            {"home_score": 14, "away_score": 0, "clock_seconds_elapsed": 900},
+            {"home_score": 28, "away_score": 0, "clock_seconds_elapsed": 1800},
+            {"home_score": 42, "away_score": 3, "clock_seconds_elapsed": 2700},
+            {"home_score": 49, "away_score": 6, "clock_seconds_elapsed": 3600},
+        ]
+        erosion = scoring._erosion_fraction(wp_rows, 0.90)
+        self.assertLess(erosion, 0.05)
+        old_value = self._old_upset_risk(0.90, 5, None)
+        new_value = scoring.upset_risk(0.90, 5, None, wp_rows)
+        self.assertLess(new_value, old_value * 0.1)
+
+    def test_favorite_genuinely_tied_gets_full_credit(self):
+        # Home favored 90%, but the away team actually takes a real lead
+        # midgame (down 10 at half, model-implied WP 0.42 -- a genuine
+        # below-coin-flip deficit, verified via wp_baseline.predict_wp_elapsed
+        # directly) before the favorite pulls away late -- a real scare,
+        # must keep essentially full credit despite the final margin looking
+        # routine.
+        wp_rows = [
+            {"home_score": 0, "away_score": 0, "clock_seconds_elapsed": 0},
+            {"home_score": 7, "away_score": 0, "clock_seconds_elapsed": 300},
+            {"home_score": 7, "away_score": 17, "clock_seconds_elapsed": 1800},
+            {"home_score": 21, "away_score": 17, "clock_seconds_elapsed": 3000},
+            {"home_score": 28, "away_score": 20, "clock_seconds_elapsed": 3600},
+        ]
+        erosion = scoring._erosion_fraction(wp_rows, 0.90)
+        self.assertEqual(erosion, 1.0)
+        old_value = self._old_upset_risk(0.90, 5, None)
+        new_value = scoring.upset_risk(0.90, 5, None, wp_rows)
+        self.assertAlmostEqual(new_value, old_value)
+
+    def test_underdog_blowout_still_clips_to_full_credit(self):
+        # The "underdog" doesn't just tie it up -- it blows the favorite out.
+        # max_drop exceeds edge and must clip to 1.0, not exceed it or error.
+        wp_rows = [
+            {"home_score": 0, "away_score": 0, "clock_seconds_elapsed": 0},
+            {"home_score": 0, "away_score": 35, "clock_seconds_elapsed": 1800},
+            {"home_score": 3, "away_score": 49, "clock_seconds_elapsed": 3600},
+        ]
+        self.assertEqual(scoring._erosion_fraction(wp_rows, 0.90), 1.0)
+
+    def test_away_favorite_orientation_mirrors_home(self):
+        # initial_home_wp < 0.5 means the AWAY team is favored -- erosion
+        # must track the away favorite's modeled WP, not the home team's.
+        wp_rows = [
+            {"home_score": 0, "away_score": 0, "clock_seconds_elapsed": 0},
+            {"home_score": 0, "away_score": 14, "clock_seconds_elapsed": 900},
+            {"home_score": 0, "away_score": 28, "clock_seconds_elapsed": 1800},
+            {"home_score": 3, "away_score": 42, "clock_seconds_elapsed": 2700},
+            {"home_score": 6, "away_score": 49, "clock_seconds_elapsed": 3600},
+        ]
+        erosion = scoring._erosion_fraction(wp_rows, 0.10)  # away favored 90%
+        self.assertLess(erosion, 0.05, "away favorite winning wire-to-wire should also be discounted")
+
 
 class UniversalInvariantTests(unittest.TestCase):
     """Sweep every completed 2025 game (sampled every 15th WP row for
