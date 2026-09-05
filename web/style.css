@@ -245,6 +245,11 @@ button.reset:disabled { opacity: .4; cursor: default; }
 .chip-btn { font-family: var(--font-mono); cursor: pointer; background: none; margin-left: 0; margin-right: 6px; }
 .chip-btn:hover { border-color: var(--series-1); color: var(--ink-1); }
 .chip-btn:disabled { opacity: .4; cursor: default; }
+/* Slate's SCORE-only spoiler control -- a real <select>, same chip look
+   as chip-btn, so picking "Hidden"/"Revealed" directly needs no arrows. */
+.chip-select { font-family: var(--font-mono); cursor: pointer; background: var(--page); margin-left: 0; margin-right: 6px; }
+.chip-select:hover { border-color: var(--series-1); color: var(--ink-1); }
+.chip-select:disabled { opacity: .4; cursor: default; }
 
 .empty-state {
   text-align: center; padding: 48px 16px; color: var(--ink-muted);
