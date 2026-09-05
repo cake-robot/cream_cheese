@@ -58,6 +58,17 @@ COMEBACK_EROSION_THRESHOLD = 0.84
 # takes the lead. "Real time left" is deliberately not "any time left" --
 # a defense taking a knee up 9 with 30 seconds left shouldn't suddenly
 # start counting as vulnerable just because 9 isn't a huge margin anymore.
+#
+# Also doubles as the "was this ever more than a one-possession game"
+# floor for ALL comeback_erosion credit (not just this trigger): an arc
+# whose score differential never exceeded CLOSE_GAME_MARGIN never had a
+# real lead to erode in the first place, even if Model C's situational
+# (down/distance/field-position) reading swings hard enough to cross
+# COMEBACK_EROSION_THRESHOLD on its own -- e.g. a 4th-and-short stop deep
+# in your own territory reads as a big situational swing regardless of
+# whether the scoreboard says the game is close or blown open. Per
+# explicit request: don't credit a "comeback" in what was always a
+# one-possession game.
 CLOSE_GAME_MARGIN = 8
 CLOSE_GAME_MIN_SECONDS_LEFT = 180
 
@@ -400,7 +411,13 @@ def _comeback_erosion_walk(plays, credit_open_arc):
     into overtime, deliberately -- see comeback_erosion's docstring.
 
     Three ways an arc's credit gets banked, all sharing the same
-    hi-vs-COMEBACK_EROSION_THRESHOLD / lo-vs-(1-threshold) check:
+    hi-vs-COMEBACK_EROSION_THRESHOLD / lo-vs-(1-threshold) check, AND all
+    additionally gated on that arc's max |score_diff| having exceeded
+    CLOSE_GAME_MARGIN at some point (tracked via max_abs_sd, reset
+    alongside lo/hi whenever the arc resets) -- an arc that was never more
+    than a one-possession game never had a real lead to erode, no matter
+    how far its situational WP reading swings (see CLOSE_GAME_MARGIN's
+    comment):
       1. The arc closes (a lead change or a tie) -- comeback_erosion's
          original behavior.
       2. credit_open_arc=True: the CURRENT (still-open) arc's own lo/hi is
@@ -413,7 +430,11 @@ def _comeback_erosion_walk(plays, credit_open_arc):
          side never actually ties it or takes the lead. Safe to check
          unconditionally because `best` only ever keeps the single largest
          value seen across the whole walk -- checking more often just adds
-         candidate moments, it can't double-count.
+         candidate moments, it can't double-count. The max_abs_sd gate here
+         means this specifically requires the deficit to have BEEN bigger
+         than one possession before narrowing back into one-possession
+         range on this play -- a game that was a one-possession game the
+         whole way through never trips it, by design.
 
     Only trigger 1 (an arc actually closing -- score_diff hits zero or
     flips sign) clamps its credit endpoint at PARITY (0.5): `hi - min(w,
@@ -446,6 +467,7 @@ def _comeback_erosion_walk(plays, credit_open_arc):
         return 0.0
     best = 0.0
     lo = hi = 0.5
+    max_abs_sd = 0
     state = 0  # -1 away ahead, +1 home ahead, 0 tied
     for play in plays:
         sd = play["home_score"] - play["away_score"]
@@ -457,23 +479,30 @@ def _comeback_erosion_walk(plays, credit_open_arc):
         w_for_lo_branch = min(w, PARITY)
         new_state = 1 if sd > 0 else (-1 if sd < 0 else 0)
         if new_state != state:
-            if hi >= COMEBACK_EROSION_THRESHOLD:
-                best = max(best, hi - w_for_hi_branch)
-            if lo <= 1 - COMEBACK_EROSION_THRESHOLD:
-                best = max(best, w_for_lo_branch - lo)
+            if max_abs_sd > CLOSE_GAME_MARGIN:
+                if hi >= COMEBACK_EROSION_THRESHOLD:
+                    best = max(best, hi - w_for_hi_branch)
+                if lo <= 1 - COMEBACK_EROSION_THRESHOLD:
+                    best = max(best, w_for_lo_branch - lo)
             lo = hi = w
+            max_abs_sd = abs(sd)
             state = new_state
         else:
             lo = min(lo, w)
             hi = max(hi, w)
-            if credit_open_arc:
+            max_abs_sd = max(max_abs_sd, abs(sd))
+            if credit_open_arc and max_abs_sd > CLOSE_GAME_MARGIN:
                 if hi >= COMEBACK_EROSION_THRESHOLD:
                     best = max(best, hi - w)
                 if lo <= 1 - COMEBACK_EROSION_THRESHOLD:
                     best = max(best, w - lo)
 
         seconds_left = 3600 - play["elapsed_seconds"]
-        if abs(sd) <= CLOSE_GAME_MARGIN and seconds_left > CLOSE_GAME_MIN_SECONDS_LEFT:
+        if (
+            abs(sd) <= CLOSE_GAME_MARGIN
+            and seconds_left > CLOSE_GAME_MIN_SECONDS_LEFT
+            and max_abs_sd > CLOSE_GAME_MARGIN
+        ):
             if hi >= COMEBACK_EROSION_THRESHOLD:
                 best = max(best, hi - w)
             if lo <= 1 - COMEBACK_EROSION_THRESHOLD:
@@ -499,6 +528,13 @@ def comeback_erosion(situational_plays):
     doesn't count on its own (confirmed case: Alabama's 93% WP off a modest
     early lead against 9%-underdog FSU was mostly the pregame anchor, not a
     real lead -- coin-flip-normalized it never reaches COMEBACK_EROSION_THRESHOLD).
+    Also requires the arc's score differential to have actually exceeded
+    CLOSE_GAME_MARGIN (8) at some point: Model C's situational reading (down/
+    distance/field position) can cross COMEBACK_EROSION_THRESHOLD off a big
+    in-game moment even in a game that was never more than one possession
+    apart on the scoreboard, and that's not a real lead to erode either --
+    per explicit request, a one-possession game gets no comeback credit no
+    matter how the situational model reads it.
 
     A tie counts as full erosion of whoever was ahead, same as the
     opponent actually taking the lead -- checked explicitly, not just on

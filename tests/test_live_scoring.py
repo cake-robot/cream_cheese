@@ -50,6 +50,7 @@ Fixture-refresh SQL (regenerate this table against a fresh corpus):
 import logging
 import sqlite3
 import unittest
+from unittest import mock
 
 import numpy as np
 
@@ -229,6 +230,36 @@ class FixtureTests(unittest.TestCase):
              "yards_to_go": 65, "home_score": 12, "away_score": 0},
         ]
         self.assertEqual(scoring.comeback_erosion_live(plays), 0.0)
+
+    def test_comeback_erosion_ignores_wp_swing_within_one_possession_margin(self):
+        # Regression for the "don't credit a comeback in a one-possession
+        # game" requirement: the score margin here never exceeds
+        # CLOSE_GAME_MARGIN (peaks at 6), but the situational WP reading
+        # (mocked here to isolate the gate from Model C's actual
+        # coefficients, which can be independently re-fit -- see
+        # wp_situational.py's docstring) swings past
+        # COMEBACK_EROSION_THRESHOLD anyway, simulating a big down/distance
+        # moment, then back down. With no accompanying scoreboard swing
+        # beyond one possession, that situational read isn't a real lead to
+        # erode. Before the max_abs_sd gate, this fired via the close-game
+        # trigger (CLOSE_GAME_MARGIN check with no floor on how big the
+        # arc's margin had ever gotten) on both the retrospective and live
+        # variants, since abs(sd) <= CLOSE_GAME_MARGIN is true for the whole
+        # game here.
+        plays = [
+            {"elapsed_seconds": 100, "off_is_home": True, "down": 1, "distance": 10,
+             "yards_to_go": 65, "home_score": 0, "away_score": 0},
+            {"elapsed_seconds": 1000, "off_is_home": True, "down": 1, "distance": 10,
+             "yards_to_go": 65, "home_score": 3, "away_score": 0},
+            {"elapsed_seconds": 2000, "off_is_home": True, "down": 1, "distance": 10,
+             "yards_to_go": 65, "home_score": 6, "away_score": 0},
+            {"elapsed_seconds": 3000, "off_is_home": True, "down": 1, "distance": 10,
+             "yards_to_go": 65, "home_score": 6, "away_score": 3},
+        ]
+        with mock.patch.object(scoring, "coinflip_home_wp", side_effect=[0.5, 0.5, 0.92, 0.5]):
+            self.assertEqual(scoring.comeback_erosion(plays), 0.0)
+        with mock.patch.object(scoring, "coinflip_home_wp", side_effect=[0.5, 0.5, 0.92, 0.5]):
+            self.assertEqual(scoring.comeback_erosion_live(plays), 0.0)
 
     def test_severe_score_corruption_no_crash(self):
         # home_score goes negative (-38 / -3) for dozens of consecutive rows
