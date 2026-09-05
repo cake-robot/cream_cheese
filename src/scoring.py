@@ -1,6 +1,6 @@
 import sqlite3
 
-from . import db, espn, wp_situational
+from . import db, espn, wp_baseline, wp_situational
 
 # --- Normalization caps (tunable) ---
 MAX_VOLATILITY = 10.0
@@ -300,7 +300,49 @@ def upset_in_progress(current_home_wp, initial_home_wp, home_rank, away_rank):
     return max(0.0, pre - now) * quality
 
 
-def upset_risk(initial_home_wp, home_rank, away_rank):
+def _erosion_fraction(wp_rows, initial_home_wp):
+    """
+    How much the pregame favorite's modeled win probability actually eroded
+    at its worst point, as a fraction of the favorite's total pregame edge
+    (0 = never threatened, 1 = fell all the way back to a genuine coin flip
+    or worse at some point in the game).
+
+    Deliberately reconstructs WP from (score, elapsed_seconds) via
+    wp_baseline.predict_wp_elapsed, keeping the real pregame line as its
+    anchor, rather than reading the stored home_win_pct column or using a
+    coinflip-anchored model. A coinflip anchor is trivially ~0.5 at kickoff
+    for every game regardless of how lopsided the real line is, so it can't
+    distinguish a wire-to-wire blowout from a real scare. ESPN's own live WP
+    feed is independently known to be unreliable (see
+    espn_wp_unreliable_extremes memory) and, concretely, some games' stored
+    win_probability rows have real ordering/duplication corruption that can
+    spuriously spike home_win_pct. Scores are tracked via a running max
+    (never decreases) so a corrupted/duplicated row can't manufacture a fake
+    dip back toward parity.
+    """
+    if initial_home_wp is None or not wp_rows:
+        return None
+    fav_home = initial_home_wp >= 0.5
+    pre_fav = initial_home_wp if fav_home else 1.0 - initial_home_wp
+    edge = pre_fav - 0.5
+    if edge <= 0:
+        return None
+    home_max, away_max, max_drop = 0, 0, 0.0
+    for r in wp_rows:
+        h, a, e = r["home_score"], r["away_score"], r["clock_seconds_elapsed"]
+        if h is not None and h >= home_max:
+            home_max = h
+        if a is not None and a >= away_max:
+            away_max = a
+        if e is None:
+            continue
+        model_wp = wp_baseline.predict_wp_elapsed(e, initial_home_wp, home_max - away_max)
+        fav_wp = model_wp if fav_home else 1.0 - model_wp
+        max_drop = max(max_drop, pre_fav - fav_wp)
+    return min(max_drop / edge, 1.0)
+
+
+def upset_risk(initial_home_wp, home_rank, away_rank, wp_rows):
     """
     How lopsided the pregame win probability was (0 = even matchup, 1 =
     near-certain outcome), scaled down when neither team was actually ranked.
@@ -315,12 +357,22 @@ def upset_risk(initial_home_wp, home_rank, away_rank):
     (a 68/32 split reads as only mildly skewed) and accelerates only as the
     game approaches a near-lock — linear (power 1) over-credited ordinary
     ranked-vs-ranked favorites.
+
+    Also scaled by _erosion_fraction: a heavy favorite that was never
+    actually threatened (e.g. a wire-to-wire blowout) gets discounted even
+    though the pregame line was lopsided, since the "risk" never materialized
+    on the field. A favorite that saw its win probability genuinely erode --
+    win or lose -- keeps full credit. When erosion can't be computed (pick'em
+    line, missing WP data), scale defaults to 1.0 (no-op), preserving prior
+    behavior.
     """
     if initial_home_wp is None:
         return 0.0
     skew = abs(initial_home_wp - 0.5) * 2
     quality = max(_rank_tier(home_rank), _rank_tier(away_rank))
-    return (skew ** UPSET_RISK_POWER) * quality
+    erosion = _erosion_fraction(wp_rows, initial_home_wp)
+    scale = erosion if erosion is not None else 1.0
+    return (skew ** UPSET_RISK_POWER) * quality * scale
 
 
 def _sanitized_situational_plays(plays):
@@ -699,7 +751,7 @@ METRICS = [
     {"name": "lead_changes",     "fn": lambda ctx: lead_changes(ctx["wp_rows"]),                      "weight": 1.0, "cap": MAX_LEAD_CHANGES},
     {"name": "time_spent_close", "fn": lambda ctx: time_spent_close(ctx["wp_rows"]),                  "weight": 0.5, "cap": None},
     {"name": "team_profile",     "fn": lambda ctx: team_profile(ctx["home_rank"], ctx["away_rank"]),  "weight": 1.0, "cap": MAX_TEAM_PROFILE},
-    {"name": "upset_risk",       "fn": lambda ctx: upset_risk(ctx["initial_home_wp"], ctx["home_rank"], ctx["away_rank"]), "weight": 1.0, "cap": None},
+    {"name": "upset_risk",       "fn": lambda ctx: upset_risk(ctx["initial_home_wp"], ctx["home_rank"], ctx["away_rank"], ctx["wp_rows"]), "weight": 1.0, "cap": None},
     {"name": "late_volatility",  "fn": lambda ctx: late_volatility(ctx["wp_rows"]),                   "weight": 0.5, "cap": MAX_LATE_VOLATILITY},
     {"name": "clutch_finish",    "fn": lambda ctx: clutch_finish(ctx["wp_rows"]),                      "weight": 1.0, "cap": MAX_CLUTCH_FINISH},
     {"name": "comeback_erosion", "fn": lambda ctx: comeback_erosion(ctx["situational_plays"]),           "weight": 1.0, "cap": None},

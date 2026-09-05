@@ -391,7 +391,7 @@ def team_profile_ctx(ctx):
 
 
 def upset_risk_ctx(ctx):
-    return scoring.upset_risk(ctx["initial_home_wp"], ctx["home_rank"], ctx["away_rank"])
+    return scoring.upset_risk(ctx["initial_home_wp"], ctx["home_rank"], ctx["away_rank"], ctx["wp_rows"])
 
 
 LIVE_SO_FAR_METRICS = [
