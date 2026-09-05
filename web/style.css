@@ -90,6 +90,20 @@
   --font-body: "Archivo", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-display: "Oswald", -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: "Space Mono", ui-monospace, SFMono-Regular, monospace;
+  /* Baseline for the --g-* family. Each page still declares its own copy
+     below (body[data-page="games"] etc.) and those win on specificity -- this
+     only exists so the shared .gm-select dropdown chrome resolves on pages
+     that never defined the full set (Slate declares none at all; Settings
+     omits --g-track/--g-chip-border). Values match the per-page blocks. */
+  --g-ink-dim: #4a5551;
+  --g-ink-sec: #6e7b75;
+  --g-ink-body: #9aa39d;
+  --g-ink-bright: #e6e3d8;
+  --g-border: #1b2220;
+  --g-border-strong: #232b29;
+  --g-card: #0b0f0e;
+  --g-track: #141a18;
+  --g-chip-border: #3a4441;
   color-scheme: dark;
 }
 
@@ -245,11 +259,9 @@ button.reset:disabled { opacity: .4; cursor: default; }
 .chip-btn { font-family: var(--font-mono); cursor: pointer; background: none; margin-left: 0; margin-right: 6px; }
 .chip-btn:hover { border-color: var(--series-1); color: var(--ink-1); }
 .chip-btn:disabled { opacity: .4; cursor: default; }
-/* Slate's SCORE-only spoiler control -- a real <select>, same chip look
-   as chip-btn, so picking "Hidden"/"Revealed" directly needs no arrows. */
-.chip-select { font-family: var(--font-mono); cursor: pointer; background: var(--page); margin-left: 0; margin-right: 6px; }
-.chip-select:hover { border-color: var(--series-1); color: var(--ink-1); }
-.chip-select:disabled { opacity: .4; cursor: default; }
+/* Slate's SCORE-only spoiler control used to be a bare <select> styled to
+   the chip look (.chip-select). It's now the shared .gm-select dropdown in
+   its .gm-select-chip variant -- see that block further down. */
 
 .empty-state {
   text-align: center; padding: 48px 16px; color: var(--ink-muted);
@@ -1142,6 +1154,44 @@ body[data-page="games"] .games-frame main {
 }
 .gm-select-option:hover { background: var(--g-track); color: var(--g-ink-bright); }
 .gm-select-option.selected { background: var(--g-track); color: var(--g-ink-bright); }
+.gm-select-option.disabled { color: var(--g-ink-dim); cursor: default; }
+.gm-select-option.disabled:hover { background: transparent; color: var(--g-ink-dim); }
+
+/* Everything below serves app.js's enhanceSelect(), which paints the chrome
+   above over a real <select> so pages that already had <select>s (Slate,
+   Settings) get the same dropdown as the Games page's hand-built ones. */
+
+/* The <select> stays in the DOM as the value store -- visually gone, out of
+   the tab order (the trigger carries focus), but NOT display:none, which
+   would take it out of layout in ways some browsers use to skip form state. */
+.gm-select-native {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip-path: inset(50%); border: 0; opacity: 0; pointer-events: none;
+}
+/* Long option text (conference names) truncates instead of stretching the
+   trigger past the controls beside it. */
+.gm-select-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gm-select-trigger:focus-visible { outline: 1px solid var(--g-chip-border); outline-offset: 1px; }
+.gm-select-trigger.disabled { opacity: .4; cursor: default; pointer-events: none; }
+/* <optgroup> label -- Slate's conference list is the only user so far. */
+.gm-select-group {
+  font-family: var(--font-display); font-size: 10px; letter-spacing: .16em; text-transform: uppercase;
+  color: var(--g-ink-dim); padding: 9px 11px 4px; border-top: 1px solid var(--g-border);
+}
+.gm-select-menu > .gm-select-group:first-child { border-top: 0; padding-top: 6px; }
+/* Chip-sized variant: Slate's per-game spoiler control sits inline in a
+   matchup line beside .chip/.chip-btn tags, so it borrows their proportions
+   and border/hover colours rather than the filter-bar trigger's. */
+.gm-select-chip .gm-select-trigger {
+  min-width: 0; gap: 5px; font-size: 10px; letter-spacing: .1em; padding: 2px 6px;
+  border-color: var(--axis); color: var(--ink-2);
+}
+.gm-select-chip .gm-select-trigger .chev { font-size: 10px; }
+.gm-select-chip .gm-select-trigger:hover { border-color: var(--series-1); color: var(--ink-1); }
+.gm-select-chip .gm-select-menu { min-width: 116px; }
+/* Settings' rows mix dropdowns with text inputs and buttons on one baseline;
+   the filter-bar trigger's default block layout would break that. */
+.s-row .gm-select { display: inline-block; vertical-align: middle; }
 
 /* summary strip */
 .gm-summary-strip {
@@ -2037,9 +2087,22 @@ body[data-page="feed"] main > .g-card { margin-top: 20px; }
 
   /* Season/Week/Ranked dropdown menus: render full-width inline instead of
      desktop's absolutely-positioned floating panel -- at 390px a floating
-     panel has no room and just overlaps the row below it. */
-  .gm-select-menu { position: static; width: 100%; min-width: 0; margin-top: 6px; box-sizing: border-box; }
+     panel has no room and just overlaps the row below it. Scoped to the three
+     pages whose dropdowns own a full-width row in a stacked filter bar: the
+     same .gm-select now also appears inline beside other controls (Slate's
+     conference filter and per-row spoiler control, Settings' rows), where a
+     full-width inline panel would shove the rest of the row around, so those
+     keep the floating panel. */
+  body[data-page="games"] .gm-select-menu,
+  body[data-page="top"] .gm-select-menu,
+  body[data-page="analytics"] .gm-select-menu {
+    position: static; width: 100%; min-width: 0; margin-top: 6px; box-sizing: border-box;
+  }
   .gm-select-option { min-height: 40px; display: flex; align-items: center; box-sizing: border-box; }
+  /* Slate's per-row spoiler control keeps its chip proportions -- it sits in
+     a matchup line next to .chip/.chip-btn tags, not in a filter bar, so the
+     40px tap height above would tower over its neighbours. */
+  .gm-select-chip .gm-select-trigger { min-height: 0; padding: 2px 6px; }
 
   .gm-score-val { font-size: 22px; min-width: 52px; }
   .gm-score-val.null { font-size: 18px; }

@@ -39,7 +39,7 @@
     </div>
     <span class="date-label" id="date-label"></span>
     <button type="button" id="f-top25" class="mini-toggle">Top 25</button>
-    <select id="f-conf" aria-label="Conference"></select>
+    <select id="f-conf" data-gm-select data-gm-neutral="all" aria-label="Conference"></select>
     <div class="spacer"></div>
     <span class="feed-pill" id="feed-pill"></span>
   </div>
@@ -325,11 +325,15 @@ function spoilerLevelSelect(g) {
   const LABELS = { 0: "Hidden", 1: "Score only", 2: "Revealed" };
   const select = el(
     "select",
-    { class: "chip chip-select", title: "Change spoiler level" },
+    { title: "Change spoiler level" },
     [0, 1, 2].map((lvl) => el("option", { value: String(lvl), text: LABELS[lvl] }))
   );
   select.value = "1";
-  select.addEventListener("click", (ev) => ev.stopPropagation());
+  // Returned to the caller as the wrapper enhanceSelect() builds around the
+  // <select>, not the <select> itself -- app.js's shared .gm-select chrome, in
+  // its chip-sized variant so it sits in the matchup line like the .chip and
+  // .chip-btn tags beside it instead of like a filter-bar dropdown.
+  const wrap = enhanceSelect(select, { variant: "gm-select-chip" });
   select.addEventListener("change", async () => {
     const toLevel = Number(select.value);
     select.disabled = true;
@@ -342,7 +346,7 @@ function spoilerLevelSelect(g) {
       select.title = `Failed: ${e.message}`;
     }
   });
-  return select;
+  return wrap;
 }
 
 // The spoiler control(s) for one game, shared by completed and live rows,
