@@ -398,15 +398,22 @@ function renderLiveSection(unfilteredGames) {
     // LEVEL_SCORE game (spoiler_hidden: true) DOES reveal live_score (see
     // the two-tier-spoiler plan's decision 3), so gating this on
     // spoiler_hidden the way the tag below still correctly does would wrongly
-    // hide the one thing that tier exists to show.
-    top.live.live_score === null
+    // hide the one thing that tier exists to show. A game under the 20-minute
+    // scoring floor (live.scored: false) has a null live_score for a third,
+    // unrelated reason -- checked first so it never gets mistaken for spoiler
+    // redaction.
+    !top.live.scored
+      ? el("div", { class: "spoiler-hidden-tag", text: "NOT YET SCORED" })
+      : top.live.live_score === null
       ? el("div", { class: "spoiler-hidden-tag", text: "SPOILER HIDDEN" })
       : el("div", { class: "hero-score-block" }, [
           el("div", { class: "hero-score tabular-nums", text: fmtScore(top.live.live_score) }),
           el("div", { class: "hero-score-label", text: "LIVE SCORE" }),
         ]),
   ]));
-  if (!top.spoiler_hidden) {
+  if (!top.spoiler_hidden && !top.live.scored) {
+    hero.appendChild(el("div", { class: "hero-context hero-headline", text: "Watchability scoring starts once 20 minutes of game time have elapsed." }));
+  } else if (!top.spoiler_hidden) {
     hero.appendChild(el("div", { class: "hero-context hero-headline", text: top.live.headline }));
     hero.appendChild(halvesBars(top.live.quality_so_far, top.live.drama_from_here));
     const note = divergeNote(top.live);
@@ -429,8 +436,10 @@ function renderLiveSection(unfilteredGames) {
 
     const expanded = EXPANDED.has(g.game_id);
     const chevron = el("div", { class: "chevron" + (expanded ? " open" : ""), text: expanded ? "︿" : "⌄" });
-    if (g.spoiler_hidden) chevron.style.visibility = "hidden";
-    const whyText = g.spoiler_hidden
+    if (g.spoiler_hidden || !g.live.scored) chevron.style.visibility = "hidden";
+    const whyText = !g.live.scored
+      ? `${g.live.status.detail || "In progress"} · Not yet scored`
+      : g.spoiler_hidden
       ? (g.live.status.detail || "In progress")
       : `${g.live.status.detail || ""}${g.live.headline ? " · " + g.live.headline : ""}`;
     const spoilerControlsG = spoilerControls(g);
@@ -448,7 +457,7 @@ function renderLiveSection(unfilteredGames) {
     ]);
 
     const expandWrap = el("div", { class: "expand-panel", style: expanded ? "" : "display:none" });
-    if (!g.spoiler_hidden) {
+    if (!g.spoiler_hidden && g.live.scored) {
       chevron.addEventListener("click", (ev) => {
         ev.stopPropagation();
         const showing = expandWrap.style.display !== "none";

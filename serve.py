@@ -905,11 +905,17 @@ def fetch_live_metrics_maps(conn, game_ids):
 
 def build_live_payload(row, metrics_for_game, level=spoilers.LEVEL_FULL):
     """The additive "live" key attached to a game's shape_game() output for
-    any game currently tracked in live_scores. `row` must carry the
-    live_scores columns plus status_period/status_clock_display/status_detail
-    from `games` and a `stale_seconds` column computed by the caller's SQL
-    (julianday-based, so it doesn't need Python-side datetime parsing of
-    computed_at).
+    any status_state='in' game, whether or not it's cleared live.py's
+    20-minute-elapsed floor for a live_scores row yet. `row` must carry the
+    live_scores columns (all NULL if no such row exists) plus
+    status_period/status_clock_display/status_detail from `games` and a
+    `stale_seconds` column computed by the caller's SQL (julianday-based, so
+    it doesn't need Python-side datetime parsing of computed_at).
+
+    "scored" (computed_at IS NOT NULL) is the flag the frontend uses to tell
+    "not scored yet" apart from "scored but redacted below" -- both look
+    like live_score: null by the time redaction below runs, but only one of
+    them means "nothing to reveal here regardless of spoiler level".
 
     This is the second spoiler-redaction choke point (shape_game() is the
     first) -- `level` picks spoilers.redact_live_full()/
@@ -924,6 +930,7 @@ def build_live_payload(row, metrics_for_game, level=spoilers.LEVEL_FULL):
         "drama_from_here": row["drama_from_here"],
         "progress": row["progress"],
         "wp_now": row["wp_now"],
+        "scored": row["computed_at"] is not None,
         "status": {
             "period": row["status_period"],
             "clock_display": row["status_clock_display"],
@@ -1683,6 +1690,18 @@ def api_slate():
     # shows a spoiler-hidden game, ranked by watchability but with every
     # number redacted (shape_game()/build_live_payload() do the actual
     # per-level redaction).
+    #
+    # LEFT JOIN, not JOIN: a game can be status_state='in' with no
+    # live_scores row yet -- live.py withholds Tier 2 (and the live_scores
+    # row it produces) until LIVE_MIN_ELAPSED_SECONDS_FOR_DETAIL_FETCH (20
+    # minutes) of game clock has elapsed, but Tier 1 (this query's g.*
+    # columns, including status_period/status_detail/scores) is written for
+    # every in-progress game every cycle regardless. An INNER JOIN here used
+    # to drop those games from the Slate entirely instead of just leaving
+    # their live_score null -- nothing showed as live for a slate's first 20
+    # minutes. build_live_payload()'s "scored" flag (computed_at IS NOT
+    # NULL) is what lets the frontend tell "not scored yet" apart from
+    # "scored but spoiler-redacted".
     live_where = f"g.status_state = 'in' AND ({where_scope})"
     live_params = list(scope_params)
     live_rows = conn.execute(f"""
@@ -1691,7 +1710,7 @@ def api_slate():
                ls.wp_now, ls.n_wp_rows, ls.so_far_weight, ls.from_here_weight, ls.headline,
                ls.computed_at,
                (julianday('now') - julianday(ls.computed_at)) * 86400.0 AS stale_seconds
-        FROM games g JOIN live_scores ls ON ls.game_id = g.game_id
+        FROM games g LEFT JOIN live_scores ls ON ls.game_id = g.game_id
         WHERE {live_where}
         ORDER BY ls.live_score DESC
     """, live_params).fetchall()
