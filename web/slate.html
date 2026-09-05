@@ -294,6 +294,36 @@ function divergeNote(live) {
     : "Quiet so far, but heating up";
 }
 
+// A real, clickable two-state toggle chip, shared by completed and live
+// rows, replacing the plain HIDDEN/SCORE ONLY tag renderChips() would
+// otherwise render there. LEVEL_HIDDEN -> click reveals the watchability
+// score (a real, persistent LEVEL_SCORE override through the same
+// /api/spoilers/game route Settings' game-override card and game.html's
+// reveal buttons use, so it's visible/undoable from Settings on any device
+// going forward, not a client-side-only bypass). LEVEL_SCORE -> click
+// re-hides it (back to LEVEL_HIDDEN) -- the undo for that same action.
+// LEVEL_FULL has nothing to toggle from the slate, so returns null.
+function spoilerChipButton(g) {
+  if (g.spoiler_level !== 0 && g.spoiler_level !== 1) return null;
+  const toLevel = g.spoiler_level === 0 ? 1 : 0;
+  const label = g.spoiler_level === 0 ? "Hidden" : "Score only";
+  const title = g.spoiler_level === 0 ? "Reveal the watchability score" : "Hide the watchability score again";
+  const btn = el("button", { class: "chip chip-btn", type: "button", text: label, title });
+  btn.addEventListener("click", async (ev) => {
+    ev.stopPropagation();
+    btn.disabled = true;
+    btn.textContent = "Loading…";
+    try {
+      await apiPost("/spoilers/game", { game_id: g.game_id, level: toLevel });
+      await loadSlate();
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = `Failed: ${e.message}`;
+    }
+  });
+  return btn;
+}
+
 function renderLiveSection(unfilteredGames) {
   const wrap = document.getElementById("live-section");
   wrap.innerHTML = "";
@@ -309,9 +339,13 @@ function renderLiveSection(unfilteredGames) {
 
   const [top, ...rest] = games;
   const hero = el("div", { class: "card hero-card" });
+  const heroSpoilerBtn = spoilerChipButton(top);
+  const heroChips = renderChips(top).filter(
+    (c) => !(heroSpoilerBtn && (c.textContent === "HIDDEN" || c.textContent === "SCORE ONLY"))
+  );
   hero.appendChild(el("div", { class: "hero-toprow" }, [
     el("div", {}, [
-      el("h2", {}, [fmtMatchup(top) + " ", ...renderChips(top)]),
+      el("h2", {}, [heroSpoilerBtn, fmtMatchup(top) + " ", ...heroChips]),
       el("div", { class: "live-progress", text: liveProgressLabel(top) }),
       el("div", { class: "sub", text: top.live.status.detail || (top.spoiler_hidden ? "In progress" : "") }),
     ]),
@@ -354,10 +388,14 @@ function renderLiveSection(unfilteredGames) {
     const whyText = g.spoiler_hidden
       ? (g.live.status.detail || "In progress")
       : `${g.live.status.detail || ""}${g.live.headline ? " · " + g.live.headline : ""}`;
+    const spoilerBtn = spoilerChipButton(g);
+    const rowChips = renderChips(g).filter(
+      (c) => !(spoilerBtn && (c.textContent === "HIDDEN" || c.textContent === "SCORE ONLY"))
+    );
     const row = el("div", { class: "slate-row row-live" + (flash ? " updated-flash" : "") }, [
       el("div", { class: "score-big", text: g.live.live_score === null ? "—" : fmtScore(g.live.live_score) }),
       el("div", { class: "row-info" }, [
-        el("div", { class: "matchup-line" }, [el("span", { class: "name", text: fmtMatchup(g) }), ...renderChips(g)]),
+        el("div", { class: "matchup-line" }, [spoilerBtn, el("span", { class: "name", text: fmtMatchup(g) }), ...rowChips]),
         el("div", { class: "live-progress", text: liveProgressLabel(g) }),
         el("div", { class: "row-sub", text: whyText }),
       ]),
@@ -445,40 +483,24 @@ function completedRow(g, rankText) {
         el("span", { class: "pctile", text: g.percentile !== null ? fmtPct(g.percentile) : "" }),
       ]);
 
-  // A real, clickable "Hidden" button, LEVEL_HIDDEN games only -- one
-  // click reveals the watchability score (a real, persistent
-  // LEVEL_SCORE override through the same /api/spoilers/game route
-  // Settings' game-override card and game.html's "Show watchability
-  // score" button both use, so it's visible/undoable from Settings on
-  // any device going forward, not a client-side-only bypass). Placed
-  // before the name in the matchup line, replacing the plain static
-  // HIDDEN chip renderChips() would otherwise also render there.
-  // Gated on g.is_scored too -- an unscored game can still fall in a
-  // LEVEL_HIDDEN week (the spoiler policy is time-based, not "has this
-  // actually been scored"), and there's nothing to reveal in that case;
-  // gameChips() already renders "NOT SCORED" for it instead of "HIDDEN".
-  let hiddenBtn = null;
-  if (g.spoiler_level === 0 && g.is_scored) {
-    hiddenBtn = el("button", { class: "chip chip-btn", type: "button", text: "Hidden", title: "Reveal the watchability score" });
-    hiddenBtn.addEventListener("click", async (ev) => {
-      ev.stopPropagation();
-      hiddenBtn.disabled = true;
-      hiddenBtn.textContent = "Loading…";
-      try {
-        await apiPost("/spoilers/game", { game_id: g.game_id, level: 1 });
-        await loadSlate();
-      } catch (e) {
-        hiddenBtn.disabled = false;
-        hiddenBtn.textContent = `Failed: ${e.message}`;
-      }
-    });
-  }
-  const chips = renderChips(g).filter((c) => !(hiddenBtn && c.textContent === "HIDDEN"));
+  // Two-state toggle chip (spoilerChipButton, defined above renderLiveSection):
+  // LEVEL_HIDDEN -> click reveals the watchability score, LEVEL_SCORE ->
+  // click re-hides it. Placed before the name in the matchup line,
+  // replacing the plain static HIDDEN/SCORE ONLY chip renderChips() would
+  // otherwise also render there. Gated on g.is_scored too -- an unscored
+  // game can still fall in a LEVEL_HIDDEN week (the spoiler policy is
+  // time-based, not "has this actually been scored"), and there's nothing
+  // to reveal in that case; gameChips() already renders "NOT SCORED" for it
+  // instead of "HIDDEN".
+  const spoilerBtn = g.is_scored ? spoilerChipButton(g) : null;
+  const chips = renderChips(g).filter(
+    (c) => !(spoilerBtn && (c.textContent === "HIDDEN" || c.textContent === "SCORE ONLY"))
+  );
 
   const row = el("div", { class: "slate-row row-completed" }, [
     scoreCell,
     el("div", { class: "row-info" }, [
-      el("div", { class: "matchup-line" }, [hiddenBtn, el("span", { class: "name", text: fmtMatchup(g) }), ...chips]),
+      el("div", { class: "matchup-line" }, [spoilerBtn, el("span", { class: "name", text: fmtMatchup(g) }), ...chips]),
       el("div", { class: "row-sub" }, [
         el("span", { class: "kickoff-time", text: fmtKickoff(g.game_date) }),
         rankText ? ` · ${rankText}` : null,
