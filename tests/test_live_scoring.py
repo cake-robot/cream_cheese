@@ -283,17 +283,39 @@ class FixtureTests(unittest.TestCase):
         plays = self._situational_plays("401403867")
         self.assertGreater(scoring.comeback_margin_q4_close(plays), scoring.CLOSE_GAME_MARGIN)
 
-    def test_comeback_margin_q4_close_credits_quick_q4_collapse(self):
-        # UNM@UCLA, final UCLA 35-10: close through Q3, one-possession for a
-        # few plays into Q4 on a carried-over score, then blown open by a
-        # real 4th-quarter collapse. Deliberately credited, not a false
-        # positive -- see comeback_margin_q4_close's docstring: a quick Q4
-        # collapse is its own kind of watchable drama, and the user
-        # explicitly confirmed (2026-09-05) they're comfortable with this
-        # game scoring here even though comeback_erosion itself stays near
-        # zero for it (test_close_then_collapse_halves_dont_cancel).
+    def test_comeback_margin_q4_close_credits_real_unconsummated_q4_recovery(self):
+        # UNM @ UCLA, 2025 w3: UCLA was an 81%-pregame favorite but LOST
+        # 10-35 -- UNM (the huge underdog) built a 14-0 lead, UCLA mounted a
+        # real comeback bid down to a one-possession game (10-14), and that
+        # closeness held across genuine, real 4th-quarter snaps (1st/2nd/4th
+        # down plays from 45:00 to 49:30 elapsed -- not a stale carryover
+        # from Q3), before UNM re-extended the lead to complete the upset.
+        # (Earlier analysis in this investigation had the teams' roles
+        # backwards -- see watchability_algorithm_open_items.md's
+        # 2026-09-05 correction.) This is exactly the case
+        # comeback_margin_q4_close is meant to catch: UCLA's peak deficit
+        # (14, set well before Q4) got clawed back to one possession during
+        # real 4th-quarter play, even though UCLA never tied or led. Correct
+        # ordering (peak precedes the Q4 narrowing) is what separates this
+        # from the confirmed false positives above.
         plays = self._situational_plays("401752837")
-        self.assertGreater(scoring.comeback_margin_q4_close(plays), scoring.CLOSE_GAME_MARGIN)
+        self.assertEqual(scoring.comeback_margin_q4_close(plays), 14)
+
+    def test_comeback_margin_q4_close_rejects_modest_lead_blown_open_late(self):
+        # MASS 3 @ BUFF 34 (401629041): the confirmed false positive that
+        # exposed the original bug. Score was BUFF 7-3 (sd=4) at the exact
+        # moment the clock crossed into Q4, then BUFF reeled off 26
+        # unanswered points to finish 34-3 -- MASS never trailed by more
+        # than 4 points through three quarters, so there's no real hole to
+        # recover from. The broken version credited this at its max value
+        # (peak=31, capped) purely because "some play had sd<=8 in Q4" and
+        # "the final gap exceeded 8" were both independently true. The
+        # arc-scoped version correctly returns 0: the arc containing the
+        # Q4 sd=4 moment never itself exceeds CLOSE_GAME_MARGIN before
+        # BUFF's blowout run starts a fresh arc with its own peak, which
+        # never narrows back down.
+        plays = self._situational_plays("401629041")
+        self.assertEqual(scoring.comeback_margin_q4_close(plays), 0)
 
     def test_severe_score_corruption_no_crash(self):
         # home_score goes negative (-38 / -3) for dozens of consecutive rows

@@ -675,57 +675,93 @@ def comeback_erosion_live(situational_plays):
 def comeback_margin_q4_close(situational_plays):
     """
     Points-recovered comeback credit, on top of comeback_erosion's
-    coin-flip-WP scale: rewards a game for actually being a one-possession
-    game at some point in the 4th quarter, scaled by how big a hole existed
-    at some point before that. Per explicit request, this is deliberately
-    NOT scoped to comeback_erosion's arc-and-threshold machinery -- it asks
-    a simpler question ("was there a real hole, and did the 4th quarter
-    actually matter") that a raw scoreboard read answers directly, rather
-    than routing through Model C's situational WP reading.
+    coin-flip-WP scale: rewards a game for actually clawing a real deficit
+    back down to one possession or closer at some point in the 4th quarter,
+    scaled by how big that deficit was.
 
-    Two whole-game checks, not a per-arc walk:
-      1. peak = max |home_score - away_score| over every play must exceed
-         CLOSE_GAME_MARGIN -- same "was this ever really more than a
-         one-possession game" floor comeback_erosion enforces (see
-         CLOSE_GAME_MARGIN's comment).
-      2. Some play with elapsed_seconds >= Q4_START_SECONDS has
-         |home_score - away_score| <= CLOSE_GAME_MARGIN -- genuinely
-         one-possession-or-closer in the 4th quarter, not just briefly close
-         somewhere in the first three quarters before getting blown open
-         (confirmed to correctly reject 401426572, UTSA 52-24 TXSO -- a
-         14-0->21-7 lead 25 minutes in that got blown back open long before
-         Q4, never close again once the 4th quarter started).
+    CORRECTED VERSION (2026-09-05) -- the original implementation of this
+    metric was fundamentally broken and is documented here as a warning
+    against repeating the mistake: it tracked `peak` (the biggest
+    |score_diff| anywhere in the whole game) and `q4_close` (whether any
+    play with elapsed_seconds >= Q4_START_SECONDS had |score_diff| <= 8) as
+    two INDEPENDENT whole-game facts, ANDed together with no requirement
+    that they relate to each other -- not the same arc, not the same team,
+    not even the same order in time. Confirmed via exact play-by-play trace
+    on 401629041 (MASS 3 @ BUFF 34): the score was BUFF 7-3 (sd=4) at the
+    exact moment the clock crossed into Q4 -- satisfying `q4_close` -- and
+    ten minutes LATER, BUFF's own 34-3 blowout finish set `peak=31` --
+    satisfying the margin floor. The function credited this game at its max
+    value (peak=31, capped) despite MASS never trailing by more than 4
+    points through three quarters: there was no hole, let alone a recovery
+    from one. `peak` conflated "the trailing team overcame a deficit" with
+    "the leading team blew a modest lead open after a close start" because
+    it never checked which play set `peak` relative to which play set
+    `q4_close`, or which team either belonged to. See
+    watchability_algorithm_open_items.md for the full investigation,
+    including a game (401752837, UNM@UCLA) initially misdiagnosed as a
+    second instance of this same bug -- it turned out to be a legitimate
+    credit once the play-by-play was traced correctly (see below), not a
+    false positive.
 
-    Credit is `peak` itself (raw points) if both hold, else 0.
+    This version fixes it by reusing the SAME per-arc walk shape as
+    _comeback_erosion_walk (segment the game into arcs by who's leading;
+    track each arc's own running peak |score_diff|), which makes correct
+    ordering free: `peak` can only ever reflect plays already seen in the
+    CURRENT arc, so if a later play in that same arc narrows the margin
+    back to CLOSE_GAME_MARGIN or less, `peak` at that moment necessarily
+    reflects a deficit that existed BEFORE the narrowing, for the specific
+    team that arc belongs to -- not an unrelated fact about the game as a
+    whole. Two ways an arc can bank credit, both requiring the arc's own
+    peak to have exceeded CLOSE_GAME_MARGIN AND the qualifying play to fall
+    at or after Q4_START_SECONDS:
+      1. The arc closes (a tie or lead change) at or after Q4_START_SECONDS
+         -- the deficit was fully erased in the 4th quarter.
+      2. While the arc is still open, it narrows to CLOSE_GAME_MARGIN or
+         less at or after Q4_START_SECONDS, without needing to fully close
+         -- an unconsummated near-miss still counts, same as
+         comeback_erosion's own close-game trigger.
 
-    Deliberately not gated on WHEN in Q4 the closeness happened, or on
-    whether the game ultimately stayed close: confirmed via corpus
-    validation (scripts/validate_comeback_erosion_v2.py's era) that this
-    also fires on 401752837 (UNM@UCLA, final UCLA 35-10) -- close through
-    Q3, one-possession for a few plays into Q4 on a stale carried-over
-    score, then blown open by a real 4th-quarter collapse. That's an
-    intentional call, not an overlooked false positive: a game rapidly
-    swinging from "genuinely one possession" to "blown open," entirely
-    within the 4th quarter, is its own kind of watchable drama (a "quick Q4
-    collapse"), not something this metric needs to filter out. A tighter
-    version restricted to the final CLUTCH_FINISH_WINDOW_SECONDS of
-    regulation was built and validated (it correctly zeroes UNM@UCLA while
-    still crediting every other benchmark) but was deliberately not chosen
-    here -- narrowing to that window is a reasonable future refinement if
-    the looser version turns out to over-credit in practice, not a
-    correctness fix it's currently missing.
+    Credit is that arc's own peak (raw points), banked once. Correctly
+    returns 0 for 401629041 (MASS/BUFF: the arc containing the Q4 sd=4
+    moment never itself exceeded CLOSE_GAME_MARGIN before BUFF's later
+    blowout run -- that blowout starts a NEW arc with its own small peak,
+    which never narrows back down). By contrast, 401752837 (UNM@UCLA, UCLA
+    an 81% pregame favorite that actually LOST 10-35) correctly credits 14:
+    UNM (the underdog) built a 14-0 lead, UCLA -- the SAME team, SAME arc
+    the whole game, since UNM led wire-to-wire -- clawed it back to a
+    one-possession game (10-14), and that narrowing held across genuine
+    4th-quarter snaps (real 1st/2nd/4th-down plays from 45:00 to 49:30
+    elapsed, not a handful of carried-over Q3 plays) before UNM re-extended
+    the lead to complete the upset. Initially mistaken for a repeat of the
+    MASS/BUFF bug (the "close" moment's onset at 41.6 min is technically
+    before Q4 starts at 45:00) until the full play-by-play showed the
+    closeness itself persisted well past the Q3/Q4 boundary through real
+    Q4 snaps -- a genuine, unconsummated Q4 comeback bid, correctly
+    credited on top of comeback_erosion's own 0.2256 for the same erosion.
     """
     plays = _sanitized_situational_plays(situational_plays)
     if not plays:
         return 0
+    best = 0
     peak = 0
-    q4_close = False
+    state = 0  # -1 away ahead, +1 home ahead, 0 tied
     for play in plays:
-        sd = abs(play["home_score"] - play["away_score"])
-        peak = max(peak, sd)
-        if play["elapsed_seconds"] >= Q4_START_SECONDS and sd <= CLOSE_GAME_MARGIN:
-            q4_close = True
-    return peak if (peak > CLOSE_GAME_MARGIN and q4_close) else 0
+        sd = play["home_score"] - play["away_score"]
+        new_state = 1 if sd > 0 else (-1 if sd < 0 else 0)
+        if new_state != state:
+            if peak > CLOSE_GAME_MARGIN and play["elapsed_seconds"] >= Q4_START_SECONDS:
+                best = max(best, peak)
+            peak = abs(sd)
+            state = new_state
+        else:
+            peak = max(peak, abs(sd))
+            if (
+                peak > CLOSE_GAME_MARGIN
+                and abs(sd) <= CLOSE_GAME_MARGIN
+                and play["elapsed_seconds"] >= Q4_START_SECONDS
+            ):
+                best = max(best, peak)
+    return best
 
 
 def uw_loss_bonus(home_team_id, away_team_id, home_score, away_score):
