@@ -580,11 +580,23 @@ async function loadAndRenderGame() {
   // in a LEVEL_HIDDEN week would hit the `level === LEVEL_HIDDEN` branch
   // below and render the "spoiler hidden, reveal it" UI for a score that
   // doesn't exist, instead of renderNotScored()'s "not yet scored" message.
+  //
+  // For a live (status_state 'in') game, `is_live` (also pre-redaction, see
+  // serve.py) apart from `detail.live` (the actual, level-redacted payload)
+  // is what tells "not tracked live yet" apart from "tracked live, but its
+  // data is spoiler-hidden at LEVEL_HIDDEN" -- both have `detail.live ===
+  // null`. Without this split, a spoiler-hidden live game fell through to
+  // renderNotScored()'s "no win-probability data" message, which is false:
+  // the game has plenty of WP/live data, it's just redacted.
   if (!detail.game.is_scored) {
-    if (detail.game.status_state === "in" && detail.live) {
-      const liveRegistry = await api("/slate/registry");
-      LIVE_REGISTRY = liveRegistry;
-      renderLive(mount, detail);
+    if (detail.game.status_state === "in" && detail.game.is_live) {
+      if (detail.live) {
+        const liveRegistry = await api("/slate/registry");
+        LIVE_REGISTRY = liveRegistry;
+        renderLive(mount, detail);
+      } else {
+        renderHidden(mount, detail);
+      }
     } else {
       renderNotScored(mount, detail);
     }
