@@ -434,7 +434,11 @@ class TestPollerStatePersistence(unittest.TestCase):
         # ESPN API. Empty slate keeps run_cycle's own logic (upserts,
         # completion detection, Tier 2) a no-op so this test is purely
         # about the schedule-write plumbing around it.
+        # fetch_game_summary is patched alongside the scoreboard because
+        # run_cycle's pregame sweep targets `pre` games, and this fixture has
+        # one -- without it the sweep would make a real /summary call.
         with patch.object(live.espn, "fetch_scoreboard_dates", return_value=[]), \
+             patch.object(live.espn, "fetch_game_summary", return_value={}), \
              patch.object(live, "_sleep_until", side_effect=_StopLoop):
             with self.assertRaises(_StopLoop):
                 live.run_forever(self.conn, once=False, mode="normal", dates="20260101")
@@ -479,6 +483,7 @@ class TestPollerStatePersistence(unittest.TestCase):
                 raise _StopLoop
 
         with patch.object(live.espn, "fetch_scoreboard_dates", scoreboard), \
+             patch.object(live.espn, "fetch_game_summary", return_value={}), \
              patch.object(live, "_sleep_until", side_effect=_fake_sleep):
             with self.assertRaises(_StopLoop):
                 live.run_forever(self.conn, once=False, mode="normal", dates="20260101")

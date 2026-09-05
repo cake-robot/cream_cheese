@@ -124,6 +124,28 @@ CREATE TABLE IF NOT EXISTS game_raw_json (
     fetched_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Archive of ESPN's /summary payload while a game is still SCHEDULED, gzip-
+-- compressed. Deliberately a separate table from game_raw_json rather than a
+-- (game_id, phase) composite key: the two payloads are different shapes, and
+-- one row per game per phase keeps both upserts trivially idempotent.
+--
+-- Why archive it at all: unlike a completed game's payload -- which ESPN
+-- serves indefinitely, and which --backfill-raw-json re-fetches at will --
+-- the pregame payload is unrecoverable once the ball kicks off. `predictor`
+-- (the Matchup Predictor win probability), `gameInfo.weather` (the forecast;
+-- replaced by `attendance` post-game) and `lastFiveGames` exist ONLY here.
+-- Confirmed absent from all 3,689 archived completed-game payloads across
+-- 2022-2026, and confirmed gone from a game's own /summary within hours of
+-- it going final. ~14KB gzipped (13% of raw), about a third of a completed
+-- game's archive.
+CREATE TABLE IF NOT EXISTS game_pregame_json (
+    game_id          TEXT PRIMARY KEY REFERENCES games(game_id),
+    raw_json_gzip    BLOB NOT NULL,
+    raw_size         INTEGER NOT NULL,
+    compressed_size  INTEGER NOT NULL,
+    fetched_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- Fox Sports scoring-sequence pull. Standalone from `games` on purpose --
 -- POC scope has no ESPN<->Fox matching yet (see plans), so fox_event_id is
 -- the only identity here.
@@ -455,6 +477,37 @@ def init_db(path=None):
     if "away_conference_id" not in game_cols:
         conn.execute("ALTER TABLE games ADD COLUMN away_conference_id INTEGER")
 
+    # Provenance for initial_home_wp. Needed because ESPN changed the
+    # `winprobability` feed for the 2026 season: it no longer emits a pregame
+    # entry at all, so wp_entries[0] -- which is what parse_summary_detail
+    # returns -- is now the WP after the game's first play or two, carrying no
+    # team-strength/line information whatsoever.
+    #
+    # Measured, which is what justifies the season split below:
+    #   2022-2025  initial_home_wp spans 0.014-0.999, ~11% land in 0.55-0.65
+    #   2026       all 27 games span 0.564-0.631, 100% in that band, with the
+    #              exact value 0.5744 repeating across 8 unrelated matchups
+    # e.g. Oklahoma as a -40.5 favorite opened at 0.6043; Utah at -38.5 opened
+    # at 0.5744. Those are generic home-team-at-0-0 defaults, not win
+    # probabilities. Left unfixed they make upset_in_progress /
+    # upset_finish_potential read a chalk blowout as an upset (confirmed on
+    # 401858206, Miami 45-6 at Stanford, where a true ~0.055 was stored as
+    # 0.5999) while flattening upset_risk to near zero season-wide.
+    #
+    # This is the ONLY place a season year appears in the fix; every runtime
+    # path keys off INITIAL_WP_SOURCE_RANK instead, so a future feed change
+    # needs no year edit. Verified 2026-09-05 that ESPN did NOT retroactively
+    # rewrite older seasons -- re-fetching 2022/2023 games returns exactly the
+    # stored value -- so pre-2026 rows are genuine pregame numbers and are
+    # marked as the higher-trust 'espn_wp_pregame'.
+    if "initial_home_wp_source" not in game_cols:
+        conn.execute("ALTER TABLE games ADD COLUMN initial_home_wp_source TEXT")
+        conn.execute("""
+            UPDATE games SET initial_home_wp_source =
+                CASE WHEN season_year <= 2025 THEN 'espn_wp_pregame' ELSE 'espn_wp' END
+             WHERE initial_home_wp IS NOT NULL
+        """)
+
     # live_scores.decided removed -- the flag was found to force
     # drama_from_here to 0 on games that were still genuinely live (a real
     # final drive briefly crossing an extreme WP reading), while barely
@@ -688,6 +741,102 @@ def upsert_game_metrics(conn, game_id, breakdown):
     """, rows)
 
 
+# Trust ordering for games.initial_home_wp_source. A write only lands if its
+# source ranks at least as high as what's already stored, which is what keeps
+# the completion-time detail fetch from undoing a good pregame capture: when a
+# game goes final, handle_completions -> fetch_details -> mark_detail_fetched
+# carries winprobability[0], and on a 2026-era payload that value is the
+# line-agnostic first-play number. Without this guard every predictor we
+# capture would be destroyed at the exact moment the game ended.
+#
+# 'espn_wp' sits at the bottom deliberately. We cannot tell from the payload
+# alone whether a given winprobability[0] is a genuine pregame entry or a
+# first-play one (tested: the historical pregame entry's playId is unmatched
+# in the play map, but 2026 first entries are sometimes unmatched too, so
+# "unmatched" does not discriminate). Rather than guess, detail-fetch writes
+# at the lowest rank and therefore only wins when nothing better exists --
+# the correct fallback either way.
+INITIAL_WP_SOURCE_RANK = {
+    None: 0,
+    "espn_wp": 1,          # winprobability[0] at detail-fetch time; may be first-play
+    "spread": 2,           # derived from a closing betting line
+    "espn_wp_pregame": 3,  # genuine pregame entry (2022-2025 era)
+    "predictor": 4,        # ESPN Matchup Predictor, captured while SCHEDULED
+}
+
+
+def set_initial_home_wp(conn, game_id, value, source):
+    """Write games.initial_home_wp only if `source` is at least as trusted as
+    whatever produced the stored value (see INITIAL_WP_SOURCE_RANK).
+
+    Also the narrow, side-effect-free alternative to mark_detail_fetched() for
+    the live poller: mark_detail_fetched additionally sets detail_fetched=1 and
+    overwrites home_score/away_score/attendance, none of which should happen
+    while a game is still live (detail_fetched must stay 0 so the normal
+    pipeline picks the game up cleanly at completion -- see
+    live.handle_completions). This replaces an earlier write-only-if-NULL
+    variant, whose behaviour the rank ordering subsumes: a live parse writes at
+    the lowest rank, so it still fills an empty value but can no longer
+    displace a pregame capture.
+
+    Returns True if the write landed, False if it was rejected as a downgrade.
+    Equal ranks overwrite so a same-source refresh (a day-of predictor pass
+    picking up line movement) still updates.
+    """
+    if value is None:
+        return False
+    if source not in INITIAL_WP_SOURCE_RANK:
+        raise ValueError(f"unknown initial_home_wp source: {source!r}")
+
+    row = conn.execute(
+        "SELECT initial_home_wp, initial_home_wp_source FROM games WHERE game_id = ?",
+        (game_id,),
+    ).fetchone()
+    if row is None:
+        return False
+
+    stored_source = row["initial_home_wp_source"]
+    # An existing value with no recorded source predates the provenance column
+    # (or was written by an older build); treat it as the lowest real rank so
+    # it can still be improved on, but not as unknown-and-therefore-clobberable.
+    stored_rank = INITIAL_WP_SOURCE_RANK.get(
+        stored_source, 1 if row["initial_home_wp"] is not None else 0
+    )
+    if INITIAL_WP_SOURCE_RANK[source] < stored_rank:
+        return False
+
+    conn.execute(
+        "UPDATE games SET initial_home_wp = ?, initial_home_wp_source = ? WHERE game_id = ?",
+        (value, source, game_id),
+    )
+    return True
+
+
+def upsert_game_pregame_json(conn, game_id, summary):
+    """Archive ESPN's /summary payload for a still-SCHEDULED `game_id`."""
+    raw = json.dumps(summary, separators=(",", ":")).encode("utf-8")
+    compressed = gzip.compress(raw, compresslevel=9)
+    conn.execute("""
+        INSERT INTO game_pregame_json (game_id, raw_json_gzip, raw_size, compressed_size)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(game_id) DO UPDATE SET
+            raw_json_gzip   = excluded.raw_json_gzip,
+            raw_size        = excluded.raw_size,
+            compressed_size = excluded.compressed_size,
+            fetched_at      = datetime('now')
+    """, (game_id, compressed, len(raw), len(compressed)))
+
+
+def get_game_pregame_json(conn, game_id):
+    """Return the archived pregame /summary payload for `game_id`, or None."""
+    row = conn.execute(
+        "SELECT raw_json_gzip FROM game_pregame_json WHERE game_id = ?", (game_id,)
+    ).fetchone()
+    if not row:
+        return None
+    return json.loads(gzip.decompress(row["raw_json_gzip"]))
+
+
 def upsert_game_raw_json(conn, game_id, summary):
     """Archive ESPN's full /summary payload for `game_id`, gzip-compressed."""
     raw = json.dumps(summary, separators=(",", ":")).encode("utf-8")
@@ -862,21 +1011,6 @@ def mark_fox_pbp_fetched(conn, fox_event_id):
     )
 
 
-def set_initial_home_wp(conn, game_id, value):
-    """Write initial_home_wp only if it isn't already set. A narrow,
-    side-effect-free alternative to mark_detail_fetched() for the live poller:
-    mark_detail_fetched also sets detail_fetched=1 and overwrites
-    home_score/away_score/attendance, none of which should happen while a
-    game is still live (detail_fetched must stay 0 so the normal pipeline
-    picks the game up cleanly at completion -- see live.handle_completions)."""
-    if value is None:
-        return
-    conn.execute(
-        "UPDATE games SET initial_home_wp = ? WHERE game_id = ? AND initial_home_wp IS NULL",
-        (value, game_id),
-    )
-
-
 def delete_win_probability(conn, game_id):
     """Discard every win_probability row for a game. Used at the live->final
     transition: upsert_win_probability is INSERT OR IGNORE keyed on
@@ -1004,13 +1138,17 @@ def mark_detail_fetched(conn, game_id, home_score, away_score, attendance, initi
             detail_fetched_at = datetime('now'),
             home_score        = COALESCE(:home_score, home_score),
             away_score        = COALESCE(:away_score, away_score),
-            attendance        = COALESCE(:attendance, attendance),
-            initial_home_wp   = COALESCE(:initial_home_wp, initial_home_wp)
+            attendance        = COALESCE(:attendance, attendance)
         WHERE game_id = :game_id
     """, {
         "game_id": game_id,
         "home_score": home_score,
         "away_score": away_score,
         "attendance": attendance,
-        "initial_home_wp": initial_home_wp,
     })
+    # initial_home_wp is no longer written inline. The old COALESCE only
+    # guarded against a NULL *incoming* value -- any non-NULL one won -- so a
+    # completion-time fetch would overwrite a pregame predictor capture with
+    # winprobability[0]. Routed through the rank guard instead, at the lowest
+    # trust level, so it still populates a game nothing else has covered.
+    set_initial_home_wp(conn, game_id, initial_home_wp, "espn_wp")
