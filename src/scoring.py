@@ -579,6 +579,29 @@ def _comeback_erosion_walk(plays, credit_open_arc):
 
 def comeback_erosion(situational_plays):
     """
+    RETIRED FROM THE ACTIVE COMPOSITE 2026-09-05 -- no longer in METRICS, so
+    this no longer affects watchability_score or anything shown on the site.
+    Replaced by comeback_margin_q4_close as the sole "Comeback" signal, per
+    a corpus-wide comparison that found this WP-based approach and a
+    (separately fixed) raw-points/arc-scoped approach were nearly
+    uncorrelated (r=-0.09) -- not redundant, genuinely different notions of
+    "comeback" -- and the raw-points version was judged the more useful one
+    to keep as the single site-facing metric: it catches real, dramatic
+    down-to-the-wire near-misses (e.g. a team trailing by 25+ that claws
+    back to one score with under two minutes left) that this metric's own
+    >180-second close-game gate structurally excludes, whereas this metric's
+    unique catches are comparatively minor WP-scale distinctions on cases
+    the raw-points version also (or almost also) catches. See
+    watchability_algorithm_open_items.md's 2026-09-05 entries for the full
+    investigation, including two confirmed false positives found and fixed
+    in comeback_margin_q4_close along the way.
+
+    Left fully intact (function, _comeback_erosion_walk, and
+    comeback_erosion_live -- the last of which is still live-wired into
+    src/live.py's LIVE_SO_FAR_METRICS, untouched by this retirement) as
+    working infrastructure, not deleted, in case this decision gets
+    revisited.
+
     Did a real, commanding lead get torn down -- credited once per "arc"
     (the stretch between lead changes), at the moment the arc ends, using
     that arc's own coin-flip-normalized WP extreme. Segmenting the game
@@ -674,10 +697,25 @@ def comeback_erosion_live(situational_plays):
 
 def comeback_margin_q4_close(situational_plays):
     """
-    Points-recovered comeback credit, on top of comeback_erosion's
-    coin-flip-WP scale: rewards a game for actually clawing a real deficit
-    back down to one possession or closer at some point in the 4th quarter,
-    scaled by how big that deficit was.
+    THE site's "Comeback" metric as of 2026-09-05, replacing comeback_erosion
+    in METRICS (see that function's docstring for the retirement rationale).
+    Points-recovered comeback credit: rewards a game for actually clawing a
+    real deficit back down to one possession or closer at some point in the
+    4th quarter, scaled by how big that deficit was.
+
+    Known, deliberately accepted limitation: no floor on how little time was
+    left when the qualifying play happens (unlike comeback_erosion's own
+    close-game trigger, which requires >180 seconds left specifically to
+    exclude garbage-time math). Confirmed via corpus trace that ~2% of this
+    metric's firings hinge on a qualifying play with <=30 seconds left --
+    e.g. 401858424 (Illinois 42, UAB 35: a 26-point lead closed to 7 by a
+    chaotic scoring flurry with 9 seconds left, in a game the model's own
+    win probability never left 97%+ on). Explicitly accepted rather than
+    fixed: a team that scores within the final 30 seconds still has a
+    realistic shot at an onside kick recovery plus a Hail Mary, which is
+    genuinely interesting, not meaningless -- so no time floor was added.
+    A narrower guard (e.g. excluding blowouts where the pregame line was
+    heavily lopsided) was considered and set aside as unnecessary for now.
 
     CORRECTED VERSION (2026-09-05) -- the original implementation of this
     metric was fundamentally broken and is documented here as a warning
@@ -790,8 +828,14 @@ METRICS = [
     {"name": "upset_risk",       "fn": lambda ctx: upset_risk(ctx["initial_home_wp"], ctx["home_rank"], ctx["away_rank"], ctx["wp_rows"]), "weight": 1.0, "cap": None},
     {"name": "late_volatility",  "fn": lambda ctx: late_volatility(ctx["wp_rows"]),                   "weight": 0.5, "cap": MAX_LATE_VOLATILITY},
     {"name": "clutch_finish",    "fn": lambda ctx: clutch_finish(ctx["wp_rows"]),                      "weight": 1.0, "cap": MAX_CLUTCH_FINISH},
-    {"name": "comeback_erosion", "fn": lambda ctx: comeback_erosion(ctx["situational_plays"]),           "weight": 1.0, "cap": None},
-    {"name": "comeback_margin_q4_close", "fn": lambda ctx: comeback_margin_q4_close(ctx["situational_plays"]), "weight": 0.5, "cap": MAX_COMEBACK_MARGIN_Q4},
+    # comeback_erosion (WP-based) retired from the active composite 2026-09-05,
+    # replaced by comeback_margin_q4_close (raw-points, arc-scoped) as the
+    # site's sole "Comeback" signal -- see comeback_erosion's own docstring
+    # for why. The function itself, _comeback_erosion_walk, and
+    # comeback_erosion_live (still used by src/live.py's LIVE_SO_FAR_METRICS,
+    # untouched by this change) are all kept as working infrastructure in
+    # case this decision gets revisited -- deliberately not deleted.
+    {"name": "comeback_margin_q4_close", "fn": lambda ctx: comeback_margin_q4_close(ctx["situational_plays"]), "weight": 1.0, "cap": MAX_COMEBACK_MARGIN_Q4},
 ]
 
 METRICS_BY_NAME = {m["name"]: m for m in METRICS}

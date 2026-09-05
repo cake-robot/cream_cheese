@@ -100,22 +100,13 @@ METRIC_COPY = {
             "with no such swing in the final minute."
         ),
     },
-    "comeback_erosion": {
+    "comeback_margin_q4_close": {
         "label": "Comeback",
         "description": (
-            "Credit for a commanding lead getting torn down -- measured once per "
-            "lead-change arc, in coin-flip-normalized win-probability terms, so a "
-            "heavy pregame favorite's high WP off a modest lead doesn't count on "
-            "its own."
-        ),
-    },
-    "comeback_margin_q4_close": {
-        "label": "Q4 comeback margin",
-        "description": (
-            "Extra credit, in raw points, for a game that was down to one "
-            "possession or closer at some point in the 4th quarter after "
-            "trailing by more than a possession earlier on -- doesn't require "
-            "the trailing team to ever tie or take the lead."
+            "Credit, in raw points, for a game that was down to one possession "
+            "or closer at some point in the 4th quarter after trailing by more "
+            "than a possession earlier on -- doesn't require the trailing team "
+            "to ever tie or take the lead."
         ),
     },
 }
