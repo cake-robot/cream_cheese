@@ -51,6 +51,11 @@
   </div>
   <div id="live-section"></div>
 
+  <div class="section-title live" id="live-pending-title">
+    <span>Live · not yet scored</span><span class="rule"></span><span class="meta" id="live-pending-meta"></span>
+  </div>
+  <div id="live-pending-section"></div>
+
   <div class="section-title">
     <span>Final</span><span class="rule"></span>
     <button type="button" id="completed-group-toggle" class="mini-toggle">Group by day</button>
@@ -222,7 +227,7 @@ function postseasonLabel(p) {
 
 function renderDateLabel(data) {
   const label = document.getElementById("date-label");
-  const anySpoilerHidden = ["live", "completed", "upcoming"].some((k) => data.sections[k].some((g) => g.spoiler_hidden));
+  const anySpoilerHidden = ["live", "live_pending", "completed", "upcoming"].some((k) => data.sections[k].some((g) => g.spoiler_hidden));
   const tz = Intl.DateTimeFormat(undefined, { timeZoneName: "short" }).formatToParts(new Date())
     .find((p) => p.type === "timeZoneName").value;
   if (data.scope === "week") {
@@ -398,22 +403,15 @@ function renderLiveSection(unfilteredGames) {
     // LEVEL_SCORE game (spoiler_hidden: true) DOES reveal live_score (see
     // the two-tier-spoiler plan's decision 3), so gating this on
     // spoiler_hidden the way the tag below still correctly does would wrongly
-    // hide the one thing that tier exists to show. A game under the 20-minute
-    // scoring floor (live.scored: false) has a null live_score for a third,
-    // unrelated reason -- checked first so it never gets mistaken for spoiler
-    // redaction.
-    !top.live.scored
-      ? el("div", { class: "spoiler-hidden-tag", text: "NOT YET SCORED" })
-      : top.live.live_score === null
+    // hide the one thing that tier exists to show.
+    top.live.live_score === null
       ? el("div", { class: "spoiler-hidden-tag", text: "SPOILER HIDDEN" })
       : el("div", { class: "hero-score-block" }, [
           el("div", { class: "hero-score tabular-nums", text: fmtScore(top.live.live_score) }),
           el("div", { class: "hero-score-label", text: "LIVE SCORE" }),
         ]),
   ]));
-  if (!top.spoiler_hidden && !top.live.scored) {
-    hero.appendChild(el("div", { class: "hero-context hero-headline", text: "Watchability scoring starts once 20 minutes of game time have elapsed." }));
-  } else if (!top.spoiler_hidden) {
+  if (!top.spoiler_hidden) {
     hero.appendChild(el("div", { class: "hero-context hero-headline", text: top.live.headline }));
     hero.appendChild(halvesBars(top.live.quality_so_far, top.live.drama_from_here));
     const note = divergeNote(top.live);
@@ -436,10 +434,8 @@ function renderLiveSection(unfilteredGames) {
 
     const expanded = EXPANDED.has(g.game_id);
     const chevron = el("div", { class: "chevron" + (expanded ? " open" : ""), text: expanded ? "︿" : "⌄" });
-    if (g.spoiler_hidden || !g.live.scored) chevron.style.visibility = "hidden";
-    const whyText = !g.live.scored
-      ? `${g.live.status.detail || "In progress"} · Not yet scored`
-      : g.spoiler_hidden
+    if (g.spoiler_hidden) chevron.style.visibility = "hidden";
+    const whyText = g.spoiler_hidden
       ? (g.live.status.detail || "In progress")
       : `${g.live.status.detail || ""}${g.live.headline ? " · " + g.live.headline : ""}`;
     const spoilerControlsG = spoilerControls(g);
@@ -457,7 +453,7 @@ function renderLiveSection(unfilteredGames) {
     ]);
 
     const expandWrap = el("div", { class: "expand-panel", style: expanded ? "" : "display:none" });
-    if (!g.spoiler_hidden && g.live.scored) {
+    if (!g.spoiler_hidden) {
       chevron.addEventListener("click", (ev) => {
         ev.stopPropagation();
         const showing = expandWrap.style.display !== "none";
@@ -476,6 +472,64 @@ function renderLiveSection(unfilteredGames) {
     });
 
     list.appendChild(el("div", {}, [row, expandWrap]));
+  });
+  wrap.appendChild(list);
+}
+
+// A status_state='in' game below live.py's 20-minute-elapsed floor for a
+// live_scores row -- real, real matchup/score/quarter, but nothing this
+// page can rank or explain yet (no live_score, no headline, no per-metric
+// breakdown -- see build_live_payload()'s "scored" flag in serve.py). Kept
+// out of renderLiveSection() entirely rather than folded in with a null
+// live_score: that section's hero card, flash-on-change, and expand panel
+// all assume a real running score to feature, none of which exists here.
+// The whole section (title included) hides itself when nothing qualifies,
+// since this is a narrow ~20-minute window rather than an always-on state
+// the way "Live now" is.
+function renderLivePendingSection(unfilteredGames) {
+  const title = document.getElementById("live-pending-title");
+  const wrap = document.getElementById("live-pending-section");
+  if (!unfilteredGames.length) {
+    title.style.display = "none";
+    wrap.style.display = "none";
+    wrap.innerHTML = "";
+    return;
+  }
+  title.style.display = "";
+  wrap.style.display = "";
+  document.getElementById("live-pending-meta").textContent =
+    `${unfilteredGames.length} GAME${unfilteredGames.length === 1 ? "" : "S"}`;
+
+  wrap.innerHTML = "";
+  const games = unfilteredGames.filter(matchesFilters);
+  if (!games.length) {
+    wrap.appendChild(el("div", { class: "empty-state", text: "No not-yet-scored live games match this filter." }));
+    return;
+  }
+
+  const list = el("div", { class: "slate-list" });
+  games.forEach((g) => {
+    const spoilerControlsG = spoilerControls(g);
+    const rowChips = renderChips(g).filter(
+      (c) => !(spoilerControlsG.length && (c.textContent === "HIDDEN" || c.textContent === "SCORE ONLY"))
+    );
+    const whyText = g.spoiler_hidden
+      ? (g.live.status.detail || "In progress")
+      : `${g.live.status.detail || "In progress"} · Not yet scored`;
+    const row = el("div", { class: "slate-row row-live" }, [
+      el("div", { class: "score-big", text: "—" }),
+      el("div", { class: "row-info" }, [
+        el("div", { class: "matchup-line" }, [...spoilerControlsG, el("span", { class: "name", text: fmtMatchup(g) }), ...rowChips]),
+        el("div", { class: "live-progress", text: liveProgressLabel(g) }),
+        el("div", { class: "row-sub", text: whyText }),
+      ]),
+      // No chevron functionality here (nothing to expand -- no metrics exist
+      // yet), but an invisible placeholder keeps this row-live grid's third
+      // column the same width as renderLiveSection()'s scored rows above it.
+      el("div", { class: "chevron", style: "visibility:hidden" }),
+    ]);
+    row.addEventListener("click", () => (location.href = `/game.html?id=${g.game_id}`));
+    list.appendChild(row);
   });
   wrap.appendChild(list);
 }
@@ -704,6 +758,7 @@ function renderSections() {
   const data = CURRENT_SLATE;
   document.getElementById("live-meta").textContent = `${data.live_feed.tracked_games} TRACKED`;
   renderLiveSection(data.sections.live);
+  renderLivePendingSection(data.sections.live_pending);
   renderCompletedSection(data.sections.completed);
   renderUpcomingSection(data.sections.upcoming);
 }
