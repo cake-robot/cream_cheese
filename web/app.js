@@ -123,6 +123,179 @@ function el(tag, attrs = {}, children = []) {
   return node;
 }
 
+// ---- dropdowns --------------------------------------------------------------
+// The Games page builds its Season/Week/Ranked filters as bespoke .gm-select
+// widgets (trigger + absolutely-positioned menu) rather than as <select>s, and
+// Top games / Analytics copy that markup. Everywhere else the site still
+// rendered plain <select>s, which the OS draws in its own chrome -- a stock
+// macOS/Windows dropdown sitting in the middle of a page built out of mono
+// type and 1px hairlines.
+//
+// enhanceSelect() closes that gap without asking every page to rewrite its
+// filter code: it keeps the real <select> in the DOM (visually hidden) as the
+// single source of truth and paints the .gm-select chrome over it. Options are
+// read back off the <select>, so `sel.innerHTML = ...` repopulation (Settings'
+// season/week lists, Slate's conference list) keeps working -- a
+// MutationObserver repaints. `sel.value = x` is intercepted per-instance so
+// programmatic writes repaint too, and picking from the menu writes through to
+// the <select> and fires a normal bubbling "change" event. Net effect: existing
+// `.value` reads/writes and change listeners need no changes at all.
+
+let GM_OPEN_SELECT = null; // the one open enhanced dropdown, if any
+
+// Per-instance `value` interception needs the prototype's own accessor to
+// delegate to -- grabbed once here rather than per enhanced select.
+const GM_NATIVE_SELECT_VALUE = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value");
+
+function gmCloseOpenSelect() {
+  if (GM_OPEN_SELECT) GM_OPEN_SELECT.gmSetOpen(false);
+}
+
+// `neutral`: the value that counts as "no filter applied" -- matching value
+//   renders the muted trigger, anything else the brighter `.set` one, same as
+//   the Games page's own dropdowns. Omit it and the trigger always reads as
+//   set (right for Settings, where every option is a real chosen value).
+// `variant`: extra class on the wrapper, e.g. "gm-select-chip".
+// Returns the wrapper element, which takes the <select>'s place in the layout
+// -- the return value only matters for a <select> that isn't in the DOM yet
+// (Slate builds its per-row control detached and appends the result).
+function enhanceSelect(sel, options = {}) {
+  if (!sel) return null;
+  if (sel.dataset.gmEnhanced) return sel.closest(".gm-select");
+  sel.dataset.gmEnhanced = "1";
+
+  const wrap = el("div", { class: `gm-select${options.variant ? ` ${options.variant}` : ""}` });
+  if (sel.parentNode) sel.parentNode.insertBefore(wrap, sel);
+  wrap.appendChild(sel);
+  // Kept in the DOM (not replaced) so it stays the value store, but taken out
+  // of the tab order and the a11y tree -- the trigger below carries both.
+  sel.classList.add("gm-select-native");
+  sel.setAttribute("tabindex", "-1");
+  sel.setAttribute("aria-hidden", "true");
+
+  const label = el("span", { class: "gm-select-label" });
+  const trigger = el("div", {
+    class: "gm-select-trigger",
+    role: "button",
+    tabindex: "0",
+    "aria-haspopup": "listbox",
+    "aria-expanded": "false",
+    "aria-label": sel.getAttribute("aria-label"),
+    title: sel.getAttribute("title"),
+  }, [label, el("span", { class: "chev", text: "⌄" })]);
+  const menu = el("div", { class: "gm-select-menu", role: "listbox", hidden: "" });
+  wrap.appendChild(trigger);
+  wrap.appendChild(menu);
+
+  function isOpen() { return !menu.hidden; }
+
+  function setOpen(open) {
+    if (open && sel.disabled) return;
+    if (open && GM_OPEN_SELECT && GM_OPEN_SELECT !== wrap) gmCloseOpenSelect();
+    menu.hidden = !open;
+    trigger.classList.toggle("open", open);
+    trigger.setAttribute("aria-expanded", String(open));
+    if (open) {
+      GM_OPEN_SELECT = wrap;
+      const on = menu.querySelector(".gm-select-option.selected");
+      if (on) on.scrollIntoView({ block: "nearest" });
+    } else if (GM_OPEN_SELECT === wrap) {
+      GM_OPEN_SELECT = null;
+    }
+  }
+  wrap.gmSetOpen = setOpen;
+
+  function pick(value) {
+    setOpen(false);
+    trigger.focus();
+    if (value === sel.value) return;
+    GM_NATIVE_SELECT_VALUE.set.call(sel, value);
+    paint();
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  // Options are read straight off the <select> on every repaint, so
+  // <optgroup>s and disabled options survive the translation instead of
+  // needing a parallel option list passed in.
+  function paint() {
+    const current = sel.value;
+    const currentOpt = sel.selectedOptions[0];
+    label.textContent = currentOpt ? currentOpt.textContent : (options.placeholder || "—");
+    trigger.classList.toggle("set", options.neutral === undefined ? true : current !== options.neutral);
+    // `sel.disabled = true` is how callers park the control mid-request
+    // (Slate's spoiler dropdown); mirror it onto the visible chrome.
+    trigger.classList.toggle("disabled", sel.disabled);
+    trigger.setAttribute("aria-disabled", String(sel.disabled));
+    if (sel.title) trigger.setAttribute("title", sel.title);
+    menu.innerHTML = "";
+    const addOption = (opt) => {
+      const row = el("div", {
+        class: `gm-select-option${opt.value === current ? " selected" : ""}${opt.disabled ? " disabled" : ""}`,
+        role: "option",
+        "aria-selected": String(opt.value === current),
+        text: opt.textContent,
+      });
+      if (!opt.disabled) row.addEventListener("click", (ev) => { ev.stopPropagation(); pick(opt.value); });
+      menu.appendChild(row);
+    };
+    Array.from(sel.children).forEach((child) => {
+      if (child.tagName === "OPTGROUP") {
+        menu.appendChild(el("div", { class: "gm-select-group", text: child.label }));
+        Array.from(child.children).forEach(addOption);
+      } else if (child.tagName === "OPTION") {
+        addOption(child);
+      }
+    });
+  }
+
+  // Moves the selection by one without opening the menu -- the closed-state
+  // arrow-key behaviour a real <select> has, kept so keyboard users don't lose
+  // it to the custom chrome.
+  function step(delta) {
+    const opts = Array.from(sel.options).filter((o) => !o.disabled);
+    const at = opts.findIndex((o) => o.value === sel.value);
+    const next = opts[Math.min(opts.length - 1, Math.max(0, (at < 0 ? 0 : at) + delta))];
+    if (next) pick(next.value);
+  }
+
+  trigger.addEventListener("click", (ev) => { ev.stopPropagation(); setOpen(!isOpen()); });
+  trigger.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); setOpen(!isOpen()); }
+    else if (ev.key === "Escape" && isOpen()) { ev.preventDefault(); setOpen(false); }
+    else if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+      ev.preventDefault();
+      if (isOpen()) setOpen(false);
+      step(ev.key === "ArrowDown" ? 1 : -1);
+    }
+  });
+  // Both stopped so a click inside the widget doesn't reach the document
+  // handler that closes it -- and, on Slate, doesn't reach the clickable game
+  // row the dropdown sits inside either.
+  menu.addEventListener("click", (ev) => ev.stopPropagation());
+
+  // A MutationObserver catches option-list rebuilds (`innerHTML = ...`);
+  // property writes don't mutate the DOM, so `value` is intercepted too.
+  new MutationObserver(paint).observe(sel, {
+    childList: true, subtree: true, attributes: true, attributeFilter: ["disabled", "title"],
+  });
+  Object.defineProperty(sel, "value", {
+    configurable: true,
+    get() { return GM_NATIVE_SELECT_VALUE.get.call(this); },
+    set(v) { GM_NATIVE_SELECT_VALUE.set.call(this, v); paint(); },
+  });
+
+  paint();
+  return wrap;
+}
+
+// Enhances every <select data-gm-select> already in the markup. Selects built
+// dynamically (Slate's per-row spoiler control) call enhanceSelect() directly.
+function enhanceSelects(root = document) {
+  root.querySelectorAll("select[data-gm-select]").forEach((sel) => {
+    enhanceSelect(sel, { neutral: sel.dataset.gmNeutral });
+  });
+}
+
 // ---- URL state --------------------------------------------------------------
 
 function getParams() {
@@ -433,4 +606,13 @@ function initMobileNav() {
 document.addEventListener("DOMContentLoaded", () => {
   initMobileNav();
   initAccountMenu();
+  enhanceSelects();
+});
+
+// One pair of listeners for every enhanced dropdown on the page (only one can
+// be open at a time), rather than one pair per widget. The Games/Top/Analytics
+// pages keep their own equivalents for the hand-built dropdowns there.
+document.addEventListener("click", gmCloseOpenSelect);
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape") gmCloseOpenSelect();
 });
