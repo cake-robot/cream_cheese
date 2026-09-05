@@ -294,20 +294,12 @@ function divergeNote(live) {
     : "Quiet so far, but heating up";
 }
 
-// A real, clickable two-state toggle chip, shared by completed and live
-// rows, replacing the plain HIDDEN/SCORE ONLY tag renderChips() would
-// otherwise render there. LEVEL_HIDDEN -> click reveals the watchability
-// score (a real, persistent LEVEL_SCORE override through the same
+// One step button: clicking it sets the game to `toLevel` via the same
 // /api/spoilers/game route Settings' game-override card and game.html's
-// reveal buttons use, so it's visible/undoable from Settings on any device
-// going forward, not a client-side-only bypass). LEVEL_SCORE -> click
-// re-hides it (back to LEVEL_HIDDEN) -- the undo for that same action.
-// LEVEL_FULL has nothing to toggle from the slate, so returns null.
-function spoilerChipButton(g) {
-  if (g.spoiler_level !== 0 && g.spoiler_level !== 1) return null;
-  const toLevel = g.spoiler_level === 0 ? 1 : 0;
-  const label = g.spoiler_level === 0 ? "Hidden" : "Score only";
-  const title = g.spoiler_level === 0 ? "Reveal the watchability score" : "Hide the watchability score again";
+// reveal buttons use, so every step is a real, persistent per-user
+// override -- visible and undoable from Settings on any device going
+// forward, not a client-side-only bypass.
+function spoilerStepButton(g, toLevel, label, title) {
   const btn = el("button", { class: "chip chip-btn", type: "button", text: label, title });
   btn.addEventListener("click", async (ev) => {
     ev.stopPropagation();
@@ -322,6 +314,33 @@ function spoilerChipButton(g) {
     }
   });
   return btn;
+}
+
+// The spoiler control(s) for one game, shared by completed and live rows,
+// replacing the plain HIDDEN/SCORE ONLY tag renderChips() would otherwise
+// render there (and, at LEVEL_FULL, adding a control where none existed
+// before). LEVEL_HIDDEN and LEVEL_FULL each have only one direction to
+// move in, so they get a single labeled step button. LEVEL_SCORE sits
+// between two valid destinations, so guessing a "current direction" isn't
+// enough -- it gets two small arrow buttons, one each way, plus a plain
+// (non-clickable) label so the row still reads its current state at a
+// glance.
+function spoilerControls(g) {
+  const level = g.spoiler_level;
+  if (level === 0) {
+    return [spoilerStepButton(g, 1, "Hidden", "Reveal the watchability score")];
+  }
+  if (level === 2) {
+    return [spoilerStepButton(g, 1, "Revealed", "Hide the score and details")];
+  }
+  if (level === 1) {
+    return [
+      spoilerStepButton(g, 0, "◂", "Hide the watchability score"),
+      el("span", { class: "chip muted", text: "Score only" }),
+      spoilerStepButton(g, 2, "▸", "Reveal everything"),
+    ];
+  }
+  return [];
 }
 
 function renderLiveSection(unfilteredGames) {
@@ -339,13 +358,13 @@ function renderLiveSection(unfilteredGames) {
 
   const [top, ...rest] = games;
   const hero = el("div", { class: "card hero-card" });
-  const heroSpoilerBtn = spoilerChipButton(top);
+  const heroSpoilerControls = spoilerControls(top);
   const heroChips = renderChips(top).filter(
-    (c) => !(heroSpoilerBtn && (c.textContent === "HIDDEN" || c.textContent === "SCORE ONLY"))
+    (c) => !(heroSpoilerControls.length && (c.textContent === "HIDDEN" || c.textContent === "SCORE ONLY"))
   );
   hero.appendChild(el("div", { class: "hero-toprow" }, [
     el("div", {}, [
-      el("h2", {}, [heroSpoilerBtn, fmtMatchup(top) + " ", ...heroChips]),
+      el("h2", {}, [...heroSpoilerControls, fmtMatchup(top) + " ", ...heroChips]),
       el("div", { class: "live-progress", text: liveProgressLabel(top) }),
       el("div", { class: "sub", text: top.live.status.detail || (top.spoiler_hidden ? "In progress" : "") }),
     ]),
@@ -388,14 +407,14 @@ function renderLiveSection(unfilteredGames) {
     const whyText = g.spoiler_hidden
       ? (g.live.status.detail || "In progress")
       : `${g.live.status.detail || ""}${g.live.headline ? " · " + g.live.headline : ""}`;
-    const spoilerBtn = spoilerChipButton(g);
+    const spoilerControlsG = spoilerControls(g);
     const rowChips = renderChips(g).filter(
-      (c) => !(spoilerBtn && (c.textContent === "HIDDEN" || c.textContent === "SCORE ONLY"))
+      (c) => !(spoilerControlsG.length && (c.textContent === "HIDDEN" || c.textContent === "SCORE ONLY"))
     );
     const row = el("div", { class: "slate-row row-live" + (flash ? " updated-flash" : "") }, [
       el("div", { class: "score-big", text: g.live.live_score === null ? "—" : fmtScore(g.live.live_score) }),
       el("div", { class: "row-info" }, [
-        el("div", { class: "matchup-line" }, [spoilerBtn, el("span", { class: "name", text: fmtMatchup(g) }), ...rowChips]),
+        el("div", { class: "matchup-line" }, [...spoilerControlsG, el("span", { class: "name", text: fmtMatchup(g) }), ...rowChips]),
         el("div", { class: "live-progress", text: liveProgressLabel(g) }),
         el("div", { class: "row-sub", text: whyText }),
       ]),
@@ -483,24 +502,24 @@ function completedRow(g, rankText) {
         el("span", { class: "pctile", text: g.percentile !== null ? fmtPct(g.percentile) : "" }),
       ]);
 
-  // Two-state toggle chip (spoilerChipButton, defined above renderLiveSection):
-  // LEVEL_HIDDEN -> click reveals the watchability score, LEVEL_SCORE ->
-  // click re-hides it. Placed before the name in the matchup line,
-  // replacing the plain static HIDDEN/SCORE ONLY chip renderChips() would
-  // otherwise also render there. Gated on g.is_scored too -- an unscored
-  // game can still fall in a LEVEL_HIDDEN week (the spoiler policy is
-  // time-based, not "has this actually been scored"), and there's nothing
-  // to reveal in that case; gameChips() already renders "NOT SCORED" for it
-  // instead of "HIDDEN".
-  const spoilerBtn = g.is_scored ? spoilerChipButton(g) : null;
+  // Spoiler stepper control(s) (spoilerControls, defined above
+  // renderLiveSection): HIDDEN and FULL each get one step button;
+  // SCORE (in between) gets a back/forward pair. Placed before the name in
+  // the matchup line, replacing the plain static HIDDEN/SCORE ONLY chip
+  // renderChips() would otherwise also render there. Gated on g.is_scored
+  // too -- an unscored game can still fall in a LEVEL_HIDDEN week (the
+  // spoiler policy is time-based, not "has this actually been scored"),
+  // and there's nothing to reveal in that case; gameChips() already
+  // renders "NOT SCORED" for it instead of "HIDDEN".
+  const spoilerControlsG = g.is_scored ? spoilerControls(g) : [];
   const chips = renderChips(g).filter(
-    (c) => !(spoilerBtn && (c.textContent === "HIDDEN" || c.textContent === "SCORE ONLY"))
+    (c) => !(spoilerControlsG.length && (c.textContent === "HIDDEN" || c.textContent === "SCORE ONLY"))
   );
 
   const row = el("div", { class: "slate-row row-completed" }, [
     scoreCell,
     el("div", { class: "row-info" }, [
-      el("div", { class: "matchup-line" }, [spoilerBtn, el("span", { class: "name", text: fmtMatchup(g) }), ...chips]),
+      el("div", { class: "matchup-line" }, [...spoilerControlsG, el("span", { class: "name", text: fmtMatchup(g) }), ...chips]),
       el("div", { class: "row-sub" }, [
         el("span", { class: "kickoff-time", text: fmtKickoff(g.game_date) }),
         rankText ? ` · ${rankText}` : null,
