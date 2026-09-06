@@ -448,6 +448,85 @@ function renderChips(g) {
   return gameChips(g).map(([label, cls]) => el("span", { class: `chip ${cls}`, text: label }));
 }
 
+// ---- spoiler step controls ---------------------------------------------------
+// Shared by slate.html (list rows) and game.html (the detail hero) -- both
+// touch the same tag/chip in place to step a game's spoiler_level up or
+// down. Every step goes through the real /api/spoilers/game route Settings'
+// own game-override card uses, so it's a persistent per-user override (not
+// a client-side-only bypass): it shows up in Settings' "Active overrides"
+// and is undoable there, on any device, going forward. `onDone` is the
+// caller's own reload (slate's loadSlate, game's loadAndRenderGame) so the
+// whole view re-fetches and re-renders off the new level.
+function spoilerStepButton(g, toLevel, label, title, onDone) {
+  const btn = el("button", { class: "chip chip-btn", type: "button", text: label, title });
+  btn.addEventListener("click", async (ev) => {
+    ev.stopPropagation();
+    btn.disabled = true;
+    btn.textContent = "Loading…";
+    try {
+      await apiPost("/spoilers/game", { game_id: g.game_id, level: toLevel });
+      await onDone();
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = `Failed: ${e.message}`;
+    }
+  });
+  return btn;
+}
+
+// LEVEL_SCORE sits between two valid destinations (LEVEL_HIDDEN and
+// LEVEL_FULL), so it gets a 3-option dropdown instead of a single step
+// button -- both directions are always one direct pick away, no guessing
+// which way "the" button should go.
+function spoilerLevelSelect(g, onDone) {
+  const LABELS = { 0: "Hidden", 1: "Rating only", 2: "Revealed" };
+  const select = el(
+    "select",
+    { title: "Change spoiler level" },
+    [0, 1, 2].map((lvl) => el("option", { value: String(lvl), text: LABELS[lvl] }))
+  );
+  select.value = "1";
+  // Returned to the caller as the wrapper enhanceSelect() builds around the
+  // <select>, not the <select> itself -- .gm-select chrome, in its
+  // chip-sized variant so it sits in a matchup/chip line like the .chip and
+  // .chip-btn tags beside it instead of like a filter-bar dropdown.
+  const wrap = enhanceSelect(select, { variant: "gm-select-chip" });
+  select.addEventListener("change", async () => {
+    const toLevel = Number(select.value);
+    select.disabled = true;
+    try {
+      await apiPost("/spoilers/game", { game_id: g.game_id, level: toLevel });
+      await onDone();
+    } catch (e) {
+      select.disabled = false;
+      select.value = "1";
+      select.title = `Failed: ${e.message}`;
+    }
+  });
+  return wrap;
+}
+
+// The spoiler control(s) for one game. LEVEL_HIDDEN and LEVEL_FULL each
+// have only one direction to move in, so they get a single labeled step
+// button; LEVEL_SCORE gets the dropdown above. Callers typically prepend
+// the result into a chip row and filter out the plain HIDDEN/RATING ONLY
+// text chip gameChips()/renderChips() would otherwise render there, since
+// this replaces it with an interactive equivalent (and, at LEVEL_FULL,
+// adds a control where no chip existed before).
+function spoilerControls(g, onDone) {
+  const level = g.spoiler_level;
+  if (level === 0) {
+    return [spoilerStepButton(g, 1, "Hidden", "Reveal the watchability rating", onDone)];
+  }
+  if (level === 2) {
+    return [spoilerStepButton(g, 1, "Revealed", "Hide the final score and details", onDone)];
+  }
+  if (level === 1) {
+    return [spoilerLevelSelect(g, onDone)];
+  }
+  return [];
+}
+
 // live_metrics rows come back from the API as {raw, normalized, weight,
 // applicable} -- adapt to the {raw, norm, weighted, at_cap} shape
 // contributionBars() expects (the same shape /api/games' retrospective

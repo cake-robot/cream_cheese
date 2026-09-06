@@ -64,9 +64,18 @@ const LEVEL_FULL = 2;
 // misleading for one that's just hidden.)
 function renderHidden(mount, detail) {
   const g = detail.game;
+  // Same tag-click interaction as slate.html: the plain HIDDEN chip
+  // renderChips() would otherwise render here is replaced by an
+  // interactive one (app.js's spoilerControls()) that steps spoiler_level
+  // itself -- the card below still offers the two-step progressive
+  // disclosure as an explicit alternative.
+  const headerSpoilerControls = spoilerControls(g, loadAndRenderGame);
+  const headerChips = renderChips(g).filter(
+    (c) => !(headerSpoilerControls.length && (c.textContent === "HIDDEN" || c.textContent === "RATING ONLY"))
+  );
   mount.appendChild(el("div", { class: "matchup-header" }, [
     el("div", {}, [
-      el("h1", {}, [fmtMatchup(g) + " ", ...renderChips(g)]),
+      el("h1", {}, [...headerSpoilerControls, fmtMatchup(g) + " ", ...headerChips]),
       el("div", { class: "sub", text: `${fmtDate(g.game_date)}${venueLabel(g) ? " · " + venueLabel(g) : ""}${g.attendance ? " · " + g.attendance.toLocaleString() : ""} · ${seasonWeekLabel(g)}` }),
     ]),
   ]));
@@ -209,9 +218,18 @@ function renderLive(mount, detail) {
   const live = detail.live;
   const level = g.spoiler_level;
 
+  // Same tag-click interaction as renderHidden()/renderScored() below --
+  // LEVEL_HIDDEN never reaches renderLive() (loadAndRenderGame() routes it
+  // to renderHidden() instead when detail.live is null), so only the
+  // RATING ONLY chip (level 1) and no chip at all (level 2) can appear
+  // here; spoilerControls() replaces either with the interactive step.
+  const headerSpoilerControls = spoilerControls(g, loadAndRenderGame);
+  const headerChips = renderChips(g).filter(
+    (c) => !(headerSpoilerControls.length && (c.textContent === "HIDDEN" || c.textContent === "RATING ONLY"))
+  );
   mount.appendChild(el("div", { class: "matchup-header" }, [
     el("div", {}, [
-      el("h1", {}, [fmtMatchup(g) + " ", ...renderChips(g)]),
+      el("h1", {}, [...headerSpoilerControls, fmtMatchup(g) + " ", ...headerChips]),
       el("div", {
         class: "sub",
         text: `${live.status.detail || "In progress"} · ${fmtDate(g.game_date)}${venueLabel(g) ? " · " + venueLabel(g) : ""} · ${seasonWeekLabel(g)}`,
@@ -424,8 +442,12 @@ function renderScored(mount, detail) {
   ]);
   const metaText = [fmtDate(g.game_date), venueLabel(g), g.attendance ? g.attendance.toLocaleString() : null, seasonWeekLabel(g)]
     .filter(Boolean).join(" · ");
+  // spoilerControls() prepended into the chip row (same tag-click
+  // interaction as slate.html): a LEVEL_FULL game had no way at all to
+  // hide back down before this -- the "Revealed" chip it returns here
+  // steps back to LEVEL_SCORE.
   const heroLeft = el("div", {}, [
-    el("div", { class: "g-chip-row" }, scoredHeroChips(g)),
+    el("div", { class: "g-chip-row" }, [...spoilerControls(g, loadAndRenderGame), ...scoredHeroChips(g)]),
     matchup,
     el("div", { class: "g-meta", text: metaText }),
   ]);
@@ -512,8 +534,12 @@ function renderScoreOnly(mount, detail) {
   ]);
   const metaText = [fmtDate(g.game_date), venueLabel(g), g.attendance ? g.attendance.toLocaleString() : null, seasonWeekLabel(g)]
     .filter(Boolean).join(" · ");
+  // spoilerControls() prepended into the chip row (same tag-click
+  // interaction as slate.html): LEVEL_SCORE gets the 3-option dropdown, so
+  // both "hide the rating too" and "show final score" are one direct pick
+  // away right here -- no separate reveal button needed below.
   const heroLeft = el("div", {}, [
-    el("div", { class: "g-chip-row" }, scoredHeroChips(g)),
+    el("div", { class: "g-chip-row" }, [...spoilerControls(g, loadAndRenderGame), ...scoredHeroChips(g)]),
     matchup,
     el("div", { class: "g-meta", text: metaText }),
   ]);
@@ -538,22 +564,9 @@ function renderScoreOnly(mount, detail) {
     el("h2", { text: "🙈 Rating only" }),
     el("div", {
       class: "card-sub",
-      text: "The final score, winner, and what drove this rating are still hidden.",
+      text: "The final score, winner, and what drove this rating are still hidden. Use the tag above to reveal or re-hide.",
     }),
   ]);
-  const revealBtn = el("button", { class: "reset", text: "Show final score" });
-  revealBtn.addEventListener("click", async () => {
-    revealBtn.disabled = true;
-    revealBtn.textContent = "Loading…";
-    try {
-      await apiPost("/spoilers/game", { game_id: g.game_id, level: LEVEL_FULL });
-      await loadAndRenderGame();
-    } catch (e) {
-      revealBtn.disabled = false;
-      revealBtn.textContent = `Failed: ${e.message} -- try again`;
-    }
-  });
-  revealCard.appendChild(revealBtn);
   mount.appendChild(revealCard);
 }
 
