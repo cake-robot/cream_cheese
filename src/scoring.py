@@ -40,6 +40,39 @@ CLUTCH_FINISH_MIN_FRACTION = 0.20
 # (0.7/1.5 = 0.47 normalized), but above a flat zero.
 CLUTCH_FINISH_OT_FLOOR = 0.7
 
+# --- clutch_finish "Rule A/B": a trailing team's late TD+conversion-try
+# attempt is the clutch moment, regardless of whether the try itself
+# succeeds -- so it's credited as if it did, using the same
+# CLUTCH_FINISH_NON_FIELD_GOAL_VALUE tier every other TD-based qualifying
+# event uses (a TD's try is never worth exactly 3, so this never collides
+# with the field-goal tier).
+#
+# Rule A: down by exactly this many points, any TD (which, from 8 down,
+# can only be trying to tie) is presumed to be a tie attempt -- credited
+# like a real game-tying score, but WITHOUT the real tie-transition path's
+# is_ot requirement (see clutch_finish's loop): most 2-point tries fail,
+# so gating this on actually reaching OT would silently gut the rule for
+# its majority case. Doesn't need play-by-play data at all -- purely a
+# score-deficit check.
+CLUTCH_FINISH_TIE_ATTEMPT_DEFICIT = 8
+# Rule B: down by exactly this many points, a TD is ambiguous -- kicking
+# the extra point ties it (already handled by the ordinary tie-transition
+# path) OR going for 2 to try to win outright. Only the latter qualifies
+# here, and unlike Rule A it's credited as a LEAD-TAKE, not a tie -- lead-
+# takes already qualify unconditionally in the loop below with no code
+# changes needed. Telling "went for 2" apart from "missed the routine
+# kick" (same final score either way) requires the conversion-type read
+# from espn.extract_two_point_attempts; if that reads unknown, this rule
+# does not fire -- see that function's docstring for why unknown must
+# never be treated as a guess.
+CLUTCH_FINISH_LEAD_ATTEMPT_DEFICIT = 7
+# The assumed point value of a successful conversion, fed into the
+# effective (not real) score used only to decide whether Rule A/B
+# qualifies on this row -- never written back into the loop's real
+# home_score/away_score, which must stay accurate for every later
+# iteration's own deficit check.
+CLUTCH_FINISH_ASSUMED_CONVERSION_POINTS = 8
+
 # --- comeback_erosion: how far a side's coin-flip-normalized WP must have
 # climbed before a later decline off it counts as eroding a real lead.
 # Originally chosen empirically against wp_baseline (a coinflip team up 14
@@ -128,7 +161,7 @@ def late_volatility(wp_rows):
     return total
 
 
-def clutch_finish(wp_rows):
+def clutch_finish(wp_rows, two_point_attempts=None):
     """
     Credit for the final CLUTCH_FINISH_WINDOW_SECONDS of regulation being
     genuinely live: a team taking the lead (breaking a tie or overcoming a
@@ -155,6 +188,21 @@ def clutch_finish(wp_rows):
     data -- reuses the same non-decreasing score sanitization as
     lead_changes() to ignore ESPN score-field glitches, and the same
     3-state (home/away/tied) tracking, seeded tied like lead_changes().
+
+    Rule A/B (see CLUTCH_FINISH_TIE_ATTEMPT_DEFICIT/LEAD_ATTEMPT_DEFICIT):
+    a trailing team's TD+conversion-try attempt, down by exactly 7 or 8, is
+    itself the clutch moment -- credited as if the try succeeded regardless
+    of whether it actually did, since an ordinary state-transition read
+    would otherwise see nothing at all here (the real state usually
+    doesn't change on a failed try -- the scorer is still trailing before
+    and after). Checked independently of, and in addition to, the ordinary
+    transition check above, using prev_home/prev_away (the real score
+    immediately before this row) purely to decide whether THIS row
+    qualifies -- home_score/away_score themselves are never touched by it,
+    so every later iteration's own deficit read stays accurate. Down 7
+    additionally needs two_point_attempts to confirm the team actually
+    went for 2 rather than just missing the routine kick (same resulting
+    score either way) -- see espn.extract_two_point_attempts.
     """
     home_score, away_score = 0, 0
     last_state = 0
@@ -163,15 +211,24 @@ def clutch_finish(wp_rows):
     is_ot = any(r["period_number"] is not None and r["period_number"] > 4 for r in wp_rows)
     window_start = REGULATION_SECONDS - CLUTCH_FINISH_WINDOW_SECONDS
 
+    two_point_lookup = {
+        (a["period"], a["home_score"], a["away_score"]): a["is_two_point"]
+        for a in (two_point_attempts or [])
+    }
+
     for r in wp_rows:
+        prev_home, prev_away = home_score, away_score
         h, a = r["home_score"], r["away_score"]
         delta = None
+        scorer_is_home = None
         if h is not None and h > home_score:
             delta = h - home_score
+            scorer_is_home = True
         if h is not None and h >= home_score:
             home_score = h
         if a is not None and a > away_score:
             delta = a - away_score
+            scorer_is_home = False
         if a is not None and a >= away_score:
             away_score = a
 
@@ -182,20 +239,41 @@ def clutch_finish(wp_rows):
         else:
             state = 0
 
+        period, elapsed = r["period_number"], r["clock_seconds_elapsed"]
+        in_window = (
+            period == 4 and elapsed is not None
+            and elapsed >= window_start
+        )
+
+        qualifies = False
+        qualifying_delta = delta
+
         if state != last_state:
-            period, elapsed = r["period_number"], r["clock_seconds_elapsed"]
-            in_window = (
-                period == 4 and elapsed is not None
-                and elapsed >= window_start
-            )
             # A lead-take always qualifies if it's in the window. A
             # tie-transition only qualifies if the game actually went to
             # OT -- otherwise this tie was undone later in regulation and
             # isn't the game's real final state (that later transition,
             # win or tie, gets its own chance to qualify as it's reached).
             if in_window and (state != 0 or is_ot):
-                last_qualifying_delta = delta
-                last_qualifying_elapsed = elapsed
+                qualifies = True
+
+        if in_window and delta is not None and delta >= 6 and scorer_is_home is not None:
+            deficit_before = (
+                (prev_away - prev_home) if scorer_is_home else (prev_home - prev_away)
+            )
+            is_two_point = two_point_lookup.get((period, h, a))
+            rule_a = deficit_before == CLUTCH_FINISH_TIE_ATTEMPT_DEFICIT
+            rule_b = (
+                deficit_before == CLUTCH_FINISH_LEAD_ATTEMPT_DEFICIT
+                and is_two_point is True
+            )
+            if rule_a or rule_b:
+                qualifies = True
+                qualifying_delta = CLUTCH_FINISH_ASSUMED_CONVERSION_POINTS
+
+        if qualifies:
+            last_qualifying_delta = qualifying_delta
+            last_qualifying_elapsed = elapsed
         last_state = state
 
     if last_qualifying_delta is not None:
@@ -827,7 +905,7 @@ METRICS = [
     {"name": "team_profile",     "fn": lambda ctx: team_profile(ctx["home_rank"], ctx["away_rank"]),  "weight": 1.0, "cap": MAX_TEAM_PROFILE},
     {"name": "upset_risk",       "fn": lambda ctx: upset_risk(ctx["initial_home_wp"], ctx["home_rank"], ctx["away_rank"], ctx["wp_rows"]), "weight": 1.0, "cap": None},
     {"name": "late_volatility",  "fn": lambda ctx: late_volatility(ctx["wp_rows"]),                   "weight": 0.5, "cap": MAX_LATE_VOLATILITY},
-    {"name": "clutch_finish",    "fn": lambda ctx: clutch_finish(ctx["wp_rows"]),                      "weight": 1.0, "cap": MAX_CLUTCH_FINISH},
+    {"name": "clutch_finish",    "fn": lambda ctx: clutch_finish(ctx["wp_rows"], ctx.get("two_point_attempts")), "weight": 1.0, "cap": MAX_CLUTCH_FINISH},
     # comeback_erosion (WP-based) retired from the active composite 2026-09-05,
     # replaced by comeback_margin_q4_close (raw-points, arc-scoped) as the
     # site's sole "Comeback" signal -- see comeback_erosion's own docstring
@@ -1091,10 +1169,12 @@ def score_games(conn, game_ids=None, rescore=False):
 
         raw = db.get_game_raw_json(conn, game_id)
         situational_plays = espn.extract_situational_plays(raw, row["home_team_id"]) if raw else []
+        two_point_attempts = espn.extract_two_point_attempts(raw) if raw else []
 
         context = {
             "wp_rows": wp_rows,
             "situational_plays": situational_plays,
+            "two_point_attempts": two_point_attempts,
             "home_rank": row["home_rank"],
             "away_rank": row["away_rank"],
             "initial_home_wp": row["initial_home_wp"],
