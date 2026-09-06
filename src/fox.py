@@ -245,6 +245,16 @@ def _attach_try_results(steps, play_rows):
     play_rows is 1:1 with play_sequence (play_rows[i]['play_sequence'] ==
     i + 1), so a TD's own play_sequence is a direct list index into the
     plays right after it.
+
+    A matched try whose own description ends in "No Play" was nullified by
+    an accepted penalty (Fox still narrates the kick/pass result before the
+    penalty text) -- it never happened as far as the game's real outcome is
+    concerned, so it's skipped rather than accepted, and the scan keeps
+    going for the actual re-attempt. Confirmed concretely on UTSA@CSU (fox
+    event 41608): "I.Hankins extra point is good. PENALTY ... accepted. No
+    Play." at the first lookahead play, with the real, game-deciding
+    two-point attempt (and its FAILS) three plays later -- without this
+    check, the nullified "good" kick is what got recorded.
     """
     n_plays = len(play_rows)
     for step in steps:
@@ -259,6 +269,8 @@ def _attach_try_results(steps, play_rows):
             desc = play_rows[idx]["play_description"] or ""
             if "TOUCHDOWN" in desc or _is_kickoff(desc):
                 break
+            if "No Play" in desc:
+                continue
             try_type, try_result, decisive = _classify_try(desc)
             if try_type:
                 step["try_type"] = try_type

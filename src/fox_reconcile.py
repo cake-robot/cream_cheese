@@ -1,11 +1,19 @@
-from . import db, scoring
+from . import db, espn, scoring
 from .scoring import (
     REGULATION_SECONDS,
     CLUTCH_FINISH_WINDOW_SECONDS,
     CLUTCH_FINISH_FIELD_GOAL_VALUE,
     CLUTCH_FINISH_NON_FIELD_GOAL_VALUE,
+    CLUTCH_FINISH_MIN_FRACTION,
     CLUTCH_FINISH_OT_FLOOR,
+    CLUTCH_FINISH_TIE_ATTEMPT_DEFICIT,
+    CLUTCH_FINISH_LEAD_ATTEMPT_DEFICIT,
+    CLUTCH_FINISH_ASSUMED_CONVERSION_POINTS,
 )
+
+# See diff_game()'s clutch_finish comparison for why this needs to be a
+# tolerance rather than exact equality.
+CLUTCH_FINISH_DIFF_TOLERANCE = 0.08
 
 
 def _parse_clock(display):
@@ -114,7 +122,9 @@ def fox_clutch_finish(fox_ladder, fox_plays_by_seq):
     Mirrors scoring.clutch_finish() exactly (a team taking the lead, or
     tying the game and that tie holding into overtime, within the final
     minute of regulation; every OT game floors at CLUTCH_FINISH_OT_FLOOR
-    even with no such swing).
+    even with no such swing) -- including its Rule A/B triggers (a
+    trailing team's TD+try attempt, down exactly 7 or 8, credited as if
+    the try succeeded regardless of whether it did).
 
     Walks the ladder with the same 0/home/away state tracking as
     fox_lead_changes(), but only trusts the clock on a qualifying
@@ -124,6 +134,26 @@ def fox_clutch_finish(fox_ladder, fox_plays_by_seq):
     an unresolvable step is the only candidate late swing, this returns
     None (undetermined) rather than guessing; diff_game() only compares
     clutch_finish when both sides resolve to a concrete value.
+
+    Rule A/B here reads fox_score_sequence's own try_type column (see
+    fox._attach_try_results) instead of espn.extract_two_point_attempts --
+    a genuinely independent read, not a re-use of the ESPN-side
+    classification. Every TD step in this ladder carries exactly delta==6
+    (see build_score_sequence's docstring: Fox always splits a TD from its
+    try, unlike ESPN's bundled scoringPlays text), so a successful try
+    already shows up as its OWN later step and is handled by the ordinary
+    transition check above -- Rule A/B only needs to fire on the TD step
+    itself, unconditional on try_result, to cover the (far more common)
+    failed-try case that never produces a follow-up step at all.
+
+    Applies the identical CLUTCH_FINISH_MIN_FRACTION time-decay
+    scoring.clutch_finish() does (using this same elapsed reading), not
+    just the flat per-tier value -- needed for genuine value-for-value
+    parity between the two sides. Without it, diff_game() would flag a
+    'diff' on nearly every game with a real qualifying event purely from
+    this scaling gap, not a real ESPN/Fox disagreement, and
+    apply_corrections() would then silently overwrite the correct
+    time-scaled ESPN value with a flat tier constant on every rescore.
     """
     if not fox_ladder:
         return None
@@ -132,9 +162,12 @@ def fox_clutch_finish(fox_ladder, fox_plays_by_seq):
     home_score, away_score = 0, 0
     last_state = 0
     last_qualifying_delta = None
+    last_qualifying_elapsed = None
     ambiguous = False
+    window_start = REGULATION_SECONDS - CLUTCH_FINISH_WINDOW_SECONDS
 
     for step in fox_ladder:
+        prev_home, prev_away = home_score, away_score
         if step["team"] == "home":
             home_score = step["new_value"]
         else:
@@ -146,6 +179,10 @@ def fox_clutch_finish(fox_ladder, fox_plays_by_seq):
         else:
             state = 0
 
+        qualifies = False
+        qualifying_delta = step["delta"]
+        qualifying_elapsed = None
+
         if state != last_state:
             if not step["exact"]:
                 ambiguous = True
@@ -155,13 +192,38 @@ def fox_clutch_finish(fox_ladder, fox_plays_by_seq):
                 plausible_late = play and play["period_number"] is not None and play["period_number"] <= 4
                 if plausible_late and elapsed is None:
                     ambiguous = True
-                elif elapsed is not None and elapsed >= REGULATION_SECONDS - CLUTCH_FINISH_WINDOW_SECONDS:
+                elif elapsed is not None and elapsed >= window_start:
                     if state != 0 or is_ot:
-                        last_qualifying_delta = step["delta"]
+                        qualifies = True
+                        qualifying_elapsed = elapsed
+
+        if step["delta"] == 6 and step["exact"]:
+            play = fox_plays_by_seq.get(step["seq_hi"])
+            elapsed = _elapsed_seconds(play["period_number"], play["time_of_play"]) if play else None
+            if elapsed is not None and elapsed >= window_start:
+                scorer_is_home = step["team"] == "home"
+                deficit_before = (
+                    (prev_away - prev_home) if scorer_is_home else (prev_home - prev_away)
+                )
+                try_type = step.get("try_type")
+                rule_a = deficit_before == CLUTCH_FINISH_TIE_ATTEMPT_DEFICIT
+                rule_b = deficit_before == CLUTCH_FINISH_LEAD_ATTEMPT_DEFICIT and try_type == "two_point"
+                if rule_a or rule_b:
+                    qualifies = True
+                    qualifying_delta = CLUTCH_FINISH_ASSUMED_CONVERSION_POINTS
+                    qualifying_elapsed = elapsed
+
+        if qualifies:
+            last_qualifying_delta = qualifying_delta
+            last_qualifying_elapsed = qualifying_elapsed
         last_state = state
 
     if last_qualifying_delta is not None:
-        return CLUTCH_FINISH_FIELD_GOAL_VALUE if last_qualifying_delta == 3 else CLUTCH_FINISH_NON_FIELD_GOAL_VALUE
+        base = CLUTCH_FINISH_FIELD_GOAL_VALUE if last_qualifying_delta == 3 else CLUTCH_FINISH_NON_FIELD_GOAL_VALUE
+        t = (last_qualifying_elapsed - window_start) / CLUTCH_FINISH_WINDOW_SECONDS
+        t = max(0.0, min(1.0, t))
+        fraction = CLUTCH_FINISH_MIN_FRACTION + (1.0 - CLUTCH_FINISH_MIN_FRACTION) * t
+        return base * fraction
     if ambiguous:
         return None
     return CLUTCH_FINISH_OT_FLOOR if is_ot else 0.0
@@ -225,17 +287,30 @@ def diff_game(conn, game_id):
             ),
         }
 
+    raw = db.get_game_raw_json(conn, game_id)
+    two_point_attempts = espn.extract_two_point_attempts(raw) if raw else []
+
     espn_lc = scoring.lead_changes(wp_rows)
     fox_lc = fox_lead_changes(fox_ladder)
-    espn_cf = scoring.clutch_finish(wp_rows)
+    espn_cf = scoring.clutch_finish(wp_rows, two_point_attempts)
     fox_cf = fox_clutch_finish(fox_ladder, fox_plays_by_seq)
 
     diffs = {}
     if espn_lc != fox_lc:
         diffs["lead_changes"] = {"espn": espn_lc, "fox": fox_lc}
     # clutch_finish: None means "undetermined" (Fox couldn't resolve a
-    # play's clock) -- only compare when both sides resolve.
-    if espn_cf is not None and fox_cf is not None and espn_cf != fox_cf:
+    # play's clock) -- only compare when both sides resolve. Uses a
+    # tolerance, not exact equality: both sides apply the identical
+    # CLUTCH_FINISH_MIN_FRACTION time-decay off their OWN independently-
+    # parsed game clock, and ESPN/Fox routinely read the same real-world
+    # play's remaining time a few seconds apart -- observed up to ~0.07 of
+    # raw-value gap on games both sides otherwise agree qualify. A genuine
+    # disagreement (a different play entirely, or field-goal vs.
+    # non-field-goal tier) swings by 0.3+, well outside this band.
+    if (
+        espn_cf is not None and fox_cf is not None
+        and abs(espn_cf - fox_cf) > CLUTCH_FINISH_DIFF_TOLERANCE
+    ):
         diffs["clutch_finish"] = {"espn": espn_cf, "fox": fox_cf}
 
     return {
