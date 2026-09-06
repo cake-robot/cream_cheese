@@ -317,6 +317,53 @@ class FixtureTests(unittest.TestCase):
         plays = self._situational_plays("401629041")
         self.assertEqual(scoring.comeback_margin_q4_close(plays), 0)
 
+    def test_comeback_margin_q4_curve_matches_tuned_control_points(self):
+        # comeback_margin_q4_curve replaced a flat linear cap (2026-09-05,
+        # interactive tuning session): a 9-point margin (the minimum that
+        # can ever fire) reads much lower than the old linear cap=20 gave
+        # (0.25 vs 0.45), while a ~20-21 point recovery stays close to
+        # "mostly there" instead of a flat cap forcing it to either sit at
+        # a hard 1.0 or get cut by the same proportion as the 9-point case.
+        # These are the exact control points scripts/build_comeback_margin_curve.py
+        # was generated from -- if this test needs updating, the table in
+        # scoring.py needs regenerating from that script too, not just this
+        # assertion relaxed.
+        cases = [
+            (0, 0.0), (9, 0.25), (14, 0.42), (17, 0.68),
+            (21, 0.90), (24, 0.95), (28, 0.98), (32, 0.99), (40, 1.0),
+        ]
+        for raw, expected in cases:
+            with self.subTest(raw=raw):
+                self.assertAlmostEqual(scoring.comeback_margin_q4_curve(raw), expected, places=2)
+
+    def test_comeback_margin_q4_curve_monotonic_and_bounded(self):
+        values = [scoring.comeback_margin_q4_curve(r) for r in range(0, 61)]
+        self.assertTrue(all(0.0 <= v <= 1.0 for v in values))
+        self.assertTrue(all(b >= a for a, b in zip(values, values[1:])))
+        # Past the table's built-in safety margin (40), further raw increases
+        # clamp flat at 1.0 rather than indexing out of range.
+        self.assertEqual(scoring.comeback_margin_q4_curve(45), 1.0)
+        self.assertEqual(scoring.comeback_margin_q4_curve(1000), 1.0)
+
+    def test_comeback_margin_q4_close_registered_with_callable_curve_cap(self):
+        # composite_from()/_normalize() both need a callable-cap branch since
+        # this is the first METRICS entry whose cap isn't a plain number or
+        # None -- confirm the registry is actually wired to the curve (not a
+        # leftover flat MAX_COMEBACK_MARGIN_Q4) and that normalization goes
+        # through it correctly, not raw/cap.
+        cap = scoring.METRICS_BY_NAME["comeback_margin_q4_close"]["cap"]
+        self.assertTrue(callable(cap))
+        self.assertEqual(cap, scoring.comeback_margin_q4_curve)
+        self.assertAlmostEqual(
+            scoring._normalize("comeback_margin_q4_close", 14),
+            scoring.comeback_margin_q4_curve(14),
+        )
+        self.assertNotAlmostEqual(
+            scoring._normalize("comeback_margin_q4_close", 14),
+            14 / scoring.MAX_COMEBACK_MARGIN_Q4,  # the old linear formula
+            places=2,
+        )
+
     def test_severe_score_corruption_no_crash(self):
         # home_score goes negative (-38 / -3) for dozens of consecutive rows
         # in these two games -- verified in data_quality_findings.md as the
