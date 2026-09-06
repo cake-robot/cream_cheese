@@ -412,12 +412,37 @@ def _fox_harvest_teams(conn, fox_event_id, header):
             db.upsert_fox_team(conn, {**team, "first_seen_event_id": fox_event_id})
 
 
-def _fox_store_pbp(conn, fox_event_id, payload):
+def _fox_pbp_is_final(status_line):
+    """Whether Fox's own status line means this event will never produce any
+    *more* play data -- either it already finished (FINAL) or it will never
+    be played at all (CANCELLED/POSTPONED). Anything else -- blank (still
+    scheduled, pre-kickoff) or a live in-progress clock -- means real plays
+    may still show up on a later fetch, so pbp_fetched must not be set yet.
+    """
+    s = (status_line or "").upper()
+    return "FINAL" in s or "CANCEL" in s or "POSTPON" in s
+
+
+def _fox_store_pbp(conn, fox_event_id, payload, status_line=""):
+    """
+    Parse+store whatever plays this fetch returned, but only latch
+    pbp_fetched=1 when there's actually something final to latch: either
+    real plays came back, or the event's status says none ever will
+    (_fox_pbp_is_final). Fox creates an event row for a game's ID well
+    before kickoff (an "in_window" date match, zero plays, blank status) --
+    marking that unconditionally as pbp_fetched used to permanently starve
+    the game of real data, since every later cache lookup in _fox_get()
+    treats pbp_fetched=1 as "nothing left to do" and never asks again, even
+    after the game is actually played. Confirmed in production data:
+    hundreds of future-dated fox_events rows latched at 0 plays back when
+    the ID walk first overran into next season's already-created schedule.
+    """
     plays = fox.parse_pbp_plays(payload)
     db.upsert_fox_plays(conn, fox_event_id, plays)
     seq = fox.build_score_sequence(plays)
     db.replace_fox_score_sequence(conn, fox_event_id, seq)
-    db.mark_fox_pbp_fetched(conn, fox_event_id)
+    if plays or _fox_pbp_is_final(status_line):
+        db.mark_fox_pbp_fetched(conn, fox_event_id)
     return plays, seq
 
 
@@ -456,7 +481,9 @@ def _fox_get(conn, fox_event_id, window_start, window_end, counters):
             counters["fetches"] += 1
             payload = fox.fetch_event(fox_event_id)
             if payload is not None:
-                plays, seq = _fox_store_pbp(conn, fox_event_id, payload)
+                header = fox.parse_header(payload)
+                db.upsert_fox_event(conn, _fox_event_dict(fox_event_id, "ok", header, in_window))
+                plays, seq = _fox_store_pbp(conn, fox_event_id, payload, header.get("status_line"))
                 print(f"  event {fox_event_id}: {row['event_date']} (backfilled from prior probe) "
                       f"[{len(plays)} plays, {len(seq)} sequence steps]")
 
@@ -496,7 +523,7 @@ def _fox_get(conn, fox_event_id, window_start, window_end, counters):
     _fox_harvest_teams(conn, fox_event_id, header)
 
     if in_window:
-        plays, seq = _fox_store_pbp(conn, fox_event_id, payload)
+        plays, seq = _fox_store_pbp(conn, fox_event_id, payload, header.get("status_line"))
         label = f"{header['away_abbr']} @ {header['home_abbr']}"
         print(
             f"  event {fox_event_id}: {date}  {label}  "
@@ -678,7 +705,7 @@ def fox_pull_event(conn, fox_event_id, force=False):
     header = fox.parse_header(payload)
     db.upsert_fox_event(conn, _fox_event_dict(fox_event_id, "ok", header, in_window=True))
     _fox_harvest_teams(conn, fox_event_id, header)
-    plays, seq = _fox_store_pbp(conn, fox_event_id, payload)
+    plays, seq = _fox_store_pbp(conn, fox_event_id, payload, header.get("status_line"))
     conn.commit()
     print(
         f"Event {fox_event_id}: {header['away_abbr']} {header['away_score']} @ "
