@@ -35,6 +35,15 @@ AUTH_FILE = REPO_ROOT / "data" / "auth.json"
 TOTAL_WEIGHT = sum(m["weight"] for m in scoring.METRICS)
 MANUAL_CORRECTION_GAME_IDS = {c["game_id"] for c in corrections_module.CORRECTIONS}
 
+
+def _cap_json(cap):
+    """JSON-safe cap value for API responses: a flat numeric cap or None
+    passes through unchanged; a callable non-linear curve (e.g.
+    scoring.comeback_margin_q4_curve) can't be serialized, so it reports as
+    None -- same as any other metric whose raw value is already bounded
+    [0,1] with no single flat cap number to show."""
+    return None if callable(cap) else cap
+
 BIN_WIDTH = 0.035
 N_BINS = 20
 
@@ -1436,7 +1445,7 @@ def api_metrics():
             "label": METRIC_COPY[name]["label"],
             "description": METRIC_COPY[name]["description"],
             "weight": m["weight"],
-            "cap": m["cap"],
+            "cap": _cap_json(m["cap"]),
             "n": n_metric,
             "avg_raw": s["avg_raw"] if s else None,
             "max_raw": s["max_raw"] if s else None,
@@ -1460,14 +1469,14 @@ def api_slate_registry():
         "short_label": live.LIVE_METRIC_LABELS[m["name"]],
         "description": LIVE_METRIC_COPY[m["name"]]["description"],
         "naLabel": LIVE_METRIC_COPY[m["name"]].get("naLabel"),
-        "weight": m["weight"], "cap": m["cap"],
+        "weight": m["weight"], "cap": _cap_json(m["cap"]),
     } for m in live.LIVE_SO_FAR_METRICS]
     from_here = [{
         "name": m["name"], "half": "from_here", "label": LIVE_METRIC_COPY[m["name"]]["label"],
         "short_label": live.LIVE_METRIC_LABELS[m["name"]],
         "description": LIVE_METRIC_COPY[m["name"]]["description"],
         "naLabel": LIVE_METRIC_COPY[m["name"]].get("naLabel"),
-        "weight": m["weight"], "cap": m["cap"],
+        "weight": m["weight"], "cap": _cap_json(m["cap"]),
     } for m in live.LIVE_FROM_HERE_METRICS]
     return jsonify({
         "weights": {"so_far": live.LIVE_W_SO_FAR, "from_here": live.LIVE_W_FROM_HERE},
@@ -2353,7 +2362,7 @@ def api_game_detail(game_id):
     registry = [{
         "name": m["name"], "label": METRIC_COPY[m["name"]]["label"],
         "description": METRIC_COPY[m["name"]]["description"],
-        "weight": m["weight"], "cap": m["cap"],
+        "weight": m["weight"], "cap": _cap_json(m["cap"]),
     } for m in scoring.METRICS]
 
     # Additive only -- present only for a game currently tracked live
@@ -2536,7 +2545,7 @@ def api_top():
         WHERE {where_sql} AND gm.norm_value >= 1.0
     """, [by] + params).fetchone()["n"]
     cap_warning = None
-    if m["cap"] is not None and n_at_cap > 0:
+    if m["cap"] is not None and not callable(m["cap"]) and n_at_cap > 0:
         cap_warning = (
             f"{n_at_cap} games are at the {m['cap']} cap for {METRIC_COPY[by]['label']}; "
             f"this ranking separates them by raw value, but the composite score does not."
@@ -2764,7 +2773,7 @@ def api_analytics():
         designed_share = m["weight"] / TOTAL_WEIGHT
         delivered_share = (mean_weighted / (TOTAL_WEIGHT * mean_score)) if mean_score else 0.0
         weight_vs_delivery.append({
-            "name": name, "label": METRIC_COPY[name]["label"], "weight": m["weight"], "cap": m["cap"],
+            "name": name, "label": METRIC_COPY[name]["label"], "weight": m["weight"], "cap": _cap_json(m["cap"]),
             "n": n_metric, "avg_raw": s["avg_raw"] if s else None, "max_raw": s["max_raw"] if s else None,
             "avg_norm": avg_norm, "n_at_cap": s["n_at_cap"] if s else 0,
             "pct_at_cap": (s["n_at_cap"] / n_metric * 100) if n_metric else 0.0,
