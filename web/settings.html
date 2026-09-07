@@ -183,6 +183,11 @@ function renderOverrideRow(o, labelText, onClear) {
   return el("div", { class: "s-override-row" }, [removeBtn, el("span", { text: labelText })]);
 }
 
+// game_id -> /api/spoilers/search result (or null if not found), reused
+// across renderOverrides() calls for the page's lifetime -- see the cache
+// check inside the games.forEach below for why this exists.
+const GAME_SEARCH_CACHE = new Map();
+
 async function renderOverrides(overrides) {
   const weekList = document.getElementById("week-overrides-list");
   const gameList = document.getElementById("game-overrides-list");
@@ -208,11 +213,8 @@ async function renderOverrides(overrides) {
   games.forEach((o) => {
     const row = el("div", { class: "s-override-row" }, [el("span", { text: `Loading ${o.game_id}…` })]);
     gameList.appendChild(row);
-    // /api/spoilers/search deliberately bypasses the spoiler policy -- this
-    // list needs to label hidden games too, or every row here would just
-    // read "Loading" forever.
-    api("/spoilers/search", { game_id: o.game_id }).then((data) => {
-      const g = data.results[0];
+
+    const fill = (g) => {
       const labelText = g
         ? `${fmtMatchup(g)} — ${seasonWeekLabel(g)} — ${levelName(o)}`
         : overrideLabel(o);
@@ -224,6 +226,32 @@ async function renderOverrides(overrides) {
       ));
       row.appendChild(removeBtn);
       row.appendChild(el("a", { href: `/game.html?id=${o.game_id}`, text: labelText }));
+    };
+
+    if (GAME_SEARCH_CACHE.has(o.game_id)) {
+      fill(GAME_SEARCH_CACHE.get(o.game_id));
+      return;
+    }
+
+    // /api/spoilers/search deliberately bypasses the spoiler policy -- this
+    // list needs to label hidden games too, or every row here would just
+    // read "Loading" forever. Results are cached per game_id for the page's
+    // lifetime: clearing one override re-renders every remaining row, and
+    // without the cache that re-fired one search request per row on every
+    // single clear -- with 40+ overrides active that was enough requests to
+    // trip the server's rate limiter, and a throttled row had no retry and
+    // never got its removeBtn attached, so it was stuck on "Loading" with no
+    // way to clear it from the UI at all.
+    api("/spoilers/search", { game_id: o.game_id }).then((data) => {
+      const g = data.results[0] || null;
+      GAME_SEARCH_CACHE.set(o.game_id, g);
+      fill(g);
+    }).catch(() => {
+      // Don't cache a failure (e.g. a 429) -- the next render should retry
+      // rather than permanently settling for the raw-label fallback. Still
+      // fill the row so a throttled lookup doesn't block clearing the
+      // override itself.
+      fill(null);
     });
   });
 }
