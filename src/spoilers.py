@@ -448,6 +448,27 @@ def set_user_game(user_id, game_id, level, conn=None):
             conn.close()
 
 
+def clear_user_games(user_id, game_ids, conn=None):
+    """Bulk analog of set_user_game(user_id, gid, None) for many game_ids at
+    once -- one lock acquisition and one write instead of N, for the
+    Settings page's "clear all overrides for a week" action (a user
+    otherwise has to click each row's individual clear button)."""
+    own_conn = conn is None
+    conn = conn or _users.get_connection()
+    try:
+        with _users.LOCK:
+            policy = get_user_policy(user_id, conn=conn)
+            games = dict(policy.get("games", {}))
+            for game_id in game_ids:
+                games.pop(game_id, None)
+            policy = dict(policy)
+            policy["games"] = games
+            return save_user_policy(user_id, policy, conn=conn)
+    finally:
+        if own_conn:
+            conn.close()
+
+
 def set_user_default(user_id, season_year, season_type, week, conn=None):
     """season_year: int | None -- see set_default()'s docstring; None
     resets the threshold to DEFAULT_HIDDEN_FROM and ignores

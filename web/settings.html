@@ -76,6 +76,16 @@
       <button class="s-btn" id="btn-save-game" disabled>Save</button>
     </div>
     <div id="game-search-results" class="s-search-list"></div>
+
+    <details class="s-bulk-clear">
+      <summary>Clear all game overrides for a week</summary>
+      <div class="s-row">
+        <select id="f-clear-season" data-gm-select aria-label="Season"></select>
+        <select id="f-clear-week" data-gm-select aria-label="Week"></select>
+        <button class="s-btn" id="btn-clear-week">Clear all</button>
+      </div>
+    </details>
+
     <div id="game-overrides-list" class="s-list"></div>
   </div>
 
@@ -96,11 +106,19 @@ function setStatus(msg, isError) {
   box.classList.toggle("error", !!isError);
 }
 
+// successMsg is usually a plain string, but the bulk clear-week action
+// below doesn't know how many overrides it actually cleared until fn()
+// resolves -- passing a function lets that call site build its message
+// from the response instead of guessing at call time.
 async function runWrite(fn, successMsg) {
   try {
-    await fn();
-    setStatus(successMsg, false);
+    const result = await fn();
+    // refreshPolicy() ends by setting its own status ("N games currently
+    // spoiler-protected...") -- run it before the success message, not
+    // after, or that corpus-wide line immediately overwrites this write's
+    // own message before it's ever seen.
     await refreshPolicy();
+    setStatus(typeof successMsg === "function" ? successMsg(result) : successMsg, false);
   } catch (e) {
     setStatus(`Failed: ${e.message}`, true);
   }
@@ -127,10 +145,18 @@ async function loadMeta() {
   defaultSeasonSel.innerHTML = yearList.map((y) => `<option value="${y}">${y}</option>`).join("");
   populateDefaultWeekOptions();
 
-  const weekSeasonSel = document.getElementById("f-week-season");
-  weekSeasonSel.innerHTML = META.seasons.slice().sort((a, b) => a - b)
+  populateSeasonOptions("f-week-season");
+  refreshWeekOptions("f-week-season", "f-week-week");
+  populateSeasonOptions("f-clear-season");
+  refreshWeekOptions("f-clear-season", "f-clear-week");
+}
+
+// Real seasons only (unlike the Default row's f-default-season, which adds
+// a couple of not-yet-ingested future years) -- both callers target actual
+// games, so a season with nothing in the DB yet has nothing to offer.
+function populateSeasonOptions(selId) {
+  document.getElementById(selId).innerHTML = META.seasons.slice().sort((a, b) => a - b)
     .map((s) => `<option value="${s}">${s}</option>`).join("");
-  refreshWeekWeekOptions();
 }
 
 // Combines season-type + week into one dropdown -- "2-<n>" for regular
@@ -147,13 +173,14 @@ function populateDefaultWeekOptions() {
 }
 
 // Same combined season-type + week dropdown as populateDefaultWeekOptions(),
-// but options come from weeksForSeason() (real per-season data) since a
-// week override always targets actual games -- re-run on season change,
-// unlike the Default row's static list. Postseason is only offered once
-// weeksForSeason confirms this season actually has postseason games.
-function refreshWeekWeekOptions() {
-  const season = document.getElementById("f-week-season").value;
-  const weekSel = document.getElementById("f-week-week");
+// but options come from weeksForSeason() (real per-season data) since both
+// callers (the week-override row, and the bulk game-override clear below)
+// always target actual games -- re-run on season change, unlike the
+// Default row's static list. Postseason is only offered once weeksForSeason
+// confirms this season actually has postseason games.
+function refreshWeekOptions(seasonSelId, weekSelId) {
+  const season = document.getElementById(seasonSelId).value;
+  const weekSel = document.getElementById(weekSelId);
   const current = weekSel.value;
   const opts = weeksForSeason(META, season, "2").map((w) => ({ value: `2-${w}`, label: `Week ${w}` }));
   if (weeksForSeason(META, season, "3").length) opts.push({ value: "3-1", label: "Postseason" });
@@ -298,7 +325,7 @@ document.getElementById("btn-reset-default").addEventListener("click", () => {
 const STATE_TO_LEVEL = { hidden: 0, score: 1, shown: 2, default: null };
 const STATE_LABELS = { hidden: "hidden", score: "rating only", shown: "revealed", default: "baseline" };
 
-document.getElementById("f-week-season").addEventListener("change", refreshWeekWeekOptions);
+document.getElementById("f-week-season").addEventListener("change", () => refreshWeekOptions("f-week-season", "f-week-week"));
 document.getElementById("btn-save-week").addEventListener("click", () => {
   const season_year = Number(document.getElementById("f-week-season").value);
   const [season_type, week] = document.getElementById("f-week-week").value.split("-").map(Number);
@@ -348,6 +375,20 @@ document.getElementById("btn-save-game").addEventListener("click", () => {
   runWrite(
     () => apiPost("/spoilers/game", { game_id: SELECTED_GAME.game_id, level }),
     `${label} set to ${STATE_LABELS[stateVal]}.`,
+  );
+});
+
+// ---- bulk clear (per-week) ------------------------------------------------
+
+document.getElementById("f-clear-season").addEventListener("change", () => refreshWeekOptions("f-clear-season", "f-clear-week"));
+document.getElementById("btn-clear-week").addEventListener("click", () => {
+  const season_year = Number(document.getElementById("f-clear-season").value);
+  const [season_type, week] = document.getElementById("f-clear-week").value.split("-").map(Number);
+  const label = `${season_year} ${season_type === 3 ? "postseason" : "week " + week}`;
+  if (!confirm(`Clear every individual game override for ${label}? This can't be undone.`)) return;
+  runWrite(
+    () => apiPost("/spoilers/games/clear_week", { season_year, season_type, week }),
+    (data) => `Cleared ${data.cleared} game override${data.cleared === 1 ? "" : "s"} for ${label}.`,
   );
 });
 

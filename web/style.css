@@ -1587,6 +1587,14 @@ body[data-page="settings"] .settings-frame main {
 .s-override-clear:hover { color: var(--critical); }
 .s-empty { font-family: var(--font-mono); font-size: 12px; color: var(--g-ink-sec); }
 
+.s-bulk-clear { margin-top: 16px; }
+.s-bulk-clear summary {
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: .05em;
+  color: var(--g-ink-sec); cursor: pointer;
+}
+.s-bulk-clear summary:hover { color: var(--g-ink-bright); }
+.s-bulk-clear .s-row { margin-top: 12px; }
+
 /* game search results (game overrides card only) */
 .s-search-list { margin-top: 8px; }
 .s-search-row {

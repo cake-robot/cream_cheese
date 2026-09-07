@@ -3243,6 +3243,42 @@ def api_spoilers_game():
     return jsonify({"policy": policy, "active_overrides": _spoiler_active_overrides(policy)})
 
 
+@app.route("/api/spoilers/games/clear_week", methods=["POST"])
+def api_spoilers_games_clear_week():
+    """Bulk-clears every per-game override this user has set on games in
+    one (season_year, season_type, week) -- the weekly cleanup this page's
+    settings page exists to make less tedious: once a week is over and its
+    own week-level override already covers it, the per-game overrides set
+    during that week are pure clutter, and clicking each row's clear button
+    individually doesn't scale to a full week's slate."""
+    conn = get_db()
+    data = request.get_json(silent=True) or {}
+    try:
+        season_year = int(data["season_year"])
+        season_type = int(data["season_type"])
+        week = int(data["week"])
+    except (KeyError, TypeError, ValueError):
+        abort(400, description="season_year, season_type, and week are required integers")
+
+    game_ids = [r["game_id"] for r in conn.execute(
+        "SELECT game_id FROM games WHERE season_year=? AND season_type=? AND week=?",
+        (season_year, season_type, week),
+    ).fetchall()]
+    if not game_ids:
+        abort(404, description="no games match that season/season_type/week")
+
+    # Counted against the policy read here (pre-write) rather than off the
+    # write's own return value -- clear_user_games() doesn't report which
+    # keys it actually removed vs. no-op'd, and the UI wants to say
+    # something more useful than "done" when the selected week had nothing
+    # to clear.
+    existing = spoiler_ctx().get("games", {})
+    cleared = sum(1 for gid in game_ids if gid in existing)
+
+    policy = spoilers.clear_user_games(current_user()["user_id"], game_ids, conn=get_users_db())
+    return jsonify({"policy": policy, "active_overrides": _spoiler_active_overrides(policy), "cleared": cleared})
+
+
 @app.route("/api/spoilers/default", methods=["POST"])
 def api_spoilers_default():
     """Unlike /spoilers/week and /spoilers/game, this deliberately does NOT
